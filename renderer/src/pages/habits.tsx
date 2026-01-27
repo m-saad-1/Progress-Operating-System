@@ -557,12 +557,12 @@ export default function Habits() {
         </div>
         <Dialog open={isCreating} onOpenChange={setIsCreating}>
           <DialogTrigger asChild>
-            <Button>
+            <Button className="transition-all duration-300 hover:scale-105 active:scale-95 shadow-md hover:shadow-lg hover:bg-green-700">
               <Plus className="mr-2 h-4 w-4" />
               New Habit
             </Button>
           </DialogTrigger>
-          <DialogContent className="max-w-2xl">
+          <DialogContent className="max-w-2xl bg-card">
             <DialogHeader>
               <DialogTitle>{isEditing ? 'Edit Habit' : 'Create New Habit'}</DialogTitle>
               <DialogDescription>

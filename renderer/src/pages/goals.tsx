@@ -448,7 +448,7 @@ export default function Goals() {
         </div>
         <Dialog open={isCreating} onOpenChange={setIsCreating}>
           <DialogTrigger asChild>
-            <Button>
+            <Button className="transition-all duration-300 hover:scale-105 active:scale-95 shadow-md hover:shadow-lg hover:bg-green-700">
               <Plus className="mr-2 h-4 w-4" />
               New Goal
             </Button>

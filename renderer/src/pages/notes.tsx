@@ -575,18 +575,19 @@ export default function Notes() {
           <Button
             variant="outline"
             onClick={handleQuickNote}
+            className="transition-all duration-300 hover:scale-105 active:scale-95"
           >
             <Plus className="mr-2 h-4 w-4" />
             Quick Note
           </Button>
           <Dialog open={isCreating} onOpenChange={setIsCreating}>
             <DialogTrigger asChild>
-              <Button>
+              <Button className="transition-all duration-300 hover:scale-105 active:scale-95 shadow-md hover:shadow-lg hover:bg-green-700">
                 <Plus className="mr-2 h-4 w-4" />
                 New Note
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-4xl">
+            <DialogContent className="max-w-4xl bg-card">
               <DialogHeader>
                 <DialogTitle>{isEditing ? 'Edit Note' : 'Create New Note'}</DialogTitle>
                 <DialogDescription>
