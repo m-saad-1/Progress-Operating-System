@@ -1,0 +1,52 @@
+# Node
+node_modules/
+dist/
+.env
+.DS_Store
+
+# Electron
+release/
+forge.config.ts
+out/
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.vscode/
+.idea/
+.history/
+*.sublime-project
+*.sublime-workspace
+
+# Build output
+build/
+.next/
+.serverless/
+.parcel-cache/
+
+# Mac
+.DS_Store
+# Windows
+Thumbs.db
+ehthumbs.db
+*.stackdump
+
+# Misc
+*.log
+*.bak
+*.swp
+*~
+.nyc_output/
+.c9/
+.nvm/
+.npm/
+.bower/
+.eslintcache
+.stylelintcache

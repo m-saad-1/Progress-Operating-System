@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "outDir": "dist",
+    "rootDir": "..",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "baseUrl": "..",
+    "paths": {
+      "@shared/*": ["shared/*"]
+    },
+    "moduleResolution": "node"
+  },
+  "include": [
+    "src/**/*",
+    "src/backup/**/*",
+    "src/database/**/*",
+    "../sync/**/*",
+    "../undo/**/*",
+    "../shared/**/*",
+    "../../types/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "../renderer/node_modules",
+    "node_modules/electron-updater/**/*"
+  ]
+}
