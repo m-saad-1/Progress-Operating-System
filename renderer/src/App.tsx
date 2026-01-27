@@ -4,8 +4,6 @@ import { Toaster } from '@/components/ui/toaster'
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '@/components/theme-provider';
-import { CommandPalette } from '@/components/command-palette';
-import { KeyboardShortcuts } from '@/components/keyboard-shortcuts';
 import { ErrorBoundary } from '@/components/error-boundary';
 
 // Layout
@@ -23,18 +21,7 @@ import Backup from '@/pages/backup';
 import Time from '@/pages/time';
 import Archive from '@/pages/archive';
 
-// Store
-import { useStore } from '@/store';
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 5 * 60 * 1000,
-      retry: 1,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
+const queryClient = new QueryClient();
 
 function App() {
   return (
@@ -43,11 +30,7 @@ function App() {
         <ThemeProvider defaultTheme="light" storageKey="progress-os-theme-v1">
           <TooltipProvider>
             <Router>
-             <div className="h-screen w-full bg-background text-foreground antialiased flex flex-col">
-   {/* Remove overflow-hidden here if MainLayout handles it */}
-                <KeyboardShortcuts />
-                <CommandPalette />
-                
+              <div className="min-h-screen w-full bg-background text-foreground antialiased">
                 <Routes>
                   <Route element={<MainLayout />}>
                     <Route path="/" element={<Dashboard />} />
@@ -62,7 +45,6 @@ function App() {
                     <Route path="/archive" element={<Archive />} />
                   </Route>
                 </Routes>
-                
                 <Toaster />
               </div>
             </Router>

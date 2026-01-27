@@ -1,19 +1,16 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
-import './theme.css';
+import './index.css'; // REMOVE './theme.css' if it is here. Only index.css should be imported.
 
-// Initialize store and other setup
 import { setupCommandManager } from '@/lib/undo';
 import { setupSyncManager } from '@/lib/sync';
 
-// Setup command manager
+// Setup managers
 setupCommandManager();
-
-// Setup sync manager
 setupSyncManager();
 
-// Add global error handler
+// Global error handling
 window.addEventListener('error', (event) => {
   console.error('Global error:', event.error);
 });

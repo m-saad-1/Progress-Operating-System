@@ -2,116 +2,64 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    --background: 120 60% 95%;
-    --foreground: 120 40% 10%;
-    --card: 120 60% 100%;
-    --card-foreground: 120 40% 10%;
-    --popover: 120 60% 100%;
-    --popover-foreground: 120 40% 10%;
-    --primary: 130 70% 40%;
-    --primary-foreground: 130 90% 95%;
-    --secondary: 120 30% 90%;
-    --secondary-foreground: 120 40% 20%;
-    --muted: 120 30% 90%;
-    --muted-foreground: 120 20% 40%;
-    --accent: 120 30% 90%;
-    --accent-foreground: 120 40% 20%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 120 20% 85%;
-    --input: 120 20% 85%;
-    --ring: 130 70% 40%;
-    --radius: 0.5rem;
-    --status-active: 130 70% 40%;
-    --status-completed: 120 40% 90%;
-    --status-paused: 47.9 95.8% 53.1%;
-    --status-archived: 120 10% 80%;
-    --priority-low: 130 70% 40%;
-    --priority-medium: 47.9 95.8% 53.1%;
-    --priority-high: 25 95% 53.1%;
-    --priority-critical: 0 84.2% 60.2%;
-    --category-career: 217.2 91.2% 59.8%;
-    --category-health: 130 70% 40%;
-    --category-learning: 47.9 95.8% 53.1%;
-    --category-finance: 25 95% 53.1%;
-    --category-personal: 0 72.2% 50.6%;
-    --streak-current: 130 70% 40%;
-    --streak-longest: 217.2 91.2% 59.8%;
-    --chart-1: 130 70% 40%;
-    --chart-2: 217.2 91.2% 59.8%;
-    --chart-3: 47.9 95.8% 53.1%;
-    --chart-4: 25 95% 53.1%;
-    --chart-5: 0 72.2% 50.6%;
-    --sidebar: 120 60% 100%;
-    --sidebar-foreground: 120 40% 10%;
-    --sidebar-primary: 130 70% 40%;
-    --sidebar-primary-foreground: 130 90% 95%;
-    --sidebar-accent: 120 30% 90%;
-    --sidebar-accent-foreground: 120 40% 20%;
-    --sidebar-border: 120 20% 85%;
-    --sidebar-ring: 130 70% 40%;
-  }
+/* 1. Global Variables - Outside any layer for maximum priority */
+:root {
+  --background: 120 20% 97%;
+  --foreground: 120 40% 10%;
+  --card: 0 0% 100%; /* Pure white to stop blending */
+  --card-foreground: 120 40% 10%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 120 40% 10%;
+  --primary: 130 70% 40%;
+  --primary-foreground: 130 90% 95%;
+  --secondary: 120 30% 90%;
+  --secondary-foreground: 120 40% 20%;
+  --muted: 120 30% 92%;
+  --muted-foreground: 120 20% 40%;
+  --accent: 120 30% 90%;
+  --accent-foreground: 120 40% 20%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 120 20% 85%; /* Darker border for visibility */
+  --input: 120 20% 85%;
+  --ring: 130 70% 40%;
+  --radius: 0.5rem;
+}
 
-  .dark {
-    --background: 120 40% 10%;
-    --foreground: 120 60% 95%;
-    --card: 120 40% 10%;
-    --card-foreground: 120 60% 95%;
-    --popover: 120 40% 10%;
-    --popover-foreground: 120 60% 95%;
-    --primary: 130 70% 50%;
-    --primary-foreground: 130 90% 95%;
-    --secondary: 120 30% 20%;
-    --secondary-foreground: 120 60% 95%;
-    --muted: 120 30% 20%;
-    --muted-foreground: 120 30% 70%;
-    --accent: 120 30% 20%;
-    --accent-foreground: 120 60% 95%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 120 30% 20%;
-    --input: 120 30% 20%;
-    --ring: 130 70% 50%;
-    --radius: 0.5rem;
-    --status-active: 130 70% 50%;
-    --status-completed: 120 30% 20%;
-    --status-paused: 47.9 95.8% 53.1%;
-    --status-archived: 120 30% 20%;
-    --priority-low: 130 70% 50%;
-    --priority-medium: 47.9 95.8% 53.1%;
-    --priority-high: 25 95% 53.1%;
-    --priority-critical: 0 62.8% 30.6%;
-    --category-career: 217.2 91.2% 59.8%;
-    --category-health: 130 70% 50%;
-    --category-learning: 47.9 95.8% 53.1%;
-    --category-finance: 25 95% 53.1%;
-    --category-personal: 0 72.2% 50.6%;
-    --streak-current: 130 70% 50%;
-    --streak-longest: 217.2 91.2% 59.8%;
-    --chart-1: 130 70% 50%;
-    --chart-2: 217.2 91.2% 59.8%;
-    --chart-3: 47.9 95.8% 53.1%;
-    --chart-4: 25 95% 53.1%;
-    --chart-5: 0 72.2% 50.6%;
-    --sidebar: 120 40% 10%;
-    --sidebar-foreground: 120 60% 95%;
-    --sidebar-primary: 130 70% 50%;
-    --sidebar-primary-foreground: 130 90% 95%;
-    --sidebar-accent: 120 30% 20%;
-    --sidebar-accent-foreground: 120 60% 95%;
-    --sidebar-border: 120 30% 20%;
-    --sidebar-ring: 130 70% 50%;
-  }
+.dark {
+  --background: 120 40% 6%;
+  --foreground: 120 60% 95%;
+  --card: 120 40% 10%;
+  --card-foreground: 120 60% 95%;
+  --popover: 120 45% 8%;
+  --popover-foreground: 120 60% 95%;
+  --primary: 130 70% 50%;
+  --primary-foreground: 130 90% 95%;
+  --secondary: 120 30% 15%;
+  --secondary-foreground: 120 60% 95%;
+  --muted: 120 30% 15%;
+  --muted-foreground: 120 30% 65%;
+  --accent: 120 30% 15%;
+  --accent-foreground: 120 60% 95%;
+  --border: 120 30% 22%;
 }
 
 @layer base {
   * {
     @apply border-border;
   }
+  /* 2. FORCE background colors to stop the "Blending" */
   body {
-    @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    background-color: hsl(var(--background)) !important;
+    color: hsl(var(--foreground)) !important;
+    @apply antialiased;
+  }
+
+  /* 3. Force Cards/Popups to have solid backgrounds */
+  .bg-card {
+    background-color: hsl(var(--card)) !important;
+  }
+  .bg-popover {
+    background-color: hsl(var(--popover)) !important;
   }
 }
