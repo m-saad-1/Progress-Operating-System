@@ -16,11 +16,24 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 
+export interface ChartDataPoint {
+  date: string
+  fullDate: string
+  tasks: number
+  completed: number
+  habits: number
+  completedHabits: number
+  productivity: number
+  focusTime: number
+  color?: string
+}
+
 interface ProgressChartProps {
   days?: number
   showHabits?: boolean
   showTasks?: boolean
   className?: string
+  data?: ChartDataPoint[]
 }
 
 const generateData = (days: number) => {
@@ -73,9 +86,10 @@ export function ProgressChart({
   days = 7, 
   showHabits = true, 
   showTasks = true,
-  className 
+  className,
+  data: providedData
 }: ProgressChartProps) {
-  const data = generateData(days)
+  const data = providedData || generateData(days)
   
   const weeklyStats = {
     totalTasks: data.reduce((sum, day) => sum + day.tasks, 0),
@@ -96,15 +110,15 @@ export function ProgressChart({
         <CardTitle>Progress Analytics</CardTitle>
         <Tabs defaultValue="week" className="w-auto">
           <TabsList>
-            <TabsTrigger value="week">Week</TabsTrigger>
-            <TabsTrigger value="month">Month</TabsTrigger>
-            <TabsTrigger value="quarter">Quarter</TabsTrigger>
+            <TabsTrigger value="week" className="data-[state=active]:bg-green-100 data-[state=active]:text-green-800">Week</TabsTrigger>
+            <TabsTrigger value="month" className="data-[state=active]:bg-green-100 data-[state=active]:text-green-800">Month</TabsTrigger>
+            <TabsTrigger value="quarter" className="data-[state=active]:bg-green-100 data-[state=active]:text-green-800">Quarter</TabsTrigger>
           </TabsList>
         </Tabs>
       </CardHeader>
       <CardContent>
         <div className="mb-6 grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="rounded-lg border bg-card p-4">
+          <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
             <div className="text-sm font-medium text-muted-foreground">Task Completion</div>
             <div className="text-2xl font-bold mt-1">
               {weeklyStats.taskCompletionRate}%
@@ -114,7 +128,7 @@ export function ProgressChart({
             </div>
           </div>
           
-          <div className="rounded-lg border bg-card p-4">
+          <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
             <div className="text-sm font-medium text-muted-foreground">Avg. Productivity</div>
             <div className="text-2xl font-bold mt-1">
               {weeklyStats.avgProductivity}%
@@ -124,7 +138,7 @@ export function ProgressChart({
             </div>
           </div>
           
-          <div className="rounded-lg border bg-card p-4">
+          <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
             <div className="text-sm font-medium text-muted-foreground">Focus Time</div>
             <div className="text-2xl font-bold mt-1">
               {weeklyStats.totalFocusTime}h
@@ -134,7 +148,7 @@ export function ProgressChart({
             </div>
           </div>
           
-          <div className="rounded-lg border bg-card p-4">
+          <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
             <div className="text-sm font-medium text-muted-foreground">Consistency</div>
             <div className="text-2xl font-bold mt-1">94%</div>
             <div className="text-xs text-muted-foreground mt-1">
@@ -145,23 +159,23 @@ export function ProgressChart({
 
         <Tabs defaultValue="tasks">
           <TabsList className="mb-4">
-            <TabsTrigger value="tasks">Task Progress</TabsTrigger>
-            <TabsTrigger value="habits">Habit Tracking</TabsTrigger>
-            <TabsTrigger value="productivity">Productivity</TabsTrigger>
+            <TabsTrigger value="tasks" className="data-[state=active]:bg-green-100 data-[state=active]:text-green-800">Task Progress</TabsTrigger>
+            <TabsTrigger value="habits" className="data-[state=active]:bg-green-100 data-[state=active]:text-green-800">Habit Tracking</TabsTrigger>
+            <TabsTrigger value="productivity" className="data-[state=active]:bg-green-100 data-[state=active]:text-green-800">Productivity</TabsTrigger>
           </TabsList>
           
           <TabsContent value="tasks" className="mt-0">
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={data}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis 
-                    dataKey="date" 
-                    stroke="hsl(var(--muted-foreground))"
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+                  <XAxis
+                    dataKey="date"
+                    stroke="#000000"
                     fontSize={12}
                   />
-                  <YAxis 
-                    stroke="hsl(var(--muted-foreground))"
+                  <YAxis
+                    stroke="#000000"
                     fontSize={12}
                   />
                   <Tooltip content={<CustomTooltip />} />
@@ -187,14 +201,14 @@ export function ProgressChart({
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={data}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis 
-                    dataKey="date" 
-                    stroke="hsl(var(--muted-foreground))"
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+                  <XAxis
+                    dataKey="date"
+                    stroke="#000000"
                     fontSize={12}
                   />
-                  <YAxis 
-                    stroke="hsl(var(--muted-foreground))"
+                  <YAxis
+                    stroke="#000000"
                     fontSize={12}
                   />
                   <Tooltip content={<CustomTooltip />} />
@@ -232,14 +246,14 @@ export function ProgressChart({
                       <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis 
-                    dataKey="date" 
-                    stroke="hsl(var(--muted-foreground))"
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+                  <XAxis
+                    dataKey="date"
+                    stroke="#000000"
                     fontSize={12}
                   />
-                  <YAxis 
-                    stroke="hsl(var(--muted-foreground))"
+                  <YAxis
+                    stroke="#000000"
                     fontSize={12}
                   />
                   <Tooltip content={<CustomTooltip />} />

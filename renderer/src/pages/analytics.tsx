@@ -48,9 +48,10 @@ interface TimeStats {
 
 interface ProductivityTrend {
   date: string;
+  total_tasks: number;
   completed_tasks: number;
-  total_estimated_time: number;
-  total_actual_time: number;
+  completed_habits: number;
+  focus_time: number;
 }
 
 interface AnalyticsData {
@@ -137,26 +138,29 @@ export default function Analytics() {
 
         // Productivity trends
         electron.executeQuery<ProductivityTrend[]>(`
+          WITH RECURSIVE dates(date) AS (
+            VALUES(?)
+            UNION ALL
+            SELECT date(date, '+1 day')
+            FROM dates
+            WHERE date < ?
+          )
           SELECT 
-            DATE(completed_at) as date,
-            COUNT(*) as completed_tasks,
-            SUM(estimated_time) as total_estimated_time,
-            SUM(actual_time) as total_actual_time
-          FROM tasks 
-          WHERE status = 'completed'
-          AND completed_at BETWEEN ? AND ?
-          AND deleted_at IS NULL
-          GROUP BY DATE(completed_at)
-          ORDER BY date
+            d.date,
+            (SELECT COUNT(*) FROM tasks WHERE date(due_date) = d.date AND deleted_at IS NULL) as total_tasks,
+            (SELECT COUNT(*) FROM tasks WHERE date(completed_at) = d.date AND status = 'completed' AND deleted_at IS NULL) as completed_tasks,
+            (SELECT COUNT(*) FROM habit_completions WHERE date = d.date AND completed = 1) as completed_habits,
+            (SELECT COALESCE(SUM(duration), 0) / 3600.0 FROM time_blocks WHERE date(start_time) = d.date) as focus_time
+          FROM dates d
         `, [startDate, endDate])
       ])
 
       return {
-        taskStats: taskStats?.[0] || { total_tasks: 0, completed_tasks: 0, completion_rate: 0, avg_estimated_time: 0, avg_actual_time: 0 },
-        goalStats: goalStats?.[0] || { total_goals: 0, avg_progress: 0, completed_goals: 0, on_time_rate: 0 },
-        habitStats: habitStats?.[0] || { total_habits: 0, avg_consistency: 0, avg_streak: 0, max_streak: 0 },
-        timeStats: timeStats?.[0] || { total_focus_time: 0, avg_session_length: 0, days_with_focus: 0 },
-        productivityTrends: productivityTrends || []
+        taskStats: Array.isArray(taskStats) ? taskStats[0] || { total_tasks: 0, completed_tasks: 0, completion_rate: 0, avg_estimated_time: 0, avg_actual_time: 0 } : { total_tasks: 0, completed_tasks: 0, completion_rate: 0, avg_estimated_time: 0, avg_actual_time: 0 },
+        goalStats: Array.isArray(goalStats) ? goalStats[0] || { total_goals: 0, avg_progress: 0, completed_goals: 0, on_time_rate: 0 } : { total_goals: 0, avg_progress: 0, completed_goals: 0, on_time_rate: 0 },
+        habitStats: Array.isArray(habitStats) ? habitStats[0] || { total_habits: 0, avg_consistency: 0, avg_streak: 0, max_streak: 0 } : { total_habits: 0, avg_consistency: 0, avg_streak: 0, max_streak: 0 },
+        timeStats: Array.isArray(timeStats) ? timeStats[0] || { total_focus_time: 0, avg_session_length: 0, days_with_focus: 0 } : { total_focus_time: 0, avg_session_length: 0, days_with_focus: 0 },
+        productivityTrends: Array.isArray(productivityTrends) ? productivityTrends : []
       }
     },
     enabled: electron.isReady,
@@ -166,6 +170,28 @@ export default function Analytics() {
     // Export analytics data as CSV or PDF
     console.log('Export analytics')
   }
+
+  // Process chart data
+  const chartData = (Array.isArray(analyticsData?.productivityTrends) ? analyticsData.productivityTrends : []).map((day: any) => {
+    const date = new Date(day.date)
+    const dayName = timeRange === 'week' ? format(date, 'EEE') : format(date, 'MMM d')
+    const totalTasks = day.total_tasks || 0
+    const completedTasks = day.completed_tasks || 0
+    const completedHabits = day.completed_habits || 0
+    // Estimate productivity
+    const productivity = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 50 + (Math.min(day.focus_time || 0, 8) / 8) * 50) : 0
+
+    return {
+      date: dayName,
+      fullDate: day.date,
+      tasks: totalTasks,
+      completed: completedTasks,
+      habits: 5, // Placeholder
+      completedHabits: completedHabits,
+      productivity: productivity,
+      focusTime: Math.round((day.focus_time || 0) * 10) / 10
+    }
+  }) || []
 
   return (
     <div className="space-y-6 p-6">
@@ -244,9 +270,14 @@ export default function Analytics() {
                 <TrendingUp className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">78%</div>
+                <div className="text-2xl font-bold">
+                  {Math.round(
+                    ((analyticsData?.taskStats?.completion_rate || 0) + 
+                     (analyticsData?.habitStats?.avg_consistency || 0)) / 2
+                  )}%
+                </div>
                 <p className="text-xs text-muted-foreground">
-                  +5% from last period
+                  Based on tasks & habits
                 </p>
               </CardContent>
             </Card>
@@ -304,7 +335,10 @@ export default function Analytics() {
                 <CardTitle>Progress Trends</CardTitle>
               </CardHeader>
               <CardContent>
-                <ProgressChart days={timeRange === 'week' ? 7 : timeRange === 'month' ? 30 : 90} />
+                <ProgressChart 
+                  days={timeRange === 'week' ? 7 : timeRange === 'month' ? 30 : 90} 
+                  data={chartData}
+                />
               </CardContent>
             </Card>
             
@@ -328,35 +362,39 @@ export default function Analytics() {
               <CardTitle>Insights & Recommendations</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="p-4 rounded-lg bg-primary/10 border border-primary/10">
-                <div className="flex items-center gap-2 mb-2">
-                  <TrendingUp className="h-5 w-5 text-primary" />
-                  <h3 className="font-semibold">Productivity Peak</h3>
+              {(analyticsData?.taskStats?.completion_rate || 0) < 50 ? (
+                <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/10">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Target className="h-5 w-5 text-destructive" />
+                    <h3 className="font-semibold">Task Completion Low</h3>
+                  </div>
+                  <p className="text-sm">
+                    Your task completion rate is below 50%. Try breaking down tasks into smaller steps.
+                  </p>
                 </div>
-                <p className="text-sm">
-                  You're most productive on Tuesday mornings. Consider scheduling important tasks during this time.
-                </p>
-              </div>
+              ) : (
+                <div className="p-4 rounded-lg bg-primary/10 border border-primary/10">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Target className="h-5 w-5 text-primary" />
+                    <h3 className="font-semibold">Good Task Progress</h3>
+                  </div>
+                  <p className="text-sm">
+                    You are completing a majority of your tasks. Keep it up!
+                  </p>
+                </div>
+              )}
               
-              <div className="p-4 rounded-lg bg-status-completed/10 border border-status-completed/10">
-                <div className="flex items-center gap-2 mb-2">
-                  <Target className="h-5 w-5 text-status-completed" />
-                  <h3 className="font-semibold">Goal Progress</h3>
+              {(analyticsData?.habitStats?.avg_consistency || 0) > 80 && (
+                <div className="p-4 rounded-lg bg-primary/10 border border-primary/10">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Calendar className="h-5 w-5 text-primary" />
+                    <h3 className="font-semibold">Strong Habit Consistency</h3>
+                  </div>
+                  <p className="text-sm">
+                    Your habit consistency is excellent. This is key to long-term success.
+                  </p>
                 </div>
-                <p className="text-sm">
-                  You're making good progress on your goals. Keep up the momentum with consistent weekly reviews.
-                </p>
-              </div>
-              
-              <div className="p-4 rounded-lg bg-category-learning/10 border border-category-learning/10">
-                <div className="flex items-center gap-2 mb-2">
-                  <Calendar className="h-5 w-5 text-category-learning" />
-                  <h3 className="font-semibold">Habit Consistency</h3>
-                </div>
-                <p className="text-sm">
-                  Your morning routine has a 94% completion rate. This consistency is building strong momentum.
-                </p>
-              </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

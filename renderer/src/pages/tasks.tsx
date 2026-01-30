@@ -1,11 +1,10 @@
-import React, { useState, useEffect } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import React, { useState, useMemo } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { 
   Card, 
   CardContent, 
   CardHeader, 
   CardTitle, 
-  CardDescription 
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -30,12 +29,6 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from '@/components/ui/tabs'
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -45,7 +38,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { 
   Plus, 
-  Filter, 
   Search, 
   MoreVertical, 
   CheckSquare,
@@ -54,7 +46,6 @@ import {
   AlertCircle,
   Edit,
   Trash2,
-  Eye,
   CheckCircle,
   X,
   ListTodo,
@@ -64,36 +55,11 @@ import {
   ChevronRight
 } from 'lucide-react'
 import { format, parseISO, isBefore, isToday, isTomorrow } from 'date-fns'
-import { useElectron } from '@/hooks/use-electron'
 import { useToaster } from '@/hooks/use-toaster'
-import { useUndoRedo } from '@/hooks/use-undo-redo'
 import { cn } from '@/lib/utils'
-
-interface Task {
-  id: string
-  title: string
-  description: string
-  due_date: string | null
-  priority: 'low' | 'medium' | 'high' | 'critical'
-  status: 'pending' | 'in-progress' | 'blocked' | 'completed'
-  progress: number
-  estimated_time: number | null
-  actual_time: number | null
-  recurrence_rule: string | null
-  project_id: string | null
-  goal_id: string | null
-  parent_task_id: string | null
-  tags: string[]
-  created_at: string
-  updated_at: string
-  completed_at: string | null
-}
-
-interface TaskWithDetails extends Task {
-  goal_title?: string
-  completed_checklist_items: number
-  total_checklist_items: number
-}
+import { useStore } from '@/store'
+import { database, CreateTaskDTO } from '@/lib/database'
+import { Task, TaskStatus } from '@/types'
 
 interface TaskFormData {
   title: string
@@ -107,10 +73,8 @@ interface TaskFormData {
 }
 
 export default function Tasks() {
-  const electron = useElectron()
   const { success, error: toastError } = useToaster()
-  const queryClient = useQueryClient()
-  const { executeCommand } = useUndoRedo()
+  const { tasks, goals, addTask, updateTask, deleteTask } = useStore()
   
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedPriority, setSelectedPriority] = useState<string>('all')
@@ -130,174 +94,102 @@ export default function Tasks() {
     goal_id: '',
     tags: [],
   })
-  const [newTag, setNewTag] = useState('')
-  const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set())
-  const [showCompleted, setShowCompleted] = useState(false)
-
-  // Fetch tasks
-  const { data: tasks, isLoading, error } = useQuery<TaskWithDetails[]>({
-    queryKey: ['tasks'],
-    queryFn: async () => {
-      try {
-        const tasks = await electron.executeQuery(`
-          SELECT t.*, 
-                 g.title as goal_title,
-                 (SELECT COUNT(*) FROM checklist_items 
-                  WHERE task_id = t.id AND completed = 1) as completed_checklist_items,
-                 (SELECT COUNT(*) FROM checklist_items 
-                  WHERE task_id = t.id) as total_checklist_items
-          FROM tasks t
-          LEFT JOIN goals g ON t.goal_id = g.id
-          WHERE t.deleted_at IS NULL
-          ORDER BY 
-            CASE priority
-              WHEN 'critical' THEN 1
-              WHEN 'high' THEN 2
-              WHEN 'medium' THEN 3
-              WHEN 'low' THEN 4
-            END,
-            CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
-            due_date ASC
-        `)
-        return Array.isArray(tasks) ? tasks : []
-      } catch (error) {
-        console.error('Failed to fetch tasks:', error)
-        throw error
+  
+    const [newTag, setNewTag] = useState('')
+    const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set())
+    const [showCompleted, setShowCompleted] = useState(false)
+  
+    // Filter and sort tasks
+    const filteredTasks = useMemo(() => tasks.filter(task => {
+      const matchesSearch = searchQuery === '' || 
+        (task.title || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (task.description || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (Array.isArray(task.tags) && task.tags.some((tag: any) => String(tag).toLowerCase().includes(searchQuery.toLowerCase())))
+      
+      const matchesPriority = selectedPriority === 'all' || task.priority === selectedPriority
+      const matchesStatus = selectedStatus === 'all' || task.status === selectedStatus
+      const matchesGoal = selectedGoal === 'all' || 
+        (selectedGoal === 'none' && !task.goal_id) ||
+        task.goal_id === selectedGoal
+      const matchesCompleted = showCompleted || task.status !== 'completed'
+      
+      return matchesSearch && matchesPriority && matchesStatus && matchesGoal && matchesCompleted
+    }).sort((a, b) => {
+      switch (sortBy) {
+        case 'due_date':
+          if (!a.due_date) return 1
+          if (!b.due_date) return -1
+          return new Date(a.due_date).getTime() - new Date(b.due_date).getTime()
+        case 'priority':
+          const priorityOrder: Record<string, number> = { critical: 1, high: 2, medium: 3, low: 4 }
+          return (priorityOrder[a.priority] || 4) - (priorityOrder[b.priority] || 4)
+        case 'created':
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        case 'updated':
+          return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+        default:
+          return 0
       }
-    },
-    enabled: electron.isReady,
-  })
-
-  // Fetch goals for dropdown
-  const { data: goals } = useQuery({
-    queryKey: ['goals-for-tasks'],
-    queryFn: async () => {
-      try {
-        const goals = await electron.executeQuery(`
-          SELECT id, title FROM goals 
-          WHERE status = 'active' 
-          AND deleted_at IS NULL
-          ORDER BY title
-        `)
-        return Array.isArray(goals) ? goals : []
-      } catch (error) {
-        console.error('Failed to fetch goals:', error)
-        return []
-      }
-    },
-    enabled: electron.isReady,
-  })
-
-  const safeTasks = Array.isArray(tasks) ? tasks : []
-
-  // Filter and sort tasks
-  const filteredTasks = safeTasks.filter(task => {
-    const matchesSearch = searchQuery === '' || 
-      task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      task.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      task.tags.some((tag: string) => tag.toLowerCase().includes(searchQuery.toLowerCase()))
-    
-    const matchesPriority = selectedPriority === 'all' || task.priority === selectedPriority
-    const matchesStatus = selectedStatus === 'all' || task.status === selectedStatus
-    const matchesGoal = selectedGoal === 'all' || 
-      (selectedGoal === 'none' && !task.goal_id) ||
-      task.goal_id === selectedGoal
-    const matchesCompleted = showCompleted || task.status !== 'completed'
-    
-    return matchesSearch && matchesPriority && matchesStatus && matchesGoal && matchesCompleted
-  }).sort((a, b) => {
-    switch (sortBy) {
-      case 'due_date':
-        if (!a.due_date) return 1
-        if (!b.due_date) return -1
-        return new Date(a.due_date).getTime() - new Date(b.due_date).getTime()
-      case 'priority':
-        const priorityOrder = { critical: 1, high: 2, medium: 3, low: 4 }
-        return priorityOrder[a.priority] - priorityOrder[b.priority]
-      case 'created':
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      case 'updated':
-        return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-      default:
-        return 0
-    }
-  })
+    }), [tasks, searchQuery, selectedPriority, selectedStatus, selectedGoal, showCompleted, sortBy])
 
   // Group tasks by date
-  const today = new Date()
-  const tasksByDate = filteredTasks?.reduce((groups: any, task: TaskWithDetails) => {
-    let group = 'Later'
-    
-    if (task.due_date) {
-      const dueDate = parseISO(task.due_date)
-      if (isToday(dueDate)) {
-        group = 'Today'
-      } else if (isTomorrow(dueDate)) {
-        group = 'Tomorrow'
-      } else if (isBefore(dueDate, today)) {
-        group = 'Overdue'
-      } else if (dueDate.getTime() - today.getTime() <= 7 * 24 * 60 * 60 * 1000) {
-        group = 'This Week'
+  const tasksByDate = useMemo(() => {
+    const today = new Date()
+    return filteredTasks?.reduce((groups: any, task: Task) => {
+      let group = 'Later'
+      
+      if (task.due_date) {
+        const dueDate = parseISO(task.due_date)
+        if (isToday(dueDate)) {
+          group = 'Today'
+        } else if (isTomorrow(dueDate)) {
+          group = 'Tomorrow'
+        } else if (isBefore(dueDate, today)) {
+          group = 'Overdue'
+        } else if (dueDate.getTime() - today.getTime() <= 7 * 24 * 60 * 60 * 1000) {
+          group = 'This Week'
+        }
+      } else {
+        group = 'No Date'
       }
-    } else {
-      group = 'No Date'
-    }
-    
-    if (!groups[group]) groups[group] = []
-    groups[group].push(task)
-    return groups
-  }, {})
+      
+      if (!groups[group]) groups[group] = []
+      groups[group].push(task)
+      return groups
+    }, {})
+  }, [filteredTasks])
 
   // Calculate statistics
-  const stats = {
-    total: safeTasks.length || 0,
-    completed: safeTasks.filter(t => t.status === 'completed').length || 0,
-    inProgress: safeTasks.filter(t => t.status === 'in-progress').length || 0,
-    overdue: safeTasks.filter(t => 
+  const stats = useMemo(() => ({
+    total: tasks.length || 0,
+    completed: tasks.filter(t => t.status === 'completed').length || 0,
+    inProgress: tasks.filter(t => t.status === 'in-progress').length || 0,
+    overdue: tasks.filter(t => 
       t.due_date && 
-      isBefore(parseISO(t.due_date), today) && 
+      isBefore(parseISO(t.due_date), new Date()) && 
       t.status !== 'completed'
     ).length || 0,
-    critical: safeTasks.filter(t => t.priority === 'critical' && t.status !== 'completed').length || 0,
-    totalEstimated: safeTasks.reduce((sum: number, t: Task) => sum + (t.estimated_time || 0), 0) || 0,
-    totalActual: safeTasks.reduce((sum: number, t: Task) => sum + (t.actual_time || 0), 0) || 0,
-  }
+    critical: tasks.filter(t => t.priority === 'critical' && t.status !== 'completed').length || 0,
+    totalEstimated: tasks.reduce((sum: number, t: Task) => sum + (t.estimated_time || 0), 0) || 0,
+    totalActual: tasks.reduce((sum: number, t: Task) => sum + (t.actual_time || 0), 0) || 0,
+  }), [tasks])
 
   // Create task mutation
   const createTaskMutation = useMutation({
-    mutationFn: async (taskData: TaskFormData) => {
-      const operations = [{
-        query: `
-          INSERT INTO tasks (
-            id, title, description, due_date, priority, status, progress,
-            estimated_time, actual_time, goal_id, tags, created_at, updated_at, version
-          ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?, ?, 1)
-        `,
-        params: [
-          crypto.randomUUID(),
-          taskData.title,
-          taskData.description,
-          taskData.due_date || null,
-          taskData.priority,
-          taskData.status,
-          taskData.estimated_time ? parseInt(taskData.estimated_time) : null,
-          taskData.goal_id || null,
-          JSON.stringify(taskData.tags),
-          new Date().toISOString(),
-          new Date().toISOString(),
-        ]
-      }]
-      
-      return await electron.executeTransaction(operations)
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
-      success('Task created successfully')
-      setIsCreating(false)
-      resetForm()
-      
-      // Register undo command
-      executeCommand('create_task', 'Create Task', formData)
+    mutationFn: async (taskData: CreateTaskDTO) => {
+        const newTaskId = await database.createTask(taskData)
+        const newTask = await database.getTaskById(newTaskId)
+        return newTask
+      },
+    onSuccess: (newTask) => {
+      if (newTask) {
+        addTask(newTask)
+        success('Task created successfully')
+        setIsCreating(false)
+        resetForm()
+      } else {
+        toastError('Failed to retrieve created task.')
+      }
     },
     onError: (error) => {
       console.error('Failed to create task:', error)
@@ -305,37 +197,23 @@ export default function Tasks() {
     },
   })
 
-  // Update task mutation
+// Update task mutation
   const updateTaskMutation = useMutation({
     mutationFn: async ({ id, updates }: { id: string; updates: Partial<Task> }) => {
-      const operations = [{
-        query: `
-          UPDATE tasks 
-          SET title = ?, description = ?, due_date = ?, priority = ?, status = ?,
-              estimated_time = ?, goal_id = ?, tags = ?, updated_at = ?, version = version + 1
-          WHERE id = ?
-        `,
-        params: [
-          updates.title,
-          updates.description,
-          updates.due_date,
-          updates.priority,
-          updates.status,
-          updates.estimated_time,
-          updates.goal_id,
-          JSON.stringify(updates.tags),
-          new Date().toISOString(),
-          id,
-        ]
-      }]
-      
-      return await electron.executeTransaction(operations)
+      await database.updateTask(id, updates)
+      const updatedTask = await database.getTaskById(id)
+      return updatedTask
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
-      success('Task updated successfully')
-      setIsEditing(null)
-      resetForm()
+    onSuccess: (updatedTask) => {
+      if (updatedTask) {
+        updateTask(updatedTask)
+        success('Task updated successfully')
+        setIsCreating(false)
+        setIsEditing(null)
+        resetForm()
+      } else {
+        toastError('Failed to retrieve updated task.')
+      }
     },
     onError: (error) => {
       console.error('Failed to update task:', error)
@@ -343,32 +221,26 @@ export default function Tasks() {
     },
   })
 
-  // Update task status mutation
+// Update task status mutation
   const updateTaskStatusMutation = useMutation({
-    mutationFn: async ({ id, status, completed }: { id: string; status: Task['status']; completed?: boolean }) => {
-      const operations = [{
-        query: `
-          UPDATE tasks 
-          SET status = ?, 
-              completed_at = ?,
-              progress = ?,
-              updated_at = ?,
-              version = version + 1
-          WHERE id = ?
-        `,
-        params: [
-          status,
-          status === 'completed' ? new Date().toISOString() : null,
-          status === 'completed' ? 100 : 0,
-          new Date().toISOString(),
-          id,
-        ]
-      }]
-      
-      return await electron.executeTransaction(operations)
+    mutationFn: async ({ id, status }: { id: string; status: TaskStatus }) => {
+      await database.updateTask(id, { status })
+      const updatedTask = await database.getTaskById(id)
+      return { updatedTask, status }
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    onSuccess: ({ updatedTask, status }) => {
+      if (updatedTask) {
+        updateTask(updatedTask)
+        if (status === 'completed') {
+          success('Task completed! 🎉')
+        } else if (status === 'in-progress') {
+          success('Task started')
+        } else if (status === 'blocked') {
+          success('Task marked as blocked')
+        } else {
+          success('Task status updated')
+        }
+      }
     },
     onError: (error) => {
       console.error('Failed to update task status:', error)
@@ -376,22 +248,14 @@ export default function Tasks() {
     },
   })
 
-  // Delete task mutation
+// Delete task mutation
   const deleteTaskMutation = useMutation({
     mutationFn: async (id: string) => {
-      const operations = [{
-        query: `
-          UPDATE tasks 
-          SET deleted_at = ?, updated_at = ?, version = version + 1
-          WHERE id = ?
-        `,
-        params: [new Date().toISOString(), new Date().toISOString(), id]
-      }]
-      
-      return await electron.executeTransaction(operations)
+      await database.deleteTask(id)
+      return id
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    onSuccess: (id) => {
+      deleteTask(id)
       success('Task moved to trash')
     },
     onError: (error) => {
@@ -416,6 +280,7 @@ export default function Tasks() {
 
   const handleEdit = (task: Task) => {
     setIsEditing(task.id)
+    setIsCreating(true)
     setFormData({
       title: task.title,
       description: task.description || '',
@@ -434,22 +299,28 @@ export default function Tasks() {
       return
     }
 
+    const taskData: any = {
+        title: formData.title,
+        description: formData.description,
+        priority: formData.priority,
+        status: formData.status,
+        tags: formData.tags,
+        estimated_time: formData.estimated_time ? parseInt(formData.estimated_time, 10) : undefined,
+        goal_id: formData.goal_id || undefined,
+        due_date: formData.due_date || undefined,
+    }
+
     if (isEditing) {
       updateTaskMutation.mutate({
         id: isEditing,
-        updates: {
-          ...formData,
-          estimated_time: formData.estimated_time ? parseInt(formData.estimated_time) : null,
-          goal_id: formData.goal_id || null,
-          due_date: formData.due_date || null,
-        },
+        updates: taskData,
       })
     } else {
-      createTaskMutation.mutate(formData)
+      createTaskMutation.mutate(taskData)
     }
   }
 
-  const handleStatusChange = (taskId: string, status: Task['status']) => {
+  const handleStatusChange = (taskId: string, status: TaskStatus) => {
     updateTaskStatusMutation.mutate({ id: taskId, status })
   }
 
@@ -479,28 +350,7 @@ export default function Tasks() {
       tags: formData.tags.filter(tag => tag !== tagToRemove),
     })
   }
-
-  if (error) {
-    return (
-      <div className="p-8">
-        <Card className="border-destructive">
-          <CardContent className="pt-6">
-            <div className="text-center">
-              <X className="h-12 w-12 text-destructive mx-auto mb-4" />
-              <h3 className="text-lg font-semibold mb-2">Failed to load tasks</h3>
-              <p className="text-muted-foreground mb-4">
-                There was an error loading your tasks.
-              </p>
-              <Button onClick={() => queryClient.invalidateQueries({ queryKey: ['tasks'] })}>
-                Retry
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
+  
   return (
     <div className="space-y-6 p-6">
       {/* Header */}
@@ -528,159 +378,198 @@ export default function Tasks() {
             <CalendarDays className="mr-2 h-4 w-4" />
             Board
           </Button>
-          <Dialog open={isCreating} onOpenChange={setIsCreating}>
+          <Dialog open={isCreating} onOpenChange={(open) => {
+            setIsCreating(open)
+            if (!open) {
+              setIsEditing(null)
+              resetForm()
+            }
+          }}>
             <DialogTrigger asChild>
-              <Button className="transition-all duration-300 hover:scale-105 active:scale-95 shadow-md hover:shadow-lg hover:bg-green-700">
+              <Button
+                className="transition-all duration-300 hover:scale-105 active:scale-95 shadow-md hover:shadow-lg hover:bg-green-700"
+                onClick={() => {
+                  setIsEditing(null)
+                  resetForm()
+                }}
+              >
                 <Plus className="mr-2 h-4 w-4" />
                 New Task
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-2xl bg-card">
-              <DialogHeader>
+              <DialogHeader className="flex-shrink-0">
                 <DialogTitle>{isEditing ? 'Edit Task' : 'Create New Task'}</DialogTitle>
                 <DialogDescription>
                   Add a new task to your todo list.
                 </DialogDescription>
               </DialogHeader>
               
-              <div className="space-y-4 py-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Task Title</label>
-                  <Input
-                    placeholder="What needs to be done?"
-                    value={formData.title}
-                    onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                  />
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Description</label>
-                  <Textarea
-                    placeholder="Add details, notes, or context..."
-                    value={formData.description}
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    rows={3}
-                  />
-                </div>
-                
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Due Date</label>
-                    <Input
-                      type="date"
-                      value={formData.due_date}
-                      onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
-                    />
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Priority</label>
-                    <Select
-                      value={formData.priority}
-                      onValueChange={(value: Task['priority']) => 
-                        setFormData({ ...formData, priority: value })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="low">Low</SelectItem>
-                        <SelectItem value="medium">Medium</SelectItem>
-                        <SelectItem value="high">High</SelectItem>
-                        <SelectItem value="critical">Critical</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Status</label>
-                    <Select
-                      value={formData.status}
-                      onValueChange={(value: Task['status']) => 
-                        setFormData({ ...formData, status: value })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="pending">Pending</SelectItem>
-                        <SelectItem value="in-progress">In Progress</SelectItem>
-                        <SelectItem value="blocked">Blocked</SelectItem>
-                        <SelectItem value="completed">Completed</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Estimated Time (minutes)</label>
-                    <Input
-                      type="number"
-                      placeholder="e.g., 30"
-                      value={formData.estimated_time}
-                      onChange={(e) => setFormData({ ...formData, estimated_time: e.target.value })}
-                    />
-                  </div>
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Related Goal (Optional)</label>
-                  <Select
-                    value={formData.goal_id || "none"}
-                    onValueChange={(value) => 
-                      setFormData({ ...formData, goal_id: value === "none" ? "" : value })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a goal..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No Goal</SelectItem>
-                      {goals?.map((goal: any) => (
-                        <SelectItem key={goal.id} value={goal.id}>
-                          {goal.title}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Tags</label>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Add a tag..."
-                      value={newTag}
-                      onChange={(e) => setNewTag(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && addTag()}
-                    />
-                    <Button type="button" onClick={addTag}>
-                      Add
-                    </Button>
-                  </div>
-                  {formData.tags.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      {formData.tags.map(tag => (
-                        <Badge key={tag} variant="secondary" className="gap-1">
-                          {tag}
-                          <button
-                            type="button"
-                            onClick={() => removeTag(tag)}
-                            className="ml-1 hover:text-destructive"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </Badge>
-                      ))}
+              <div className="flex-1 overflow-y-auto pr-2 -mr-2 scroll-smooth">
+                <div className="space-y-6 py-4">
+                  {/* Basic Information Section */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Basic Information</h4>
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Task Title</label>
+                        <Input
+                          placeholder="What needs to be done?"
+                          value={formData.title}
+                          onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                          className="bg-secondary/50 border-green-500/50 focus-visible:ring-primary/50"
+                        />
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Description</label>
+                        <Textarea
+                          placeholder="Add details, notes, or context..."
+                          value={formData.description}
+                          onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                          rows={3}
+                          className="bg-secondary/50 border-green-500/50 focus-visible:ring-primary/50"
+                        />
+                      </div>
                     </div>
-                  )}
+                  </div>
+                  
+                  {/* Scheduling Section */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Scheduling</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Due Date</label>
+                        <Input
+                          type="date"
+                          value={formData.due_date}
+                          onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
+                          className="bg-secondary/50 border-green-500/50 focus-visible:ring-primary/50"
+                        />
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Estimated Time (minutes)</label>
+                        <Input
+                          type="number"
+                          placeholder="e.g., 30"
+                          value={formData.estimated_time}
+                          onChange={(e) => setFormData({ ...formData, estimated_time: e.target.value })}
+                          className="bg-secondary/50 border-green-500/50 focus-visible:ring-primary/50"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Status & Priority Section */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Status & Priority</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Priority</label>
+                        <Select
+                          value={formData.priority}
+                          onValueChange={(value: Task['priority']) => 
+                            setFormData({ ...formData, priority: value })
+                          }
+                        >
+                          <SelectTrigger className="bg-secondary/50 border-green-500/50 focus:ring-primary/50">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="low">Low</SelectItem>
+                            <SelectItem value="medium">Medium</SelectItem>
+                            <SelectItem value="high">High</SelectItem>
+                            <SelectItem value="critical">Critical</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Status</label>
+                        <Select
+                          value={formData.status}
+                          onValueChange={(value: TaskStatus) => 
+                            setFormData({ ...formData, status: value })
+                          }
+                        >
+                          <SelectTrigger className="bg-secondary/50 border-green-500/50 focus:ring-primary/50">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="pending">Pending</SelectItem>
+                            <SelectItem value="in-progress">In Progress</SelectItem>
+                            <SelectItem value="blocked">Blocked</SelectItem>
+                            <SelectItem value="completed">Completed</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Organization Section */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Organization</h4>
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Related Goal (Optional)</label>
+                        <Select
+                          value={formData.goal_id || "none"}
+                          onValueChange={(value) => 
+                            setFormData({ ...formData, goal_id: value === "none" ? "" : value })
+                          }
+                        >
+                          <SelectTrigger className="bg-secondary/50 border-green-500/50 focus:ring-primary/50">
+                            <SelectValue placeholder="Select a goal..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">No Goal</SelectItem>
+                            {goals?.map((goal: any) => (
+                              <SelectItem key={goal.id} value={goal.id}>
+                                {goal.title}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Tags</label>
+                        <div className="flex gap-2">
+                          <Input
+                            placeholder="Add a tag..."
+                            value={newTag}
+                            onChange={(e) => setNewTag(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && addTag()}
+                            className="bg-secondary/50 border-green-500/50 focus-visible:ring-primary/50"
+                          />
+                          <Button type="button" onClick={addTag}>
+                            Add
+                          </Button>
+                        </div>
+                        {formData.tags.length > 0 && (
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            {formData.tags.map(tag => (
+                              <Badge key={tag} variant="secondary" className="gap-1">
+                                {tag}
+                                <button
+                                  type="button"
+                                  onClick={() => removeTag(tag)}
+                                  className="ml-1 hover:text-destructive"
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
               
-              <DialogFooter>
+              <DialogFooter className="flex-shrink-0 border-t pt-4">
                 <Button variant="outline" onClick={() => {
                   setIsCreating(false)
                   setIsEditing(null)
@@ -722,7 +611,7 @@ export default function Tasks() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{stats.inProgress}</div>
-            <Progress value={(stats.inProgress / stats.total) * 100} className="mt-2" />
+            <Progress value={stats.total > 0 ? (stats.inProgress / stats.total) * 100 : 0} className="mt-2" />
           </CardContent>
         </Card>
         
@@ -763,13 +652,13 @@ export default function Tasks() {
                 placeholder="Search tasks..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10"
+                className="pl-10 bg-secondary/50 border border-green-500/50 focus-visible:ring-1 focus-visible:ring-primary/50"
               />
             </div>
             
             <div className="flex flex-wrap gap-2">
               <Select value={selectedPriority} onValueChange={setSelectedPriority}>
-                <SelectTrigger className="w-[140px]">
+                <SelectTrigger className="w-[140px] bg-secondary/50 border border-green-500/50 focus:ring-1 focus:ring-primary/50">
                   <SelectValue placeholder="Priority" />
                 </SelectTrigger>
                 <SelectContent>
@@ -782,7 +671,7 @@ export default function Tasks() {
               </Select>
               
               <Select value={selectedStatus} onValueChange={setSelectedStatus}>
-                <SelectTrigger className="w-[140px]">
+                <SelectTrigger className="w-[140px] bg-secondary/50 border border-green-500/50 focus:ring-1 focus:ring-primary/50">
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent>
@@ -795,7 +684,7 @@ export default function Tasks() {
               </Select>
               
               <Select value={selectedGoal} onValueChange={setSelectedGoal}>
-                <SelectTrigger className="w-[140px]">
+                <SelectTrigger className="w-[140px] bg-secondary/50 border border-green-500/50 focus:ring-1 focus:ring-primary/50">
                   <SelectValue placeholder="Goal" />
                 </SelectTrigger>
                 <SelectContent>
@@ -810,7 +699,7 @@ export default function Tasks() {
               </Select>
               
               <Select value={sortBy} onValueChange={(value) => setSortBy(value as 'due_date' | 'priority' | 'created' | 'updated')}>
-                <SelectTrigger className="w-[140px]">
+                <SelectTrigger className="w-[140px] bg-secondary/50 border border-green-500/50 focus:ring-1 focus:ring-primary/50">
                   <SelectValue placeholder="Sort by" />
                 </SelectTrigger>
                 <SelectContent>
@@ -839,18 +728,7 @@ export default function Tasks() {
       {/* Tasks List View */}
       {viewMode === 'list' ? (
         <div className="space-y-6">
-          {isLoading ? (
-            <div className="space-y-4">
-              {[1, 2, 3].map(i => (
-                <Card key={i} className="animate-pulse">
-                  <CardContent className="pt-6">
-                    <div className="h-4 bg-muted rounded w-3/4 mb-2"></div>
-                    <div className="h-3 bg-muted rounded w-1/2"></div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          ) : filteredTasks?.length === 0 ? (
+          {filteredTasks?.length === 0 ? (
             <Card>
               <CardContent className="pt-6 text-center">
                 <CheckSquare className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
@@ -881,7 +759,7 @@ export default function Tasks() {
                 </div>
                 
                 <div className="space-y-2">
-                  {groupTasks.map((task: TaskWithDetails) => (
+                  {groupTasks.map((task: Task) => (
                     <Card key={task.id} className="card-hover">
                       <CardContent className="pt-6">
                         <div className="flex items-start gap-3">
@@ -894,6 +772,7 @@ export default function Tasks() {
                                   checked ? 'completed' : 'pending'
                                 )
                               }}
+                              className="cursor-pointer data-[state=checked]:bg-green-500 data-[state=checked]:border-green-500"
                             />
                           </div>
                           
@@ -931,36 +810,63 @@ export default function Tasks() {
                                 </Badge>
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild>
-                                    <Button variant="ghost" size="icon" className="h-8 w-8">
+                                    <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-green-500/10">
                                       <MoreVertical className="h-4 w-4" />
                                     </Button>
                                   </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end">
+                                  <DropdownMenuContent align="end" className="w-48">
                                     <DropdownMenuLabel>Actions</DropdownMenuLabel>
                                     <DropdownMenuSeparator />
-                                    <DropdownMenuItem onClick={() => handleEdit(task)}>
+                                    <DropdownMenuItem 
+                                      onClick={() => handleEdit(task)}
+                                      className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
+                                    >
                                       <Edit className="mr-2 h-4 w-4" />
-                                      Edit
+                                      Edit Task
                                     </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleStatusChange(task.id, 'completed')}>
-                                      <CheckCircle className="mr-2 h-4 w-4" />
-                                      Mark Complete
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleStatusChange(task.id, 'in-progress')}>
-                                      <Clock className="mr-2 h-4 w-4" />
-                                      Start Progress
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleStatusChange(task.id, 'blocked')}>
-                                      <AlertCircle className="mr-2 h-4 w-4" />
-                                      Mark Blocked
-                                    </DropdownMenuItem>
+                                    {task.status !== 'completed' && (
+                                      <DropdownMenuItem 
+                                        onClick={() => handleStatusChange(task.id, 'completed')}
+                                        className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
+                                      >
+                                        <CheckCircle className="mr-2 h-4 w-4 text-green-500" />
+                                        Mark Complete
+                                      </DropdownMenuItem>
+                                    )}
+                                    {task.status !== 'in-progress' && task.status !== 'completed' && (
+                                      <DropdownMenuItem 
+                                        onClick={() => handleStatusChange(task.id, 'in-progress')}
+                                        className="cursor-pointer hover:bg-blue-500/10 focus:bg-blue-500/10"
+                                      >
+                                        <Clock className="mr-2 h-4 w-4 text-blue-500" />
+                                        Start Progress
+                                      </DropdownMenuItem>
+                                    )}
+                                    {task.status !== 'blocked' && task.status !== 'completed' && (
+                                      <DropdownMenuItem 
+                                        onClick={() => handleStatusChange(task.id, 'blocked')}
+                                        className="cursor-pointer hover:bg-orange-500/10 focus:bg-orange-500/10"
+                                      >
+                                        <AlertCircle className="mr-2 h-4 w-4 text-orange-500" />
+                                        Mark Blocked
+                                      </DropdownMenuItem>
+                                    )}
+                                    {task.status === 'completed' && (
+                                      <DropdownMenuItem 
+                                        onClick={() => handleStatusChange(task.id, 'pending')}
+                                        className="cursor-pointer hover:bg-gray-500/10 focus:bg-gray-500/10"
+                                      >
+                                        <X className="mr-2 h-4 w-4" />
+                                        Reopen Task
+                                      </DropdownMenuItem>
+                                    )}
                                     <DropdownMenuSeparator />
                                     <DropdownMenuItem 
-                                      className="text-destructive"
+                                      className="cursor-pointer text-destructive hover:bg-red-500/10 focus:bg-red-500/10 focus:text-destructive"
                                       onClick={() => deleteTaskMutation.mutate(task.id)}
                                     >
                                       <Trash2 className="mr-2 h-4 w-4" />
-                                      Delete
+                                      Delete Task
                                     </DropdownMenuItem>
                                   </DropdownMenuContent>
                                 </DropdownMenu>
@@ -990,29 +896,13 @@ export default function Tasks() {
                                     </div>
                                   )}
                                   
-                                  {task.goal_title && (
+                                  {task.goal_id && (
                                     <div className="flex items-center">
                                       <Target className="mr-1 h-3 w-3" />
-                                      {task.goal_title}
+                                      {goals.find(g => g.id === task.goal_id)?.title}
                                     </div>
                                   )}
                                 </div>
-                                
-                                {/* Checklist progress */}
-                                {task.total_checklist_items > 0 && (
-                                  <div className="space-y-1">
-                                    <div className="flex items-center justify-between text-sm">
-                                      <span>Checklist</span>
-                                      <span>
-                                        {task.completed_checklist_items}/{task.total_checklist_items}
-                                      </span>
-                                    </div>
-                                    <Progress 
-                                      value={(task.completed_checklist_items / task.total_checklist_items) * 100}
-                                      className="h-2"
-                                    />
-                                  </div>
-                                )}
                                 
                                 {/* Tags */}
                                 {task.tags && task.tags.length > 0 && (
@@ -1023,32 +913,6 @@ export default function Tasks() {
                                       </Badge>
                                     ))}
                                   </div>
-                                )}
-                              </div>
-                            )}
-                            
-                            {/* Minimal view when not expanded */}
-                            {!expandedTasks.has(task.id) && (
-                              <div className="ml-6 flex items-center gap-4 text-sm text-muted-foreground">
-                                {task.due_date && (
-                                  <span>
-                                    <Calendar className="inline mr-1 h-3 w-3" />
-                                    {format(parseISO(task.due_date), 'MMM d')}
-                                  </span>
-                                )}
-                                
-                                {task.goal_title && (
-                                  <span>
-                                    <Target className="inline mr-1 h-3 w-3" />
-                                    {task.goal_title}
-                                  </span>
-                                )}
-                                
-                                {task.total_checklist_items > 0 && (
-                                  <span>
-                                    <CheckSquare className="inline mr-1 h-3 w-3" />
-                                    {task.completed_checklist_items}/{task.total_checklist_items}
-                                  </span>
                                 )}
                               </div>
                             )}
@@ -1066,7 +930,7 @@ export default function Tasks() {
         /* Kanban Board View */
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {['pending', 'in-progress', 'blocked', 'completed'].map((status) => {
-            const statusTasks = filteredTasks?.filter((t: Task) => t.status === status) || []
+            const statusTasks = filteredTasks.filter((t: Task) => t.status === status) || []
             const statusTitle = status.charAt(0).toUpperCase() + status.slice(1).replace('-', ' ')
             
             return (
@@ -1123,6 +987,7 @@ export default function Tasks() {
                               variant="ghost"
                               size="sm"
                               onClick={() => handleEdit(task)}
+                              className="cursor-pointer hover:bg-green-500/10"
                             >
                               <Edit className="h-3 w-3" />
                             </Button>
@@ -1133,15 +998,26 @@ export default function Tasks() {
                                   variant="ghost"
                                   size="sm"
                                   onClick={() => handleStatusChange(task.id, 'completed')}
+                                  className="cursor-pointer hover:bg-green-500/10 text-green-600"
                                 >
                                   <CheckCircle className="h-3 w-3" />
+                                </Button>
+                              )}
+                              {status === 'completed' && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleStatusChange(task.id, 'pending')}
+                                  className="cursor-pointer hover:bg-gray-500/10"
+                                >
+                                  <X className="h-3 w-3" />
                                 </Button>
                               )}
                               <Button
                                 variant="ghost"
                                 size="sm"
                                 onClick={() => deleteTaskMutation.mutate(task.id)}
-                                className="text-destructive hover:text-destructive"
+                                className="cursor-pointer text-destructive hover:text-destructive hover:bg-red-500/10"
                               >
                                 <Trash2 className="h-3 w-3" />
                               </Button>

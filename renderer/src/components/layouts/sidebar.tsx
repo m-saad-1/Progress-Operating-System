@@ -1,27 +1,22 @@
-import React from 'react'
 import { NavLink } from 'react-router-dom'
-import { 
-  LayoutDashboard, 
-  Target, 
-  CheckSquare, 
+import {
+  LayoutDashboard,
+  Target,
+  CheckSquare,
   Calendar,
-  TrendingUp,
   FileText,
   BarChart3,
   Settings,
   Archive,
   Clock,
-  Users,
-  HelpCircle,
   ChevronLeft,
   ChevronRight,
-  Home,
-  Sparkles
+  Sparkles,
+  User
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { useStore } from '@/store'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 interface SidebarProps {
   collapsed: boolean
@@ -37,137 +32,168 @@ const navItems = [
   { icon: BarChart3, label: 'Analytics', path: '/analytics' },
   { icon: Clock, label: 'Time', path: '/time' },
   { icon: Archive, label: 'Archive', path: '/archive' },
-  { icon: Settings, label: 'Settings', path: '/settings' },
+  { icon: Settings, label: 'Settings', path: '/settings' }
 ]
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
-  const { dailyProgress, weeklyConsistency } = useStore()
+  const dailyProgress = 0
 
   return (
-    <aside className={cn(
-      "fixed left-0 top-0 z-40 h-screen border-r bg-card shadow-lg transition-all duration-300",
-      collapsed ? "w-16" : "w-64"
-    )}>
-      {/* Sidebar Header */}
-      <div className={cn(
-        "flex items-center border-b p-4",
-        collapsed ? "justify-center" : "justify-between"
-      )}>
-        {!collapsed && (
-          <div className="flex items-center space-x-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-              <Sparkles className="h-5 w-5 text-primary-foreground" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight">Progress OS</h1>
-              <p className="text-xs text-muted-foreground">v1.0.0</p>
-            </div>
+    <aside
+      className={cn(
+        'fixed inset-y-0 left-0 z-40 bg-card transition-all duration-300 ease-in-out',
+        collapsed ? 'w-16' : 'w-64',
+        'border-r border-border/30 shadow-lg shadow-black/10' // 🌟 subtle professional shadow
+      )}
+    >
+      {/* Header */}
+      <div className="flex h-14 items-center border-b border-border/30 overflow-hidden">
+        <div
+          className={cn(
+            'flex items-center gap-3 transition-all duration-300 ease-in-out',
+            collapsed ? 'w-16 justify-center px-0' : 'w-full px-4'
+          )}
+        >
+          {/* Logo */}
+          <div
+            className={cn(
+              'flex-shrink-0 flex items-center justify-center rounded-lg bg-green-500 transition-all duration-300',
+              collapsed ? 'h-0 w-0 opacity-0 scale-0' : 'h-8 w-8 opacity-100 scale-100'
+            )}
+          >
+            <Sparkles className="h-4 w-4 text-white" />
           </div>
-        )}
-        {collapsed && (
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-            <Sparkles className="h-5 w-5 text-primary-foreground" />
-          </div>
-        )}
+
+          {/* Animated Text */}
+          <span
+            className={cn(
+              'font-bold whitespace-nowrap transition-all duration-300 ease-in-out',
+              collapsed ? 'opacity-0 w-0 -translate-x-4' : 'opacity-100 w-auto'
+            )}
+          >
+            Progress OS
+          </span>
+        </div>
+
+        {/* Toggle button */}
         <Button
           variant="ghost"
           size="icon"
           onClick={onToggle}
-          className="h-8 w-8"
-        >
-          {collapsed ? (
-            <ChevronRight className="h-4 w-4" />
-          ) : (
-            <ChevronLeft className="h-4 w-4" />
+          className={cn(
+            'absolute transition-all duration-300 hover:bg-green-500/10 hover:text-green-500',
+            collapsed ? 'right-2' : 'right-3'
           )}
+        >
+          <ChevronLeft
+            className={cn(
+              'h-4 w-4 transition-transform duration-300',
+              collapsed && 'rotate-180'
+            )}
+          />
         </Button>
       </div>
 
-      {/* Progress Summary */}
-      {!collapsed && (
-        <div className="border-b p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <span className="text-sm font-medium">Today's Progress</span>
-            <span className="text-sm font-bold text-primary">{dailyProgress}%</span>
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-secondary">
-            <div 
-              className="h-full rounded-full bg-gradient-to-r from-primary to-primary/60 transition-all duration-500"
-              style={{ width: `${dailyProgress}%` }}
-            />
-          </div>
-          <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-            <span>Weekly Consistency</span>
-            <span className="font-medium">{weeklyConsistency}%</span>
-          </div>
-        </div>
-      )}
-
       {/* Navigation */}
-      <nav className="flex-1 space-y-1 p-4">
-        {navItems.map((item) => (
-          <TooltipProvider key={item.path}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <NavLink
-                  to={item.path}
-                  className={({ isActive }) => cn(
-                    "flex w-full items-center rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200",
-                    isActive 
-                      ? "bg-primary/10 text-primary" 
-                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                    collapsed ? "justify-center" : "justify-start gap-3"
+      <nav
+        className={cn(
+          'transition-all duration-300',
+          collapsed
+            ? 'mt-8 flex flex-col items-center gap-6 px-2'
+            : 'mt-3 px-2 space-y-1'
+        )}
+      >
+        {navItems.map(({ icon: Icon, label, path }) => {
+          const link = (
+            <NavLink
+              to={path}
+              className={({ isActive }) =>
+                cn(
+                  'group relative flex items-center rounded-lg transition-all duration-200',
+
+                  // background only — NO text color here
+                  isActive
+                    ? 'bg-green-500/15 shadow-sm shadow-green-500/10'
+                    : 'hover:bg-green-500/10',
+
+                  !collapsed &&
+                    'h-10 px-3 gap-3 justify-start text-sm font-medium',
+
+                  collapsed && 'h-10 w-10 justify-center'
+                )
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  {isActive && (
+                    <span
+                      className={cn(
+                        'absolute left-0 top-1/2 -translate-y-1/2 w-[3px] bg-green-500 rounded-r-full',
+                        collapsed ? 'h-5 -left-2' : 'h-6 -left-2'
+                      )}
+                    />
                   )}
-                >
-                  <item.icon className="h-4 w-4 shrink-0" />
-                  {!collapsed && <span className="truncate">{item.label}</span>}
-                </NavLink>
-              </TooltipTrigger>
-              {collapsed && (
-                <TooltipContent side="right">
-                  <p>{item.label}</p>
-                </TooltipContent>
+
+                  <Icon
+                    className={cn(
+                      'flex-shrink-0 transition-colors duration-200',
+                      collapsed ? 'h-6 w-6' : 'h-5 w-5',
+                      isActive
+                        ? 'text-green-500'
+                        : 'text-foreground group-hover:text-green-500'
+                    )}
+                  />
+
+                  <span
+                    className={cn(
+                      'transition-all duration-300 whitespace-nowrap',
+                      collapsed ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100 w-auto'
+                    )}
+                  >
+                    {label}
+                  </span>
+                </>
               )}
+            </NavLink>
+          )
+
+          return collapsed ? (
+            <Tooltip key={path} delayDuration={0}>
+              <TooltipTrigger asChild>{link}</TooltipTrigger>
+              <TooltipContent side="right" className="bg-card border-green-500/20">
+                {label}
+              </TooltipContent>
             </Tooltip>
-          </TooltipProvider>
-        ))}
+          ) : (
+            <div key={path}>{link}</div>
+          )
+        })}
       </nav>
 
-      {/* Quick Actions */}
-      {!collapsed && (
-        <div className="border-t p-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-            Quick Actions
-          </h3>
-          <div className="space-y-2">
-            <Button variant="ghost" size="sm" className="w-full justify-start gap-3 px-3 text-muted-foreground">
-              <Home className="h-4 w-4" />
-              Quick Review
-            </Button>
-            <Button variant="ghost" size="sm" className="w-full justify-start gap-3 px-3 text-muted-foreground">
-              <HelpCircle className="h-4 w-4" />
-              Help & Support
-            </Button>
+      {/* Footer */}
+      <div className="absolute bottom-0 w-full border-t border-border/30 p-3">
+        <div
+          className={cn(
+            'flex items-center transition-all duration-300',
+            collapsed ? 'justify-center' : 'gap-3'
+          )}
+        >
+          <div className="h-9 w-9 rounded-full bg-green-500/20 flex items-center justify-center">
+            <User className="h-5 w-5 text-green-500" />
+          </div>
+
+          <div
+            className={cn(
+              'overflow-hidden transition-all duration-300',
+              collapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'
+            )}
+          >
+            <p className="text-sm font-medium">User</p>
+            <p className="text-xs text-muted-foreground">
+              Daily progress: {dailyProgress}%
+            </p>
           </div>
         </div>
-      )}
-
-      {/* User Profile */}
-      <div className={cn(
-        "border-t p-4",
-        collapsed ? "flex justify-center" : ""
-      )}>
-        {!collapsed ? (
-          <div className="flex items-center space-x-3">
-            <div className="h-10 w-10 rounded-full bg-gradient-to-br from-primary to-purple-500" />
-            <div className="flex-1 overflow-hidden">
-              <p className="truncate text-sm font-medium">John Doe</p>
-              <p className="truncate text-xs text-muted-foreground">Productivity Level: Expert</p>
-            </div>
-          </div>
-        ) : (
-          <div className="h-10 w-10 rounded-full bg-gradient-to-br from-primary to-purple-500" />
-        )}
       </div>
     </aside>
   )

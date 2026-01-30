@@ -1,6 +1,7 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+ 
 
 /* 1. Global Variables - Outside any layer for maximum priority */
 :root {
@@ -20,10 +21,20 @@
   --accent-foreground: 120 40% 20%;
   --destructive: 0 84.2% 60.2%;
   --destructive-foreground: 0 0% 98%;
-  --border: 120 20% 85%; /* Darker border for visibility */
+  --border: 145 98% 49%; /* #02F769 */
   --input: 120 20% 85%;
   --ring: 130 70% 40%;
   --radius: 0.5rem;
+  
+  /* Status colors for consistency */
+  --status-completed: 130 70% 45%;
+  --status-paused: 45 90% 55%;
+  --status-active: 210 90% 55%;
+  
+  /* Chart colors */
+  --chart-primary: 0 0% 0%; /* Black for charts */
+  --chart-secondary: 145 98% 49%; /* #02F769 */
+  --chart-grid: 0 0% 90%; /* Light gray for grid lines */
 }
 
 .dark {
@@ -41,13 +52,23 @@
   --muted-foreground: 120 30% 65%;
   --accent: 120 30% 15%;
   --accent-foreground: 120 60% 95%;
-  --border: 120 30% 22%;
+  --border: 145 98% 49%; /* #02F769 */
+  
+  /* Status colors for dark mode */
+  --status-completed: 130 70% 50%;
+  --status-paused: 45 90% 60%;
+  --status-active: 210 90% 60%;
 }
 
 @layer base {
-  * {
-    @apply border-border;
+  a,
+  svg,
+  span {
+    border-width: 0;
   }
+
+
+
   /* 2. FORCE background colors to stop the "Blending" */
   body {
     background-color: hsl(var(--background)) !important;
@@ -58,8 +79,40 @@
   /* 3. Force Cards/Popups to have solid backgrounds */
   .bg-card {
     background-color: hsl(var(--card)) !important;
+    border: none !important;
   }
   .bg-popover {
     background-color: hsl(var(--popover)) !important;
+  }
+}
+
+@layer components {
+  /* Card hover effect with light green border */
+  .card-hover {
+    @apply shadow-md border-primary/50;
+  }
+  
+  /* Progress ring stroke color */
+  .progress-ring {
+    stroke: currentColor;
+  }
+
+  /* Custom range slider for timers */
+  .custom-range {
+    -webkit-appearance: none;
+    appearance: none;
+    @apply h-1.5 w-full cursor-pointer rounded-full bg-secondary outline-none;
+  }
+
+  .custom-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    @apply h-4 w-4 rounded-full;
+    background-color: hsl(var(--primary));
+  }
+
+  .custom-range::-moz-range-thumb {
+    @apply h-4 w-4 rounded-full border-0;
+    background-color: hsl(var(--primary));
   }
 }

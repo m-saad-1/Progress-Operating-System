@@ -308,7 +308,11 @@ export class DatabaseService {
     
     try {
       // Test connection
-      await window.electronAPI.executeQuery('SELECT 1');
+      const response = await window.electronAPI.executeQuery('SELECT 1');
+      // Handle wrapped response - just check if it succeeded
+      if (response && typeof response === 'object' && 'success' in response && !response.success) {
+        throw new Error(response.error || 'Database connection test failed');
+      }
       this.isInitialized = true;
       console.log('Database service initialized');
     } catch (error) {
@@ -329,8 +333,17 @@ export class DatabaseService {
     }
     
     try {
-      const result = await window.electronAPI.executeQuery(query, params);
-      return Array.isArray(result) ? result : [];
+      const response = await window.electronAPI.executeQuery(query, params);
+      // Handle wrapped response from IPC { success: boolean, data: any }
+      if (response && typeof response === 'object' && 'success' in response) {
+        if (!response.success) {
+          throw new Error(response.error || 'Query failed');
+        }
+        const data = response.data;
+        return Array.isArray(data) ? data : [];
+      }
+      // Handle direct response
+      return Array.isArray(response) ? response : [];
     } catch (error) {
       console.error('Database query failed:', error);
       throw error;
@@ -348,7 +361,13 @@ export class DatabaseService {
     }
     
     try {
-      await window.electronAPI.executeTransaction(operations);
+      const response = await window.electronAPI.executeTransaction(operations);
+      // Handle wrapped response from IPC { success: boolean, data: any }
+      if (response && typeof response === 'object' && 'success' in response) {
+        if (!response.success) {
+          throw new Error(response.error || 'Transaction failed');
+        }
+      }
     } catch (error) {
       console.error('Database transaction failed:', error);
       throw error;
@@ -447,29 +466,71 @@ export class DatabaseService {
   async updateGoal(id: string, data: UpdateGoalDTO): Promise<void> {
     const now = new Date().toISOString();
     
+    // Build dynamic update query based on provided fields
+    const updates: string[] = [];
+    const params: any[] = [];
+    
+    if (data.title !== undefined) {
+      updates.push('title = ?');
+      params.push(data.title);
+    }
+    if (data.description !== undefined) {
+      updates.push('description = ?');
+      params.push(data.description || '');
+    }
+    if (data.category !== undefined) {
+      updates.push('category = ?');
+      params.push(data.category);
+    }
+    if (data.priority !== undefined) {
+      updates.push('priority = ?');
+      params.push(data.priority);
+    }
+    if (data.status !== undefined) {
+      updates.push('status = ?');
+      params.push(data.status);
+      // Set progress to 100 when marking as completed
+      if (data.status === 'completed' && data.progress === undefined) {
+        updates.push('progress = ?');
+        params.push(100);
+      }
+    }
+    if (data.target_date !== undefined) {
+      updates.push('target_date = ?');
+      params.push(data.target_date || null);
+    }
+    if (data.motivation !== undefined) {
+      updates.push('motivation = ?');
+      params.push(data.motivation || '');
+    }
+    if (data.review_frequency !== undefined) {
+      updates.push('review_frequency = ?');
+      params.push(data.review_frequency);
+    }
+    if (data.progress_method !== undefined) {
+      updates.push('progress_method = ?');
+      params.push(data.progress_method);
+    }
+    if (data.progress !== undefined) {
+      updates.push('progress = ?');
+      params.push(data.progress);
+    }
+    if (data.tags !== undefined) {
+      updates.push('tags = ?');
+      params.push(JSON.stringify(data.tags || []));
+    }
+    
+    // Always update timestamp and version
+    updates.push('updated_at = ?');
+    params.push(now);
+    updates.push('version = version + 1');
+    
+    // Add the ID at the end for the WHERE clause
+    params.push(id);
+    
     await this.executeTransaction([{
-      query: `
-        UPDATE goals 
-        SET title = ?, description = ?, category = ?, priority = ?, status = ?,
-            target_date = ?, motivation = ?, review_frequency = ?, 
-            progress_method = ?, progress = ?, tags = ?, updated_at = ?, version = version + 1
-        WHERE id = ?
-      `,
-      params: [
-        data.title,
-        data.description || '',
-        data.category || 'personal',
-        data.priority || 'medium',
-        data.status || 'active',
-        data.target_date || null,
-        data.motivation || '',
-        data.review_frequency || 'weekly',
-        data.progress_method || 'manual',
-        data.progress || 0,
-        JSON.stringify(data.tags || []),
-        now,
-        id,
-      ]
+      query: `UPDATE goals SET ${updates.join(', ')} WHERE id = ?`,
+      params
     }]);
   }
 
@@ -602,28 +663,72 @@ export class DatabaseService {
   async updateTask(id: string, data: UpdateTaskDTO): Promise<void> {
     const now = new Date().toISOString();
     
+    // Build dynamic update query based on provided fields
+    const updates: string[] = [];
+    const params: any[] = [];
+    
+    if (data.title !== undefined) {
+      updates.push('title = ?');
+      params.push(data.title);
+    }
+    if (data.description !== undefined) {
+      updates.push('description = ?');
+      params.push(data.description || '');
+    }
+    if (data.due_date !== undefined) {
+      updates.push('due_date = ?');
+      params.push(data.due_date || null);
+    }
+    if (data.priority !== undefined) {
+      updates.push('priority = ?');
+      params.push(data.priority);
+    }
+    if (data.status !== undefined) {
+      updates.push('status = ?');
+      params.push(data.status);
+      // Set completed_at when marking as completed
+      if (data.status === 'completed') {
+        updates.push('completed_at = ?');
+        params.push(now);
+        updates.push('progress = ?');
+        params.push(100);
+      } else if (data.status === 'pending') {
+        updates.push('completed_at = ?');
+        params.push(null);
+      }
+    }
+    if (data.progress !== undefined) {
+      updates.push('progress = ?');
+      params.push(data.progress);
+    }
+    if (data.estimated_time !== undefined) {
+      updates.push('estimated_time = ?');
+      params.push(data.estimated_time || null);
+    }
+    if (data.actual_time !== undefined) {
+      updates.push('actual_time = ?');
+      params.push(data.actual_time || null);
+    }
+    if (data.goal_id !== undefined) {
+      updates.push('goal_id = ?');
+      params.push(data.goal_id || null);
+    }
+    if (data.tags !== undefined) {
+      updates.push('tags = ?');
+      params.push(JSON.stringify(data.tags || []));
+    }
+    
+    // Always update timestamp and version
+    updates.push('updated_at = ?');
+    params.push(now);
+    updates.push('version = version + 1');
+    
+    // Add the ID at the end for the WHERE clause
+    params.push(id);
+    
     await this.executeTransaction([{
-      query: `
-        UPDATE tasks 
-        SET title = ?, description = ?, due_date = ?, priority = ?, status = ?,
-            progress = ?, estimated_time = ?, actual_time = ?, goal_id = ?, 
-            tags = ?, updated_at = ?, version = version + 1
-        WHERE id = ?
-      `,
-      params: [
-        data.title,
-        data.description || '',
-        data.due_date || null,
-        data.priority || 'medium',
-        data.status || 'pending',
-        data.progress || 0,
-        data.estimated_time || null,
-        data.actual_time || null,
-        data.goal_id || null,
-        JSON.stringify(data.tags || []),
-        now,
-        id,
-      ]
+      query: `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`,
+      params
     }]);
   }
 

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { Task, Habit, Goal } from '../../../../shared/types'
 
 interface Notification {
   id: string
@@ -23,12 +24,28 @@ interface Store {
   animationsEnabled: boolean
   soundEnabled: boolean
   
-  // Progress data
-  dailyProgress: number
-  weeklyConsistency: number
-  monthlyGoals: number
-  yearlyAchievements: number
-  
+  // Data
+  tasks: Task[]
+  habits: Habit[]
+  goals: Goal[]
+
+  setInitialData: (data: { tasks: Task[]; habits: Habit[]; goals: Goal[] }) => void
+
+  // Task Actions
+  addTask: (task: Task) => void
+  updateTask: (task: Task) => void
+  deleteTask: (taskId: string) => void
+
+  // Habit Actions
+  addHabit: (habit: Habit) => void
+  updateHabit: (habit: Habit) => void
+  deleteHabit: (habitId: string) => void
+
+  // Goal Actions
+  addGoal: (goal: Goal) => void
+  updateGoal: (goal: Goal) => void
+  deleteGoal: (goalId: string) => void
+
   // Notifications
   notifications: Notification[]
   addNotification: (notification: Omit<Notification, 'id' | 'read'>) => void
@@ -49,7 +66,6 @@ interface Store {
   toggleSidebar: () => void
   toggleCommandPalette: () => void
   toggleFocusMode: () => void
-  updateProgress: (daily: number, weekly: number) => void
   enableSync: (enabled: boolean) => void
   updateLastSync: () => void
   updateSyncStatus: (status: 'idle' | 'syncing' | 'error') => void
@@ -71,31 +87,42 @@ export const useStore = create<Store>()(
       animationsEnabled: true,
       soundEnabled: true,
       
-      // Progress data
-      dailyProgress: 65,
-      weeklyConsistency: 82,
-      monthlyGoals: 3,
-      yearlyAchievements: 12,
+      // Data
+      tasks: [],
+      habits: [],
+      goals: [],
+
+      setInitialData: (data) => set(data),
+
+      // Task Actions
+      addTask: (task) => set((state) => ({ tasks: [...state.tasks, task] })),
+      updateTask: (task) => set((state) => ({
+        tasks: state.tasks.map((t) => (t.id === task.id ? task : t)),
+      })),
+      deleteTask: (taskId) => set((state) => ({
+        tasks: state.tasks.filter((t) => t.id !== taskId),
+      })),
+
+      // Habit Actions
+      addHabit: (habit) => set((state) => ({ habits: [...state.habits, habit] })),
+      updateHabit: (habit) => set((state) => ({
+        habits: state.habits.map((h) => (h.id === habit.id ? habit : h)),
+      })),
+      deleteHabit: (habitId) => set((state) => ({
+        habits: state.habits.filter((h) => h.id !== habitId),
+      })),
+
+      // Goal Actions
+      addGoal: (goal) => set((state) => ({ goals: [...state.goals, goal] })),
+      updateGoal: (goal) => set((state) => ({
+        goals: state.goals.map((g) => (g.id === goal.id ? goal : g)),
+      })),
+      deleteGoal: (goalId) => set((state) => ({
+        goals: state.goals.filter((g) => g.id !== goalId),
+      })),
       
       // Notifications
-      notifications: [
-        {
-          id: '1',
-          title: 'Backup Completed',
-          message: 'Daily backup was completed successfully',
-          type: 'success',
-          time: '2 hours ago',
-          read: false,
-        },
-        {
-          id: '2',
-          title: 'Goal Review Due',
-          message: 'Weekly goal review is scheduled for today',
-          type: 'warning',
-          time: '5 hours ago',
-          read: true,
-        },
-      ],
+      notifications: [],
       addNotification: (notification) =>
         set((state) => ({
           notifications: [
@@ -130,9 +157,6 @@ export const useStore = create<Store>()(
       toggleCommandPalette: () => 
         set((state) => ({ commandPaletteOpen: !state.commandPaletteOpen })),
       toggleFocusMode: () => set((state) => ({ focusMode: !state.focusMode })),
-      
-      updateProgress: (daily, weekly) => 
-        set({ dailyProgress: daily, weeklyConsistency: weekly }),
       
       enableSync: (enabled) => set({ syncEnabled: enabled }),
       updateLastSync: () => set({ lastSync: new Date() }),

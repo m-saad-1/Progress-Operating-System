@@ -1,10 +1,13 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { HashRouter as Router, Routes, Route } from 'react-router-dom';
 import { Toaster } from '@/components/ui/toaster'
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '@/components/theme-provider';
 import { ErrorBoundary } from '@/components/error-boundary';
+
+import { database } from '@/lib/database';
+import { useStore } from '@/store';
 
 // Layout
 import { MainLayout } from '@/components/layouts/main-layout';
@@ -24,6 +27,25 @@ import Archive from '@/pages/archive';
 const queryClient = new QueryClient();
 
 function App() {
+  const { setInitialData } = useStore();
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [tasks, habits, goals] = await Promise.all([
+          database.getTasks(),
+          database.getHabits(),
+          database.getGoals(),
+        ]);
+        setInitialData({ tasks, habits, goals });
+      } catch (error) {
+        console.error("Failed to fetch initial data:", error);
+      }
+    };
+
+    fetchData();
+  }, [setInitialData]);
+
   return (
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>

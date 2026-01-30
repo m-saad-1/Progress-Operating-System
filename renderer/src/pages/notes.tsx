@@ -176,10 +176,15 @@ export default function Notes() {
           WHERE n.deleted_at IS NULL
           ORDER BY updated_at DESC
         `)
-        return (Array.isArray(notes) ? notes : []).map((note: any) => ({
-          ...note,
-          tags: JSON.parse((note.tags as any) || '[]') as string[],
-        })) || []
+        return (Array.isArray(notes) ? notes : []).map((note: any) => {
+          let tags = []
+          try {
+            tags = typeof note.tags === 'string' ? JSON.parse(note.tags || '[]') : note.tags
+          } catch (e) {
+            console.warn('Failed to parse tags for note:', note.id)
+          }
+          return { ...note, tags: Array.isArray(tags) ? tags : [] }
+        })
       } catch (error) {
         console.error('Failed to fetch notes:', error)
         throw error
@@ -404,6 +409,11 @@ export default function Notes() {
       return
     }
 
+    if (!electron.isReady) {
+      toastError('System is not ready. Please try again.')
+      return
+    }
+
     if (isEditing) {
       updateNoteMutation.mutate({
         id: isEditing,
@@ -588,223 +598,246 @@ export default function Notes() {
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-4xl bg-card">
-              <DialogHeader>
+              <DialogHeader className="flex-shrink-0">
                 <DialogTitle>{isEditing ? 'Edit Note' : 'Create New Note'}</DialogTitle>
                 <DialogDescription>
                   Capture your thoughts, ideas, or reflections.
                 </DialogDescription>
               </DialogHeader>
               
-              <div className="space-y-4 py-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Note Title</label>
-                  <Input
-                    placeholder="Note title..."
-                    value={formData.title}
-                    onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                  />
-                </div>
-                
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Type</label>
-                    <Select
-                      value={formData.type}
-                      onValueChange={(value: Note['type']) => 
-                        setFormData({ ...formData, type: value })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="free">Free Note</SelectItem>
-                        <SelectItem value="daily">Daily Journal</SelectItem>
-                        <SelectItem value="weekly">Weekly Review</SelectItem>
-                        <SelectItem value="goal">Goal Note</SelectItem>
-                        <SelectItem value="task">Task Note</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Mood (Optional)</label>
-                    <Select
-                      value={formData.mood || "none"}
-                      onValueChange={(value) => 
-                        setFormData({ ...formData, mood: value === "none" ? "" : value })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="How are you feeling?" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">No mood</SelectItem>
-                        {moodOptions.map(mood => (
-                          <SelectItem key={mood.value} value={mood.value}>
-                            {mood.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Related Goal (Optional)</label>
-                    <Select
-                      value={formData.goal_id || "none"}
-                      onValueChange={(value) => 
-                        setFormData({ ...formData, goal_id: value === "none" ? "" : value })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select a goal..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                      <SelectItem value="none">No Goal</SelectItem>
-                        {goals?.map((goal: any) => (
-                          <SelectItem key={goal.id} value={goal.id}>
-                            {goal.title}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Related Task (Optional)</label>
-                    <Select
-                      value={formData.task_id || "none"}
-                      onValueChange={(value) => 
-                        setFormData({ ...formData, task_id: value === "none" ? "" : value })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select a task..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">No Task</SelectItem>
-                        {tasks?.map((task: any) => (
-                          <SelectItem key={task.id} value={task.id}>
-                            {task.title}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                
-                {/* Formatting toolbar */}
-                <div className="flex items-center gap-1 p-2 border rounded-lg">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleFormatText('bold')}
-                    title="Bold"
-                  >
-                    <span className="font-bold">B</span>
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleFormatText('italic')}
-                    title="Italic"
-                  >
-                    <span className="italic">I</span>
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleFormatText('code')}
-                    title="Code"
-                  >
-                    <code className="text-xs">{'<>'}</code>
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleFormatText('list')}
-                    title="Bullet List"
-                  >
-                    <span>•</span>
-                  </Button>
-                  <div className="flex-1"></div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setPreviewMode(!previewMode)}
-                  >
-                    {previewMode ? 'Edit' : 'Preview'}
-                  </Button>
-                </div>
-                
-                {/* Content editor/preview */}
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Content</label>
-                  {previewMode ? (
-                    <div className="min-h-[300px] p-4 border rounded-lg prose prose-sm max-w-none">
-                      <h1>{formData.title}</h1>
-                      <div dangerouslySetInnerHTML={{ 
-                        __html: formData.content
-                          .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                          .replace(/\*(.*?)\*/g, '<em>$1</em>')
-                          .replace(/`(.*?)`/g, '<code>$1</code>')
-                          .replace(/\n/g, '<br>')
-                      }} />
-                    </div>
-                  ) : (
-                    <Textarea
-                      ref={textareaRef}
-                      placeholder="Write your note here... (Markdown supported)"
-                      value={formData.content}
-                      onChange={(e) => setFormData({ ...formData, content: e.target.value })}
-                      rows={12}
-                      className="font-mono text-sm"
-                    />
-                  )}
-                </div>
-                
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Tags</label>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Add a tag..."
-                      value={newTag}
-                      onChange={(e) => setNewTag(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && addTag()}
-                    />
-                    <Button type="button" onClick={addTag}>
-                      Add
-                    </Button>
-                  </div>
-                  {formData.tags.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      {formData.tags.map(tag => (
-                        <Badge key={tag} variant="secondary" className="gap-1">
-                          <Tag className="h-3 w-3" />
-                          {tag}
-                          <button
-                            type="button"
-                            onClick={() => removeTag(tag)}
-                            className="ml-1 hover:text-destructive"
+              <div className="flex-1 overflow-y-auto pr-2 -mr-2 scroll-smooth">
+                <div className="space-y-6 py-4">
+                  {/* Basic Information Section */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Basic Information</h4>
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Note Title</label>
+                        <Input
+                          placeholder="Note title..."
+                          value={formData.title}
+                          onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                          className="bg-secondary/50 border-green-500/50 focus-visible:ring-primary/50"
+                        />
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">Type</label>
+                          <Select
+                            value={formData.type}
+                            onValueChange={(value: Note['type']) => 
+                              setFormData({ ...formData, type: value })
+                            }
                           >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </Badge>
-                      ))}
+                            <SelectTrigger className="bg-secondary/50 border-green-500/50 focus:ring-primary/50">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="free">Free Note</SelectItem>
+                              <SelectItem value="daily">Daily Journal</SelectItem>
+                              <SelectItem value="weekly">Weekly Review</SelectItem>
+                              <SelectItem value="goal">Goal Note</SelectItem>
+                              <SelectItem value="task">Task Note</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">Mood (Optional)</label>
+                          <Select
+                            value={formData.mood || "none"}
+                            onValueChange={(value) => 
+                              setFormData({ ...formData, mood: value === "none" ? "" : value })
+                            }
+                          >
+                            <SelectTrigger className="bg-secondary/50 border-green-500/50 focus:ring-primary/50">
+                              <SelectValue placeholder="How are you feeling?" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="none">No mood</SelectItem>
+                              {moodOptions.map(mood => (
+                                <SelectItem key={mood.value} value={mood.value}>
+                                  {mood.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
                     </div>
-                  )}
+                  </div>
+                  
+                  {/* Relationships Section */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Relationships</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Related Goal (Optional)</label>
+                        <Select
+                          value={formData.goal_id || "none"}
+                          onValueChange={(value) => 
+                            setFormData({ ...formData, goal_id: value === "none" ? "" : value })
+                          }
+                        >
+                          <SelectTrigger className="bg-secondary/50 border-green-500/50 focus:ring-primary/50">
+                            <SelectValue placeholder="Select a goal..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                          <SelectItem value="none">No Goal</SelectItem>
+                            {goals?.map((goal: any) => (
+                              <SelectItem key={goal.id} value={goal.id}>
+                                {goal.title}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Related Task (Optional)</label>
+                        <Select
+                          value={formData.task_id || "none"}
+                          onValueChange={(value) => 
+                            setFormData({ ...formData, task_id: value === "none" ? "" : value })
+                          }
+                        >
+                          <SelectTrigger className="bg-secondary/50 border-green-500/50 focus:ring-primary/50">
+                            <SelectValue placeholder="Select a task..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">No Task</SelectItem>
+                            {tasks?.map((task: any) => (
+                              <SelectItem key={task.id} value={task.id}>
+                                {task.title}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Content Section */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Content</h4>
+                    <div className="space-y-3">
+                      {/* Formatting toolbar */}
+                      <div className="flex items-center gap-1 p-2 border rounded-lg">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleFormatText('bold')}
+                          title="Bold"
+                        >
+                          <span className="font-bold">B</span>
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleFormatText('italic')}
+                          title="Italic"
+                        >
+                          <span className="italic">I</span>
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleFormatText('code')}
+                          title="Code"
+                        >
+                          <code className="text-xs">{'<>'}</code>
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleFormatText('list')}
+                          title="Bullet List"
+                        >
+                          <span>•</span>
+                        </Button>
+                        <div className="flex-1"></div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setPreviewMode(!previewMode)}
+                        >
+                          {previewMode ? 'Edit' : 'Preview'}
+                        </Button>
+                      </div>
+                      
+                      {/* Content editor/preview */}
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Content</label>
+                        {previewMode ? (
+                          <div className="min-h-[200px] max-h-[300px] overflow-y-auto p-4 border rounded-lg prose prose-sm max-w-none">
+                            <h1>{formData.title}</h1>
+                            <div dangerouslySetInnerHTML={{ 
+                              __html: formData.content
+                                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                                .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                                .replace(/`(.*?)`/g, '<code>$1</code>')
+                                .replace(/\n/g, '<br>')
+                            }} />
+                          </div>
+                        ) : (
+                          <Textarea
+                            ref={textareaRef}
+                            placeholder="Write your note here... (Markdown supported)"
+                            value={formData.content}
+                            onChange={(e) => setFormData({ ...formData, content: e.target.value })}
+                            rows={8}
+                            className="font-mono text-sm bg-secondary/50 border-green-500/50 focus-visible:ring-primary/50 min-h-[200px] max-h-[300px]"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Tags Section */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Tags</h4>
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="Add a tag..."
+                          value={newTag}
+                          onChange={(e) => setNewTag(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && addTag()}
+                          className="bg-secondary/50 border-green-500/50 focus-visible:ring-primary/50"
+                        />
+                        <Button type="button" onClick={addTag}>
+                          Add
+                        </Button>
+                      </div>
+                      {formData.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          {formData.tags.map(tag => (
+                            <Badge key={tag} variant="secondary" className="gap-1">
+                              <Tag className="h-3 w-3" />
+                              {tag}
+                              <button
+                                type="button"
+                                onClick={() => removeTag(tag)}
+                                className="ml-1 hover:text-destructive"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
               
-              <DialogFooter>
+              <DialogFooter className="flex-shrink-0 border-t pt-4">
                 <Button variant="outline" onClick={() => {
                   setIsCreating(false)
                   setIsEditing(null)
@@ -889,13 +922,13 @@ export default function Notes() {
                 placeholder="Search notes..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10"
+                className="pl-10 bg-secondary/50 border border-green-500/50 focus-visible:ring-1 focus-visible:ring-primary/50"
               />
             </div>
             
             <div className="flex flex-wrap gap-2">
               <Select value={selectedType} onValueChange={(value) => setSelectedType(value as any)}>
-                <SelectTrigger className="w-[140px]">
+                <SelectTrigger className="w-[140px] bg-secondary/50 border border-green-500/50 focus:ring-1 focus:ring-primary/50">
                   <SelectValue placeholder="Type" />
                 </SelectTrigger>
                 <SelectContent>
@@ -909,7 +942,7 @@ export default function Notes() {
               </Select>
               
               <Select value={selectedMood} onValueChange={setSelectedMood}>
-                <SelectTrigger className="w-[140px]">
+                <SelectTrigger className="w-[140px] bg-secondary/50 border border-green-500/50 focus:ring-1 focus:ring-primary/50">
                   <SelectValue placeholder="Mood" />
                 </SelectTrigger>
                 <SelectContent>
@@ -924,7 +957,7 @@ export default function Notes() {
               </Select>
               
               <Select value={selectedGoal} onValueChange={setSelectedGoal}>
-                <SelectTrigger className="w-[140px]">
+                <SelectTrigger className="w-[140px] bg-secondary/50 border border-green-500/50 focus:ring-1 focus:ring-primary/50">
                   <SelectValue placeholder="Goal" />
                 </SelectTrigger>
                 <SelectContent>
@@ -939,7 +972,7 @@ export default function Notes() {
               </Select>
               
               <Select value={sortBy} onValueChange={(value) => setSortBy(value as 'updated' | 'created' | 'title')}>
-                <SelectTrigger className="w-[140px]">
+                <SelectTrigger className="w-[140px] bg-secondary/50 border border-green-500/50 focus:ring-1 focus:ring-primary/50">
                   <SelectValue placeholder="Sort by" />
                 </SelectTrigger>
                 <SelectContent>

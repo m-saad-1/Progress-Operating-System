@@ -221,7 +221,7 @@ export default function Time() {
                         setTimeLeft(parseInt(e.target.value) * 60)
                       }
                     }}
-                    className="w-48"
+                    className="w-48 custom-range disabled:opacity-50 disabled:cursor-not-allowed"
                     disabled={isRunning}
                   />
                   <span className="text-sm w-12">
@@ -464,35 +464,27 @@ export default function Time() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="p-4 rounded-lg bg-primary/5 border border-primary/10">
-                <div className="flex items-center gap-2 mb-2">
-                  <Zap className="h-5 w-5 text-primary" />
-                  <h3 className="font-semibold">Peak Productivity Hours</h3>
+              {getProductivityScore() > 80 ? (
+                <div className="p-4 rounded-lg bg-primary/5 border border-primary/10">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Zap className="h-5 w-5 text-primary" />
+                    <h3 className="font-semibold">High Productivity</h3>
+                  </div>
+                  <p className="text-sm">
+                    You are hitting your daily focus targets consistently.
+                  </p>
                 </div>
-                <p className="text-sm">
-                  You're most productive between 9 AM - 12 PM. Consider scheduling important tasks during this window.
-                </p>
-              </div>
-              
-              <div className="p-4 rounded-lg bg-status-completed/5 border border-status-completed/10">
-                <div className="flex items-center gap-2 mb-2">
-                  <Coffee className="h-5 w-5 text-status-completed" />
-                  <h3 className="font-semibold">Break Optimization</h3>
+              ) : (
+                 <div className="p-4 rounded-lg bg-primary/5 border border-primary/10">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Target className="h-5 w-5 text-primary" />
+                    <h3 className="font-semibold">Focus Goal</h3>
+                  </div>
+                  <p className="text-sm">
+                    Try to increase your focus time to reach your daily target.
+                  </p>
                 </div>
-                <p className="text-sm">
-                  Your breaks average 8 minutes. Try the 5-minute break rule to maintain focus throughout the day.
-                </p>
-              </div>
-              
-              <div className="p-4 rounded-lg bg-category-learning/5 border border-category-learning/10">
-                <div className="flex items-center gap-2 mb-2">
-                  <Target className="h-5 w-5 text-category-learning" />
-                  <h3 className="font-semibold">Deep Work Sessions</h3>
-                </div>
-                <p className="text-sm">
-                  You average 42-minute focus sessions. Consider extending to 50-minute sessions for deeper work.
-                </p>
-              </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -503,22 +495,11 @@ export default function Time() {
         <CardHeader>
           <CardTitle>Quick Time Blocks</CardTitle>
           <CardDescription>
-            Common focus session templates
+            Common focus durations
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Button
-              variant="outline"
-              className="h-20 flex-col"
-              onClick={() => startTimer('pomodoro')}
-              disabled={isRunning}
-            >
-              <Timer className="h-6 w-6 mb-2" />
-              <span className="font-bold">25 min</span>
-              <span className="text-xs text-muted-foreground">Pomodoro</span>
-            </Button>
-            
+          <div className="grid grid-cols-3 gap-4">
             <Button
               variant="outline"
               className="h-20 flex-col"

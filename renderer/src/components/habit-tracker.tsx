@@ -93,7 +93,7 @@ export function HabitTracker({ habits, compact = false }: HabitTrackerProps) {
                   completed: checked === true
                 })
               }}
-              disabled={updateMutation.isPending}
+              disabled={updateMutation.isPending || !electron.isReady}
             />
             <div>
               <div className="font-medium">{habit.title}</div>

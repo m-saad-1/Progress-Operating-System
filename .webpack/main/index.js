@@ -553,6 +553,8 @@ class ProgressDatabase {
         console.log('ProgressDatabase: Pragmas set.');
         // Run migrations
         await this.runMigrations();
+        // Initialize demo data if database is empty
+        await this.initializeDemoData();
         // Setup backup schedule
         this.setupBackupSchedule();
         // Setup change tracking
@@ -861,11 +863,39 @@ class ProgressDatabase {
           END;
         `,
             },
+            // Version 5: Add missing completed_at column to tasks if it doesn't exist
+            {
+                version: 5,
+                up: `
+          -- Add completed_at column if missing (for databases created before this was in the schema)
+          -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, so we check via pragma
+          -- This is safe because SQLite ignores duplicate column additions silently via transaction rollback
+        `,
+            },
         ];
         // Run migrations
         for (const migration of migrations) {
             if (migration.version > currentVersion) {
                 console.log(`Running migration to version ${migration.version}`);
+                // Special handling for version 5 - check if completed_at column exists
+                if (migration.version === 5) {
+                    try {
+                        const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all();
+                        const hasCompletedAt = tableInfo.some(col => col.name === 'completed_at');
+                        if (!hasCompletedAt) {
+                            console.log('Adding missing completed_at column to tasks table');
+                            this.db.exec('ALTER TABLE tasks ADD COLUMN completed_at TEXT');
+                        }
+                        // Update version
+                        this.db.exec(`PRAGMA user_version = ${migration.version}`);
+                        console.log(`Migration to version ${migration.version} completed successfully`);
+                        continue;
+                    }
+                    catch (error) {
+                        console.error('Failed to check/add completed_at column:', error);
+                        throw error;
+                    }
+                }
                 // Run migration in transaction
                 const transaction = this.db.transaction(() => {
                     try {
@@ -898,6 +928,18 @@ class ProgressDatabase {
                 }
             }
         }
+        // Also check completed_at column even if migrations are up to date (for older databases)
+        try {
+            const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all();
+            const hasCompletedAt = tableInfo.some(col => col.name === 'completed_at');
+            if (!hasCompletedAt) {
+                console.log('Adding missing completed_at column to tasks table (post-migration check)');
+                this.db.exec('ALTER TABLE tasks ADD COLUMN completed_at TEXT');
+            }
+        }
+        catch (error) {
+            console.error('Failed to check/add completed_at column (post-migration):', error);
+        }
     }
     setupBackupSchedule() {
         // Create backup every 24 hours
@@ -908,6 +950,219 @@ class ProgressDatabase {
     setupChangeTracking() {
         // Additional triggers and setup
         // This can be expanded based on requirements
+    }
+    async initializeDemoData() {
+        console.log('ProgressDatabase: Checking if demo data is needed');
+        // Check if database already has data
+        const taskCount = this.db.prepare('SELECT COUNT(*) as count FROM tasks').get();
+        const goalCount = this.db.prepare('SELECT COUNT(*) as count FROM goals').get();
+        const habitCount = this.db.prepare('SELECT COUNT(*) as count FROM habits').get();
+        if (taskCount.count > 0 || goalCount.count > 0 || habitCount.count > 0) {
+            console.log('ProgressDatabase: Database already has data, skipping demo data initialization');
+            return;
+        }
+        console.log('ProgressDatabase: Initializing demo data');
+        const now = new Date().toISOString();
+        const today = new Date();
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const nextWeek = new Date(today);
+        nextWeek.setDate(nextWeek.getDate() + 7);
+        try {
+            // Create demo goals
+            const demoGoals = [
+                {
+                    id: crypto_1.default.randomUUID(),
+                    title: 'Complete Personal OS Setup',
+                    description: 'Set up and customize the Personal OS application for daily productivity',
+                    category: 'personal',
+                    priority: 'high',
+                    status: 'active',
+                    start_date: now,
+                    target_date: nextWeek.toISOString(),
+                    motivation: 'Improve daily productivity and organization',
+                    review_frequency: 'weekly',
+                    progress_method: 'task-based',
+                    progress: 25,
+                    tags: JSON.stringify(['productivity', 'setup']),
+                    created_at: now,
+                    updated_at: now,
+                    deleted_at: null,
+                    version: 1
+                },
+                {
+                    id: crypto_1.default.randomUUID(),
+                    title: 'Learn New Skills',
+                    description: 'Dedicate time to learning and personal development',
+                    category: 'learning',
+                    priority: 'medium',
+                    status: 'active',
+                    start_date: now,
+                    target_date: null,
+                    motivation: 'Continuous improvement and growth',
+                    review_frequency: 'monthly',
+                    progress_method: 'manual',
+                    progress: 10,
+                    tags: JSON.stringify(['learning', 'development']),
+                    created_at: now,
+                    updated_at: now,
+                    deleted_at: null,
+                    version: 1
+                }
+            ];
+            for (const goal of demoGoals) {
+                this.db.prepare(`
+          INSERT INTO goals (
+            id, title, description, category, priority, status, start_date, target_date,
+            motivation, review_frequency, progress_method, progress, tags,
+            created_at, updated_at, deleted_at, version
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(goal.id, goal.title, goal.description, goal.category, goal.priority, goal.status, goal.start_date, goal.target_date, goal.motivation, goal.review_frequency, goal.progress_method, goal.progress, goal.tags, goal.created_at, goal.updated_at, goal.deleted_at, goal.version);
+            }
+            // Create demo tasks
+            const demoTasks = [
+                {
+                    id: crypto_1.default.randomUUID(),
+                    title: 'Explore Dashboard Features',
+                    description: 'Take a tour of the dashboard and familiarize yourself with all features',
+                    due_date: today.toISOString(),
+                    priority: 'high',
+                    status: 'pending',
+                    progress: 0,
+                    estimated_time: 30,
+                    actual_time: null,
+                    recurrence_rule: null,
+                    project_id: null,
+                    goal_id: demoGoals[0].id,
+                    parent_task_id: null,
+                    tags: JSON.stringify(['onboarding', 'tutorial']),
+                    created_at: now,
+                    updated_at: now,
+                    completed_at: null,
+                    deleted_at: null,
+                    version: 1
+                },
+                {
+                    id: crypto_1.default.randomUUID(),
+                    title: 'Create Your First Goal',
+                    description: 'Navigate to the Goals section and create a personal goal',
+                    due_date: today.toISOString(),
+                    priority: 'medium',
+                    status: 'pending',
+                    progress: 0,
+                    estimated_time: 15,
+                    actual_time: null,
+                    recurrence_rule: null,
+                    project_id: null,
+                    goal_id: demoGoals[0].id,
+                    parent_task_id: null,
+                    tags: JSON.stringify(['onboarding', 'goals']),
+                    created_at: now,
+                    updated_at: now,
+                    completed_at: null,
+                    deleted_at: null,
+                    version: 1
+                },
+                {
+                    id: crypto_1.default.randomUUID(),
+                    title: 'Set Up Daily Habits',
+                    description: 'Create habits you want to track daily in the Habits section',
+                    due_date: tomorrow.toISOString(),
+                    priority: 'medium',
+                    status: 'pending',
+                    progress: 0,
+                    estimated_time: 20,
+                    actual_time: null,
+                    recurrence_rule: null,
+                    project_id: null,
+                    goal_id: demoGoals[0].id,
+                    parent_task_id: null,
+                    tags: JSON.stringify(['onboarding', 'habits']),
+                    created_at: now,
+                    updated_at: now,
+                    completed_at: null,
+                    deleted_at: null,
+                    version: 1
+                },
+                {
+                    id: crypto_1.default.randomUUID(),
+                    title: 'Review Analytics',
+                    description: 'Check out the Analytics section to see your progress visualizations',
+                    due_date: nextWeek.toISOString(),
+                    priority: 'low',
+                    status: 'pending',
+                    progress: 0,
+                    estimated_time: 10,
+                    actual_time: null,
+                    recurrence_rule: null,
+                    project_id: null,
+                    goal_id: demoGoals[0].id,
+                    parent_task_id: null,
+                    tags: JSON.stringify(['onboarding', 'analytics']),
+                    created_at: now,
+                    updated_at: now,
+                    completed_at: null,
+                    deleted_at: null,
+                    version: 1
+                }
+            ];
+            for (const task of demoTasks) {
+                this.db.prepare(`
+          INSERT INTO tasks (
+            id, title, description, due_date, priority, status, progress,
+            estimated_time, actual_time, recurrence_rule, project_id, goal_id,
+            parent_task_id, tags, created_at, updated_at, completed_at, deleted_at, version
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(task.id, task.title, task.description, task.due_date, task.priority, task.status, task.progress, task.estimated_time, task.actual_time, task.recurrence_rule, task.project_id, task.goal_id, task.parent_task_id, task.tags, task.created_at, task.updated_at, task.completed_at, task.deleted_at, task.version);
+            }
+            // Create demo habits
+            const demoHabits = [
+                {
+                    id: crypto_1.default.randomUUID(),
+                    title: 'Morning Review',
+                    description: 'Review goals and plan the day every morning',
+                    frequency: 'daily',
+                    schedule: JSON.stringify(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']),
+                    goal_id: demoGoals[1].id,
+                    streak_current: 0,
+                    streak_longest: 0,
+                    consistency_score: 0,
+                    created_at: now,
+                    updated_at: now,
+                    deleted_at: null,
+                    version: 1
+                },
+                {
+                    id: crypto_1.default.randomUUID(),
+                    title: 'Evening Reflection',
+                    description: 'Reflect on the day and update progress',
+                    frequency: 'daily',
+                    schedule: JSON.stringify(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']),
+                    goal_id: demoGoals[1].id,
+                    streak_current: 0,
+                    streak_longest: 0,
+                    consistency_score: 0,
+                    created_at: now,
+                    updated_at: now,
+                    deleted_at: null,
+                    version: 1
+                }
+            ];
+            for (const habit of demoHabits) {
+                this.db.prepare(`
+          INSERT INTO habits (
+            id, title, description, frequency, schedule, goal_id,
+            streak_current, streak_longest, consistency_score,
+            created_at, updated_at, deleted_at, version
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(habit.id, habit.title, habit.description, habit.frequency, habit.schedule, habit.goal_id, habit.streak_current, habit.streak_longest, habit.consistency_score, habit.created_at, habit.updated_at, habit.deleted_at, habit.version);
+            }
+            console.log('ProgressDatabase: Demo data initialized successfully');
+        }
+        catch (error) {
+            console.error('ProgressDatabase: Failed to initialize demo data:', error);
+            // Don't throw - allow app to continue even if demo data fails
+        }
     }
     // Public API methods
     executeQuery(query, params = []) {

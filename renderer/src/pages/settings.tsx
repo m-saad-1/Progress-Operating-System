@@ -61,8 +61,8 @@ export default function Settings() {
   
   const [settings, setSettings] = useState<SettingsState>({
     // Profile
-    name: 'John Doe',
-    email: 'john@example.com',
+    name: '',
+    email: '',
     timezone: store.timezone,
     weekStart: store.weekStart,
     language: store.language,

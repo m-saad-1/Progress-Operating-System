@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Sidebar } from './sidebar'
 import { Header } from './header'
@@ -46,13 +46,12 @@ export function MainLayout() {
                 <div className="mr-2 h-2 w-2 rounded-full bg-status-active animate-pulse" />
                 All systems operational
               </span>
-              <span className="hidden sm:inline-block">Last backup: Today, 02:00 AM</span>
             </div>
             
             <div className="flex items-center space-x-4">
               <span>Progress OS v1.0.0</span>
               <span>•</span>
-              <span>© 2026</span>
+              <span>© {new Date().getFullYear()}</span>
             </div>
           </footer>
         </div>

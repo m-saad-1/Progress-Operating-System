@@ -104,14 +104,32 @@ export const useElectron = () => {
   
   return {
     isReady,
-    executeQuery: async (query: string, params?: any[]) => {
+    executeQuery: async <T = any>(query: string, params?: any[]): Promise<T[]> => {
       return safeElectronCall(async () => {
-        return window.electronAPI.executeQuery(query, params)
+        const response = await window.electronAPI.executeQuery(query, params)
+        // Handle wrapped response from IPC { success: boolean, data: any }
+        if (response && typeof response === 'object' && 'success' in response) {
+          if (!response.success) {
+            throw new Error(response.error || 'Query failed')
+          }
+          const data = response.data
+          return Array.isArray(data) ? data : []
+        }
+        // Handle direct response
+        return Array.isArray(response) ? response : []
       }, [])
     },
     executeTransaction: async (operations: Array<{query: string, params?: any[]}>) => {
       return safeElectronCall(async () => {
-        return window.electronAPI.executeTransaction(operations)
+        const response = await window.electronAPI.executeTransaction(operations)
+        // Handle wrapped response from IPC { success: boolean, data: any }
+        if (response && typeof response === 'object' && 'success' in response) {
+          if (!response.success) {
+            throw new Error(response.error || 'Transaction failed')
+          }
+          return response.data
+        }
+        return response
       })
     },
     createBackup: async () => {

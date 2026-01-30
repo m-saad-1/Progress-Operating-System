@@ -361,7 +361,7 @@ export default function Archive() {
                 placeholder="Search archived items..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10"
+                className="pl-10 bg-secondary/50 border border-green-500/50 focus-visible:ring-1 focus-visible:ring-primary/50"
               />
             </div>
           </div>

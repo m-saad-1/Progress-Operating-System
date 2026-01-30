@@ -4,15 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { MoreHorizontal } from 'lucide-react';
-
-// Define the shape of a task object based on dashboard.tsx
-interface Task {
-  id: number;
-  title: string;
-  priority?: 'critical' | 'high' | 'medium' | 'low';
-  due_date?: string;
-  // Add other properties as needed from your actual task structure
-}
+import { Task, TaskStatus } from '../types';
 
 interface TaskListProps {
   tasks: Task[];

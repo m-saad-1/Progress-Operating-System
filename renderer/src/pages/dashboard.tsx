@@ -34,42 +34,7 @@ import { ProgressChart } from '@/components/progress-chart'
 import { PomodoroTimer } from '@/components/pomodoro-timer'
 import { QuickActions } from '@/components/quick-actions'
 import { cn } from '@/lib/utils'
-
-interface Task {
-  id: string;
-  title: string;
-  description?: string;
-  due_date: string; // ISO string
-  status: 'pending' | 'completed' | 'in-progress';
-  priority: 'critical' | 'high' | 'medium' | 'low';
-  deleted_at?: string; // ISO string
-}
-
-interface Goal {
-  id: string;
-  title: string;
-  description?: string;
-  category: string;
-  progress: number;
-  status: 'active' | 'completed' | 'archived';
-  priority: 'critical' | 'high' | 'medium' | 'low';
-  target_date?: string; // ISO string
-  completed_at?: string; // ISO string
-  deleted_at?: string; // ISO string
-}
-
-interface Habit {
-  id: string;
-  title: string;
-  description?: string;
-  frequency: 'daily' | 'weekly' | 'monthly';
-  schedule?: string; // JSON string for weekly/monthly
-  consistency_score: number;
-  streak_current: number;
-  streak_longest: number;
-  today_completed: 0 | 1 | null;
-  deleted_at?: string; // ISO string
-}
+import { Task, Goal, Habit } from '@/types'
 
 interface DashboardStats {
   completed_today: number;
@@ -92,6 +57,7 @@ interface DashboardData {
   habits: Habit[];
   stats: DashboardStats;
   achievements: Achievement[];
+  weeklyActivity: any[];
 }
 
 export default function Dashboard() {
@@ -157,7 +123,7 @@ export default function Dashboard() {
         `)
 
         // Fetch today's habits
-        const habits = await electron.executeQuery<Habit[]>(`
+        const rawHabits = await electron.executeQuery<any[]>(`
           SELECT h.*, 
                  (SELECT completed FROM habit_completions 
                   WHERE habit_id = h.id AND date = ?) as today_completed
@@ -169,6 +135,12 @@ export default function Dashboard() {
           )
           ORDER BY h.consistency_score DESC
         `, [format(today, 'yyyy-MM-dd'), format(today, 'EEEE').toLowerCase()])
+
+        const habits = (Array.isArray(rawHabits) ? rawHabits : []).map((h: any) => ({
+          ...h,
+          today_completed: !!h.today_completed,
+          schedule: typeof h.schedule === 'string' ? JSON.parse(h.schedule) : h.schedule
+        }))
 
         // Fetch dashboard statistics
         const stats = await electron.executeQuery<DashboardStats[]>(`
@@ -229,12 +201,31 @@ export default function Dashboard() {
           LIMIT 3
         `)
 
+        // Fetch weekly activity for chart
+        const weeklyActivity = await electron.executeQuery(`
+          WITH RECURSIVE dates(date) AS (
+            VALUES(?)
+            UNION ALL
+            SELECT date(date, '+1 day')
+            FROM dates
+            WHERE date < ?
+          )
+          SELECT 
+            d.date,
+            (SELECT COUNT(*) FROM tasks WHERE date(due_date) = d.date AND deleted_at IS NULL) as total_tasks,
+            (SELECT COUNT(*) FROM tasks WHERE date(completed_at) = d.date AND status = 'completed' AND deleted_at IS NULL) as completed_tasks,
+            (SELECT COUNT(*) FROM habit_completions WHERE date = d.date AND completed = 1) as completed_habits,
+            (SELECT COALESCE(SUM(duration), 0) / 3600.0 FROM time_blocks WHERE date(start_time) = d.date) as focus_time
+          FROM dates d
+        `, [format(subDays(today, 6), 'yyyy-MM-dd'), format(today, 'yyyy-MM-dd')])
+
         return { 
           tasks: Array.isArray(tasks) ? tasks : [], 
           goals: Array.isArray(goals) ? goals : [], 
           habits: Array.isArray(habits) ? habits : [], 
           stats: Array.isArray(stats) ? stats[0] || {} : {}, 
-          achievements: Array.isArray(achievements) ? achievements : [] 
+          achievements: Array.isArray(achievements) ? achievements : [],
+          weeklyActivity: Array.isArray(weeklyActivity) ? weeklyActivity : []
         }
       } catch (error) {
         console.error('Failed to fetch dashboard data:', error)
@@ -265,6 +256,28 @@ export default function Dashboard() {
       </div>
     )
   }
+
+  // Process chart data
+  const chartData = dashboardData?.weeklyActivity?.map((day: any) => {
+    const date = new Date(day.date)
+    const dayName = format(date, 'EEE')
+    const totalTasks = day.total_tasks || 0
+    const completedTasks = day.completed_tasks || 0
+    const completedHabits = day.completed_habits || 0
+    // Estimate productivity based on completion rate and focus time
+    const productivity = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 50 + (Math.min(day.focus_time || 0, 8) / 8) * 50) : 0
+
+    return {
+      date: dayName,
+      fullDate: day.date,
+      tasks: totalTasks,
+      completed: completedTasks,
+      habits: 5, // Placeholder for total habits
+      completedHabits: completedHabits,
+      productivity: productivity,
+      focusTime: Math.round((day.focus_time || 0) * 10) / 10
+    }
+  }) || []
 
   return (
     <div className="space-y-6 p-6">
@@ -390,7 +403,7 @@ export default function Dashboard() {
                 </div>
               ) : (dashboardData?.tasks?.length || 0) > 0 ? (
                 <TaskList 
-                  tasks={(dashboardData?.tasks || []) as any} 
+                  tasks={dashboardData?.tasks || []} 
                   showPriority={true}
                   showActions={true}
                   compact={true}
@@ -422,6 +435,7 @@ export default function Dashboard() {
                 days={7}
                 showHabits={true}
                 showTasks={true}
+                data={chartData}
               />
             </CardContent>
           </Card>
@@ -545,7 +559,7 @@ export default function Dashboard() {
                 </div>
               )}
               {(dashboardData?.goals?.length || 0) > 3 && (
-                <Button variant="ghost" size="sm" className="w-full">
+                <Button variant="ghost" size="sm" className="w-full bg-primary/5 text-primary border border-primary/10 hover:bg-primary/10">
                   View all goals ({dashboardData!.goals.length})
                 </Button>
               )}
@@ -598,35 +612,51 @@ export default function Dashboard() {
               <CardTitle>Quick Insights</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
-                <div className="flex items-center space-x-2 mb-1">
-                  <Zap className="h-4 w-4 text-primary" />
-                  <span className="text-sm font-medium">Peak Productivity</span>
+              {(dashboardData?.stats?.overdue_tasks || 0) > 0 ? (
+                <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20">
+                  <div className="flex items-center space-x-2 mb-1">
+                    <AlertCircle className="h-4 w-4 text-destructive" />
+                    <span className="text-sm font-medium text-destructive">Attention Needed</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    You have {dashboardData?.stats?.overdue_tasks} overdue tasks that need your attention.
+                  </p>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  You're most productive on Tuesday mornings
-                </p>
-              </div>
+              ) : (
+                <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
+                  <div className="flex items-center space-x-2 mb-1">
+                    <CheckCircle className="h-4 w-4 text-primary" />
+                    <span className="text-sm font-medium">All Caught Up</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    You have no overdue tasks. Great job keeping up!
+                  </p>
+                </div>
+              )}
               
-              <div className="p-3 rounded-lg bg-status-completed/5 border border-status-completed/10">
-                <div className="flex items-center space-x-2 mb-1">
-                  <TrendingUp className="h-4 w-4 text-status-completed" />
-                  <span className="text-sm font-medium">Consistency Up</span>
+              {(dashboardData?.stats?.avg_consistency || 0) > 80 && (
+                <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/20">
+                  <div className="flex items-center space-x-2 mb-1">
+                    <TrendingUp className="h-4 w-4 text-green-500" />
+                    <span className="text-sm font-medium text-green-500">High Consistency</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Your habit consistency is above 80%. Keep up the streak!
+                  </p>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Habit consistency increased 12% this week
-                </p>
-              </div>
-              
-              <div className="p-3 rounded-lg bg-category-learning/5 border border-category-learning/10">
-                <div className="flex items-center space-x-2 mb-1">
-                  <AlertCircle className="h-4 w-4 text-category-learning" />
-                  <span className="text-sm font-medium">Attention Needed</span>
+              )}
+
+              {(dashboardData?.stats?.completed_today || 0) > 0 && (
+                 <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
+                  <div className="flex items-center space-x-2 mb-1">
+                    <Zap className="h-4 w-4 text-primary" />
+                    <span className="text-sm font-medium">Momentum</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    You've completed {dashboardData?.stats?.completed_today} tasks today.
+                  </p>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  {dashboardData?.stats?.overdue_tasks || 0} tasks are overdue
-                </p>
-              </div>
+              )}
             </CardContent>
           </Card>
         </div>

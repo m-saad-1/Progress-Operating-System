@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Search, Bell, HelpCircle, Sun, Moon, Menu, X, Filter } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -62,7 +62,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search tasks, goals, notes..."
-              className="pl-10 pr-4"
+              className="pl-10 pr-4 bg-secondary/50 border border-green-500/50 focus-visible:ring-1 focus-visible:ring-primary/50"
               onFocus={() => setSearchOpen(true)}
               onBlur={() => setSearchOpen(false)}
             />
@@ -204,17 +204,9 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
               <span className="text-muted-foreground">System: Online</span>
             </div>
             <span className="text-muted-foreground">•</span>
-            <span className="text-muted-foreground">Last sync: 2 min ago</span>
-            <span className="text-muted-foreground">•</span>
             <Badge variant="secondary" className="font-normal">
               Local Mode
             </Badge>
-          </div>
-          <div className="flex items-center space-x-4">
-            <span className="text-muted-foreground">Storage: 85% used</span>
-            <div className="h-1.5 w-20 rounded-full bg-secondary overflow-hidden">
-              <div className="h-full w-4/5 bg-gradient-to-r from-primary to-primary/60 rounded-full" />
-            </div>
           </div>
         </div>
       </div>
