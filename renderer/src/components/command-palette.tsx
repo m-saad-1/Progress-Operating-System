@@ -19,6 +19,7 @@ import {
   Target,
   TrendingUp,
   User,
+  BookOpen,
 } from 'lucide-react'
 import { useHotkeys } from 'react-hotkeys-hook'
 
@@ -79,6 +80,26 @@ export function CommandPalette() {
       name: 'Notes',
       icon: FileText,
       action: () => navigate('/notes'),
+    },
+    {
+      name: 'Reviews',
+      icon: BookOpen,
+      action: () => navigate('/reviews'),
+    },
+    {
+      name: 'Daily Review',
+      icon: BookOpen,
+      action: () => navigate('/reviews?type=daily'),
+    },
+    {
+      name: 'Weekly Review',
+      icon: BookOpen,
+      action: () => navigate('/reviews?type=weekly'),
+    },
+    {
+      name: 'Monthly Review',
+      icon: BookOpen,
+      action: () => navigate('/reviews?type=monthly'),
     },
     {
       name: 'Analytics',

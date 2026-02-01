@@ -134,7 +134,7 @@ export function PomodoroTimer() {
             {isRunning ? <Pause className="mr-2 h-5 w-5" /> : <Play className="mr-2 h-5 w-5" />}
             {isRunning ? 'Pause' : 'Start'}
           </Button>
-          <Button onClick={resetTimer} variant="outline" size="lg" aria-label="Reset Timer">
+          <Button onClick={resetTimer} variant="secondary" size="lg" aria-label="Reset Timer" className="bg-secondary/80 hover:bg-secondary border-transparent shadow-none hover:shadow-none">
             <RotateCcw className="h-5 w-5" />
           </Button>
         </div>

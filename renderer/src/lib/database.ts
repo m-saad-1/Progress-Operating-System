@@ -42,6 +42,7 @@ export interface Task {
   priority: 'low' | 'medium' | 'high' | 'critical';
   status: 'pending' | 'in-progress' | 'blocked' | 'completed';
   progress: number;
+  daily_progress?: Record<string, number>;
   estimated_time: number | null;
   actual_time: number | null;
   recurrence_rule: string | null;
@@ -245,6 +246,7 @@ export interface UpdateTaskDTO extends Partial<CreateTaskDTO> {
   status?: Task['status'];
   progress?: number;
   actual_time?: number;
+  daily_progress?: Record<string, number>;
 }
 
 export interface CreateHabitDTO {
@@ -611,6 +613,7 @@ export class DatabaseService {
     return results.map(task => ({
       ...task,
       tags: JSON.parse(task.tags || '[]'),
+      daily_progress: JSON.parse((task as any).daily_progress || '{}'),
     }));
   }
 
@@ -629,6 +632,7 @@ export class DatabaseService {
     return {
       ...task,
       tags: JSON.parse(task.tags || '[]'),
+      daily_progress: JSON.parse((task as any).daily_progress || '{}'),
     };
   }
 
@@ -700,6 +704,10 @@ export class DatabaseService {
     if (data.progress !== undefined) {
       updates.push('progress = ?');
       params.push(data.progress);
+    }
+    if (data.daily_progress !== undefined) {
+      updates.push('daily_progress = ?');
+      params.push(JSON.stringify(data.daily_progress || {}));
     }
     if (data.estimated_time !== undefined) {
       updates.push('estimated_time = ?');
@@ -904,60 +912,99 @@ export class DatabaseService {
   }
 
   async markHabitCompleted(habitId: string, completed: boolean): Promise<void> {
-    const today = new Date().toISOString().split('T')[0];
+    await this.setHabitCompletion(habitId, new Date(), completed);
+  }
+
+  /**
+   * Sets or removes a habit completion for a specific date.
+   * 
+   * ANTI-GAMING PROTECTION:
+   * - Habit completions can only be set for today or past dates (no future completions)
+   * - Uses INSERT OR REPLACE to prevent duplicate entries for same habit/date
+   * - Streak is recalculated from actual completion history, not from toggle count
+   * - Consistency score is based on 30-day window from database records
+   * - All changes are logged via version increment for audit purposes
+   * 
+   * NOTE: Toggling a habit completion multiple times on the same day does NOT
+   * artificially inflate progress - only the final state matters.
+   */
+  async setHabitCompletion(habitId: string, date: Date | string, completed: boolean): Promise<void> {
     const now = new Date().toISOString();
-    
-    const operations = [];
-    
-    if (completed) {
-      operations.push({
-        query: `
-          INSERT OR REPLACE INTO habit_completions (id, habit_id, date, completed, notes)
-          VALUES (?, ?, ?, ?, NULL)
-        `,
-        params: [crypto.randomUUID(), habitId, today, 1]
-      });
-      
-      operations.push({
-        query: `
-          UPDATE habits 
-          SET streak_current = streak_current + 1,
-              streak_longest = MAX(streak_current + 1, streak_longest),
-              consistency_score = (
-                SELECT 
-                  (COUNT(CASE WHEN completed = 1 THEN 1 END) * 100.0 / COUNT(*))
-                FROM habit_completions 
-                WHERE habit_id = ?
-                AND date >= date('now', '-30 days')
-              ),
-              updated_at = ?,
-              version = version + 1
-          WHERE id = ?
-        `,
-        params: [habitId, now, habitId]
-      });
-    } else {
-      operations.push({
-        query: `
-          DELETE FROM habit_completions 
-          WHERE habit_id = ? AND date = ?
-        `,
-        params: [habitId, today]
-      });
-      
-      operations.push({
-        query: `
-          UPDATE habits 
-          SET streak_current = 0,
-              updated_at = ?,
-              version = version + 1
-          WHERE id = ?
-        `,
-        params: [now, habitId]
-      });
+    const today = new Date().toISOString().split('T')[0];
+    const dateStr = typeof date === 'string' ? date.slice(0, 10) : new Date(date).toISOString().split('T')[0];
+
+    // INTEGRITY CHECK: Prevent future date completions (no gaming by pre-completing)
+    if (dateStr > today) {
+      console.warn(`[INTEGRITY] Attempted to set habit completion for future date: ${dateStr}`);
+      return; // Silently ignore future completions
     }
-    
-    await this.executeTransaction(operations);
+
+    if (completed) {
+      // INSERT OR REPLACE ensures only ONE record per habit/date combination
+      // This prevents gaming by rapid toggling - only final state counts
+      await this.executeQuery(`
+        INSERT OR REPLACE INTO habit_completions (id, habit_id, date, completed, notes, updated_at)
+        VALUES (?, ?, ?, ?, NULL, ?)
+      `, [crypto.randomUUID(), habitId, dateStr, 1, now]);
+    } else {
+      await this.executeQuery(`
+        DELETE FROM habit_completions 
+        WHERE habit_id = ? AND date = ?
+      `, [habitId, dateStr]);
+    }
+
+    const completionRows = await this.executeQuery<{ date: string }>(`
+      SELECT date FROM habit_completions 
+      WHERE habit_id = ? AND completed = 1
+      ORDER BY date DESC
+    `, [habitId]);
+
+    const completedDates = new Set(
+      (Array.isArray(completionRows) ? completionRows : []).map((row) => row.date?.slice(0, 10))
+    );
+
+    const toDateKey = (d: Date) => d.toISOString().split('T')[0];
+    let currentStreak = 0;
+    let cursor = new Date();
+
+    if (completedDates.has(toDateKey(cursor))) {
+      currentStreak += 1;
+      cursor.setDate(cursor.getDate() - 1);
+    } else {
+      cursor.setDate(cursor.getDate() - 1);
+      if (completedDates.has(toDateKey(cursor))) {
+        currentStreak += 1;
+        cursor.setDate(cursor.getDate() - 1);
+      }
+    }
+
+    if (currentStreak > 0) {
+      while (completedDates.has(toDateKey(cursor))) {
+        currentStreak += 1;
+        cursor.setDate(cursor.getDate() - 1);
+      }
+    }
+
+    const consistencyResult = await this.executeQuery<{ count: number }>(`
+      SELECT COUNT(*) as count 
+      FROM habit_completions 
+      WHERE habit_id = ? 
+      AND completed = 1 
+      AND date >= date('now', '-30 days')
+    `, [habitId]);
+
+    const consistencyCount = consistencyResult?.[0]?.count || 0;
+    const consistencyScore = Math.min(100, Math.round((consistencyCount / 30) * 100));
+
+    await this.executeQuery(`
+      UPDATE habits 
+      SET streak_current = ?,
+          streak_longest = MAX(?, streak_longest),
+          consistency_score = ?,
+          updated_at = ?,
+          version = version + 1
+      WHERE id = ?
+    `, [currentStreak, currentStreak, consistencyScore, now, habitId]);
   }
 
   async deleteHabit(id: string): Promise<void> {
@@ -971,6 +1018,239 @@ export class DatabaseService {
       `,
       params: [now, now, id]
     }]);
+  }
+
+  // Archive Operations - Soft delete that preserves progress data
+  // These methods set deleted_at but keep all historical data intact
+  
+  async archiveTask(id: string): Promise<void> {
+    const now = new Date().toISOString();
+    await this.executeTransaction([{
+      query: `
+        UPDATE tasks 
+        SET deleted_at = ?, updated_at = ?, version = version + 1
+        WHERE id = ?
+      `,
+      params: [now, now, id]
+    }]);
+  }
+
+  async restoreTask(id: string): Promise<Task | null> {
+    const now = new Date().toISOString();
+    await this.executeTransaction([{
+      query: `
+        UPDATE tasks 
+        SET deleted_at = NULL, updated_at = ?, version = version + 1
+        WHERE id = ?
+      `,
+      params: [now, id]
+    }]);
+    return this.getTaskById(id);
+  }
+
+  async archiveHabit(id: string): Promise<void> {
+    const now = new Date().toISOString();
+    await this.executeTransaction([{
+      query: `
+        UPDATE habits 
+        SET deleted_at = ?, updated_at = ?, version = version + 1
+        WHERE id = ?
+      `,
+      params: [now, now, id]
+    }]);
+  }
+
+  async restoreHabit(id: string): Promise<Habit | null> {
+    const now = new Date().toISOString();
+    await this.executeTransaction([{
+      query: `
+        UPDATE habits 
+        SET deleted_at = NULL, updated_at = ?, version = version + 1
+        WHERE id = ?
+      `,
+      params: [now, id]
+    }]);
+    return this.getHabitById(id);
+  }
+
+  async archiveGoal(id: string): Promise<void> {
+    const now = new Date().toISOString();
+    await this.executeTransaction([{
+      query: `
+        UPDATE goals 
+        SET deleted_at = ?, updated_at = ?, version = version + 1
+        WHERE id = ?
+      `,
+      params: [now, now, id]
+    }]);
+  }
+
+  async restoreGoal(id: string): Promise<Goal | null> {
+    const now = new Date().toISOString();
+    await this.executeTransaction([{
+      query: `
+        UPDATE goals 
+        SET deleted_at = NULL, updated_at = ?, version = version + 1
+        WHERE id = ?
+      `,
+      params: [now, id]
+    }]);
+    return this.getGoalById(id);
+  }
+
+  async archiveNote(id: string): Promise<void> {
+    const now = new Date().toISOString();
+    await this.executeTransaction([{
+      query: `
+        UPDATE notes 
+        SET deleted_at = ?, updated_at = ?, version = version + 1
+        WHERE id = ?
+      `,
+      params: [now, now, id]
+    }]);
+  }
+
+  async restoreNote(id: string): Promise<Note | null> {
+    const now = new Date().toISOString();
+    await this.executeTransaction([{
+      query: `
+        UPDATE notes 
+        SET deleted_at = NULL, updated_at = ?, version = version + 1
+        WHERE id = ?
+      `,
+      params: [now, id]
+    }]);
+    return this.getNoteById(id);
+  }
+
+  // Permanently delete (for archive page's permanent delete action)
+  async permanentlyDeleteTask(id: string): Promise<void> {
+    await this.executeTransaction([{
+      query: `DELETE FROM tasks WHERE id = ?`,
+      params: [id]
+    }]);
+  }
+
+  async permanentlyDeleteHabit(id: string): Promise<void> {
+    // Also delete associated completions
+    await this.executeTransaction([
+      { query: `DELETE FROM habit_completions WHERE habit_id = ?`, params: [id] },
+      { query: `DELETE FROM habits WHERE id = ?`, params: [id] }
+    ]);
+  }
+
+  async permanentlyDeleteGoal(id: string): Promise<void> {
+    await this.executeTransaction([{
+      query: `DELETE FROM goals WHERE id = ?`,
+      params: [id]
+    }]);
+  }
+
+  async permanentlyDeleteNote(id: string): Promise<void> {
+    await this.executeTransaction([{
+      query: `DELETE FROM notes WHERE id = ?`,
+      params: [id]
+    }]);
+  }
+
+  // Get archived items for the archive page
+  async getArchivedItems(): Promise<{
+    tasks: Task[];
+    habits: Habit[];
+    goals: Goal[];
+    notes: Note[];
+  }> {
+    const [tasks, habits, goals, notes] = await Promise.all([
+      this.executeQuery<Task>(`
+        SELECT t.*, g.title as goal_title 
+        FROM tasks t
+        LEFT JOIN goals g ON t.goal_id = g.id
+        WHERE t.deleted_at IS NOT NULL
+        ORDER BY t.deleted_at DESC
+      `),
+      this.executeQuery<Habit>(`
+        SELECT h.*, g.title as goal_title 
+        FROM habits h
+        LEFT JOIN goals g ON h.goal_id = g.id
+        WHERE h.deleted_at IS NOT NULL
+        ORDER BY h.deleted_at DESC
+      `),
+      this.executeQuery<Goal>(`
+        SELECT * FROM goals 
+        WHERE deleted_at IS NOT NULL
+        ORDER BY deleted_at DESC
+      `),
+      this.executeQuery<Note>(`
+        SELECT n.*, g.title as goal_title, t.title as task_title 
+        FROM notes n
+        LEFT JOIN goals g ON n.goal_id = g.id
+        LEFT JOIN tasks t ON n.task_id = t.id
+        WHERE n.deleted_at IS NOT NULL
+        ORDER BY n.deleted_at DESC
+      `)
+    ]);
+
+    return {
+      tasks: tasks.map(task => ({
+        ...task,
+        tags: JSON.parse(task.tags || '[]'),
+        daily_progress: JSON.parse((task as any).daily_progress || '{}'),
+      })),
+      habits: habits.map(habit => ({
+        ...habit,
+        schedule: JSON.parse(habit.schedule || '[]'),
+      })),
+      goals: goals.map(goal => ({
+        ...goal,
+        tags: JSON.parse(goal.tags || '[]'),
+      })),
+      notes: notes.map(note => ({
+        ...note,
+        tags: JSON.parse(note.tags || '[]'),
+      })),
+    };
+  }
+
+  // Get archive statistics
+  async getArchiveStats(): Promise<{
+    totalArchived: number;
+    tasksArchived: number;
+    habitsArchived: number;
+    goalsArchived: number;
+    notesArchived: number;
+  }> {
+    const results = await this.executeQuery<{
+      tasks: number;
+      habits: number;
+      goals: number;
+      notes: number;
+    }>(`
+      SELECT 
+        (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NOT NULL) as tasks,
+        (SELECT COUNT(*) FROM habits WHERE deleted_at IS NOT NULL) as habits,
+        (SELECT COUNT(*) FROM goals WHERE deleted_at IS NOT NULL) as goals,
+        (SELECT COUNT(*) FROM notes WHERE deleted_at IS NOT NULL) as notes
+    `);
+
+    const stats = results[0] || { tasks: 0, habits: 0, goals: 0, notes: 0 };
+    return {
+      totalArchived: stats.tasks + stats.habits + stats.goals + stats.notes,
+      tasksArchived: stats.tasks,
+      habitsArchived: stats.habits,
+      goalsArchived: stats.goals,
+      notesArchived: stats.notes,
+    };
+  }
+
+  // Clear all archived items (permanent delete)
+  async clearArchive(): Promise<void> {
+    await this.executeTransaction([
+      { query: `DELETE FROM tasks WHERE deleted_at IS NOT NULL`, params: [] },
+      { query: `DELETE FROM habit_completions WHERE habit_id IN (SELECT id FROM habits WHERE deleted_at IS NOT NULL)`, params: [] },
+      { query: `DELETE FROM habits WHERE deleted_at IS NOT NULL`, params: [] },
+      { query: `DELETE FROM goals WHERE deleted_at IS NOT NULL`, params: [] },
+      { query: `DELETE FROM notes WHERE deleted_at IS NOT NULL`, params: [] },
+    ]);
   }
 
   // Notes CRUD
@@ -1479,6 +1759,244 @@ export class DatabaseService {
       [limit]
     );
   }
+
+  // ============ REVIEW SYSTEM METHODS ============
+
+  async getReviews(type?: string, limit: number = 50): Promise<Review[]> {
+    if (!window.electronAPI) {
+      return [];
+    }
+    
+    try {
+      const response = await window.electronAPI.invoke('reviews:getAll', type, limit);
+      if (response?.success) {
+        return (response.data || []).map((r: any) => this.parseReview(r));
+      }
+      throw new Error(response?.error || 'Failed to get reviews');
+    } catch (error) {
+      console.error('Failed to get reviews:', error);
+      return [];
+    }
+  }
+
+  async getReviewById(id: string): Promise<Review | null> {
+    if (!window.electronAPI) {
+      return null;
+    }
+    
+    try {
+      const response = await window.electronAPI.invoke('reviews:getById', id);
+      if (response?.success && response.data) {
+        return this.parseReview(response.data);
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to get review:', error);
+      return null;
+    }
+  }
+
+  async getLatestReview(type: string): Promise<Review | null> {
+    if (!window.electronAPI) {
+      return null;
+    }
+    
+    try {
+      const response = await window.electronAPI.invoke('reviews:getLatest', type);
+      if (response?.success && response.data) {
+        return this.parseReview(response.data);
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to get latest review:', error);
+      return null;
+    }
+  }
+
+  async getReviewForPeriod(type: string, periodStart: string, periodEnd: string): Promise<Review | null> {
+    if (!window.electronAPI) {
+      return null;
+    }
+    
+    try {
+      const response = await window.electronAPI.invoke('reviews:getForPeriod', type, periodStart, periodEnd);
+      if (response?.success && response.data) {
+        return this.parseReview(response.data);
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to get review for period:', error);
+      return null;
+    }
+  }
+
+  async createReview(data: CreateReviewDTO): Promise<Review | null> {
+    if (!window.electronAPI) {
+      throw new Error('Electron API not available');
+    }
+    
+    try {
+      const response = await window.electronAPI.invoke('reviews:create', data);
+      if (response?.success && response.data) {
+        return this.parseReview(response.data);
+      }
+      throw new Error(response?.error || 'Failed to create review');
+    } catch (error) {
+      console.error('Failed to create review:', error);
+      throw error;
+    }
+  }
+
+  async updateReview(id: string, data: UpdateReviewDTO): Promise<Review | null> {
+    if (!window.electronAPI) {
+      throw new Error('Electron API not available');
+    }
+    
+    try {
+      const response = await window.electronAPI.invoke('reviews:update', id, data);
+      if (response?.success && response.data) {
+        return this.parseReview(response.data);
+      }
+      throw new Error(response?.error || 'Failed to update review');
+    } catch (error) {
+      console.error('Failed to update review:', error);
+      throw error;
+    }
+  }
+
+  async deleteReview(id: string): Promise<boolean> {
+    if (!window.electronAPI) {
+      throw new Error('Electron API not available');
+    }
+    
+    try {
+      const response = await window.electronAPI.invoke('reviews:delete', id);
+      return response?.success || false;
+    } catch (error) {
+      console.error('Failed to delete review:', error);
+      return false;
+    }
+  }
+
+  async getReviewInsights(periodStart: string, periodEnd: string): Promise<ReviewInsights | null> {
+    if (!window.electronAPI) {
+      return null;
+    }
+    
+    try {
+      const response = await window.electronAPI.invoke('reviews:getInsights', periodStart, periodEnd);
+      if (response?.success) {
+        return response.data;
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to get review insights:', error);
+      return null;
+    }
+  }
+
+  async getReviewHistory(type?: string, startDate?: string, endDate?: string): Promise<Review[]> {
+    if (!window.electronAPI) {
+      return [];
+    }
+    
+    try {
+      const response = await window.electronAPI.invoke('reviews:getHistory', type, startDate, endDate);
+      if (response?.success) {
+        return (response.data || []).map((r: any) => this.parseReview(r));
+      }
+      return [];
+    } catch (error) {
+      console.error('Failed to get review history:', error);
+      return [];
+    }
+  }
+
+  private parseReview(data: any): Review {
+    return {
+      ...data,
+      responses: typeof data.responses === 'string' ? JSON.parse(data.responses) : (data.responses || {}),
+      insights: typeof data.insights === 'string' ? JSON.parse(data.insights) : (data.insights || {}),
+      action_items: typeof data.action_items === 'string' ? JSON.parse(data.action_items) : (data.action_items || []),
+      tags: typeof data.tags === 'string' ? JSON.parse(data.tags) : (data.tags || []),
+    };
+  }
+}
+
+// Review types for the database service
+export interface Review {
+  id: string;
+  type: 'daily' | 'weekly' | 'monthly';
+  status: 'draft' | 'completed';
+  period_start: string;
+  period_end: string;
+  responses: any;
+  insights: any;
+  action_items: ReviewActionItem[];
+  tags: string[];
+  mood?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  deleted_at: string | null;
+  version: number;
+}
+
+export interface ReviewActionItem {
+  id: string;
+  type: 'task' | 'habit' | 'goal' | 'adjustment';
+  description: string;
+  completed: boolean;
+  created_from_review: string;
+  linked_entity_id?: string;
+  due_date?: string;
+}
+
+export interface ReviewInsights {
+  tasksCompleted: number;
+  tasksCreated: number;
+  taskCompletionRate: number;
+  overdueTasksCount: number;
+  blockedTasksCount: number;
+  avgTaskCompletionTime: number;
+  topCompletedTasks: Array<{ id: string; title: string; completedAt: string }>;
+  skippedOrAbandonedTasks: Array<{ id: string; title: string; reason: string }>;
+  habitConsistencyRate: number;
+  habitsCompleted: number;
+  habitsMissed: number;
+  currentStreaks: Array<{ id: string; title: string; streak: number }>;
+  brokenStreaks: Array<{ id: string; title: string; previousStreak: number }>;
+  habitTrend: 'improving' | 'stable' | 'declining';
+  activeGoalsProgress: Array<{ id: string; title: string; progress: number; change: number }>;
+  goalsCompletedThisPeriod: number;
+  goalsAtRisk: Array<{ id: string; title: string; reason: string }>;
+  mostProductiveDay?: string;
+  leastProductiveDay?: string;
+  productivityTrend: 'improving' | 'stable' | 'declining';
+  consistencyScore: number;
+  periodStart: string;
+  periodEnd: string;
+}
+
+export interface CreateReviewDTO {
+  type: 'daily' | 'weekly' | 'monthly';
+  period_start: string;
+  period_end: string;
+  responses?: any;
+  insights?: any;
+  action_items?: ReviewActionItem[];
+  tags?: string[];
+  mood?: string;
+  status?: 'draft' | 'completed';
+}
+
+export interface UpdateReviewDTO {
+  responses?: any;
+  insights?: any;
+  action_items?: ReviewActionItem[];
+  tags?: string[];
+  mood?: string;
+  status?: 'draft' | 'completed';
 }
 
 // Singleton instance

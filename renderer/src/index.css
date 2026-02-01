@@ -5,59 +5,85 @@
 
 /* 1. Global Variables - Outside any layer for maximum priority */
 :root {
-  --background: 120 20% 97%;
-  --foreground: 120 40% 10%;
-  --card: 0 0% 100%; /* Pure white to stop blending */
-  --card-foreground: 120 40% 10%;
+  --background: 0 0% 98%; /* Slightly warmer white */
+  --foreground: 0 0% 9%; /* Near black text */
+  --card: 0 0% 100%; /* Pure white cards */
+  --card-foreground: 0 0% 9%;
   --popover: 0 0% 100%;
-  --popover-foreground: 120 40% 10%;
-  --primary: 130 70% 40%;
-  --primary-foreground: 130 90% 95%;
-  --secondary: 120 30% 90%;
-  --secondary-foreground: 120 40% 20%;
-  --muted: 120 30% 92%;
-  --muted-foreground: 120 20% 40%;
-  --accent: 120 30% 90%;
-  --accent-foreground: 120 40% 20%;
-  --destructive: 0 84.2% 60.2%;
+  --popover-foreground: 0 0% 9%;
+  --primary: 145 80% 42%; /* Vibrant green */
+  --primary-foreground: 0 0% 98%;
+  --secondary: 0 0% 96%; /* Light gray */
+  --secondary-foreground: 0 0% 9%;
+  --muted: 0 0% 96%;
+  --muted-foreground: 0 0% 45%;
+  --accent: 0 0% 96%;
+  --accent-foreground: 0 0% 9%;
+  --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 98%;
-  --border: 145 98% 49%; /* #02F769 */
-  --input: 120 20% 85%;
-  --ring: 130 70% 40%;
+  --border: 0 0% 90%; /* Soft gray border - not harsh */
+  --input: 0 0% 96%;
+  --ring: 145 80% 42%;
   --radius: 0.5rem;
   
   /* Status colors for consistency */
-  --status-completed: 130 70% 45%;
-  --status-paused: 45 90% 55%;
-  --status-active: 210 90% 55%;
+  --status-completed: 145 75% 42%;
+  --status-paused: 45 90% 50%;
+  --status-active: 210 90% 50%;
   
   /* Chart colors */
-  --chart-primary: 0 0% 0%; /* Black for charts */
-  --chart-secondary: 145 98% 49%; /* #02F769 */
-  --chart-grid: 0 0% 90%; /* Light gray for grid lines */
+  --chart-primary: 0 0% 9%;
+  --chart-secondary: 145 80% 42%;
+  --chart-grid: 0 0% 92%;
 }
 
 .dark {
-  --background: 120 40% 6%;
-  --foreground: 120 60% 95%;
-  --card: 120 40% 10%;
-  --card-foreground: 120 60% 95%;
-  --popover: 120 45% 8%;
-  --popover-foreground: 120 60% 95%;
-  --primary: 130 70% 50%;
-  --primary-foreground: 130 90% 95%;
-  --secondary: 120 30% 15%;
-  --secondary-foreground: 120 60% 95%;
-  --muted: 120 30% 15%;
-  --muted-foreground: 120 30% 65%;
-  --accent: 120 30% 15%;
-  --accent-foreground: 120 60% 95%;
-  --border: 145 98% 49%; /* #02F769 */
+  /* True dark background - GitHub black theme inspired */
+  --background: 0 0% 6%; /* #0f0f0f - true dark */
+  --foreground: 0 0% 93%; /* #ededed - light gray text */
+  
+  /* Card with subtle elevation */
+  --card: 0 0% 9%; /* #171717 - slightly lighter than bg */
+  --card-foreground: 0 0% 93%;
+  
+  /* Popover/Dropdown */
+  --popover: 0 0% 10%; /* #1a1a1a */
+  --popover-foreground: 0 0% 93%;
+  
+  /* Primary accent - keeping the green */
+  --primary: 145 80% 48%; /* Vibrant green */
+  --primary-foreground: 0 0% 98%;
+  
+  /* Secondary elements */
+  --secondary: 0 0% 14%; /* #242424 */
+  --secondary-foreground: 0 0% 88%;
+  
+  /* Muted elements */
+  --muted: 0 0% 14%; /* #242424 */
+  --muted-foreground: 0 0% 60%; /* #999999 */
+  
+  /* Accent for hover states */
+  --accent: 0 0% 16%; /* #292929 */
+  --accent-foreground: 0 0% 93%;
+  
+  /* Subtle border - not harsh */
+  --border: 0 0% 20%; /* #333333 - subtle gray border */
+  --input: 0 0% 16%; /* #292929 - input background */
+  --ring: 145 80% 48%; /* Green focus ring */
+  
+  /* Destructive */
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 98%;
   
   /* Status colors for dark mode */
-  --status-completed: 130 70% 50%;
-  --status-paused: 45 90% 60%;
-  --status-active: 210 90% 60%;
+  --status-completed: 145 75% 50%;
+  --status-paused: 45 90% 55%;
+  --status-active: 210 90% 55%;
+  
+  /* Chart colors for dark mode */
+  --chart-primary: 0 0% 95%;
+  --chart-secondary: 145 80% 48%;
+  --chart-grid: 0 0% 25%;
 }
 
 @layer base {
@@ -87,9 +113,9 @@
 }
 
 @layer components {
-  /* Card hover effect with light green border */
+  /* Card hover effect with shadow */
   .card-hover {
-    @apply shadow-md border-primary/50;
+    @apply shadow-md transition-shadow duration-200 hover:shadow-lg dark:hover:shadow-black/50;
   }
   
   /* Progress ring stroke color */

@@ -246,15 +246,16 @@ export default function Time() {
                     Start Custom Timer
                   </Button>
                 )}
-                <Button variant="outline" onClick={resetTimer}>
+                <Button variant="secondary" onClick={resetTimer} className="bg-secondary/80 hover:bg-secondary border-transparent">
                   <Timer className="h-4 w-4" />
                 </Button>
               </div>
 
               <div className="grid grid-cols-3 gap-2">
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   size="sm"
+                  className="bg-secondary/50 hover:bg-secondary border-transparent"
                   onClick={() => {
                     setCustomTime(25 * 60)
                     if (!isRunning) setTimeLeft(25 * 60)
@@ -263,8 +264,9 @@ export default function Time() {
                   25 min
                 </Button>
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   size="sm"
+                  className="bg-secondary/50 hover:bg-secondary border-transparent"
                   onClick={() => {
                     setCustomTime(50 * 60)
                     if (!isRunning) setTimeLeft(50 * 60)
@@ -273,8 +275,9 @@ export default function Time() {
                   50 min
                 </Button>
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   size="sm"
+                  className="bg-secondary/50 hover:bg-secondary border-transparent"
                   onClick={() => {
                     setCustomTime(90 * 60)
                     if (!isRunning) setTimeLeft(90 * 60)

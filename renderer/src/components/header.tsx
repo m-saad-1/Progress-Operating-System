@@ -34,7 +34,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
   const unreadNotifications = notifications.filter(n => !n.read).length
 
   return (
-    <header className="sticky top-0 z-30 border-b bg-card shadow-sm">
+    <header className="sticky top-0 z-30 bg-background/95 backdrop-blur-md supports-[backdrop-filter]:bg-background/80 dark:bg-zinc-900/95 dark:supports-[backdrop-filter]:bg-zinc-900/90 shadow-sm dark:shadow-black/10">
       <div className="flex h-16 items-center justify-between px-6">
         {/* Left Section */}
         <div className="flex items-center space-x-4">
@@ -64,12 +64,12 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search tasks, goals, notes..."
-              className="pl-10 pr-4"
+              className="pl-10 pr-4 bg-secondary/50 border border-green-500/20 focus-visible:ring-1 focus-visible:ring-green-500/50 focus-visible:border-green-500/40 dark:bg-zinc-800/50 dark:border-green-500/15"
               onFocus={() => setSearchOpen(true)}
               onBlur={() => setSearchOpen(false)}
             />
             <div className="absolute right-3 top-1/2 -translate-y-1/2">
-              <kbd className="pointer-events-none hidden h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium opacity-100 sm:inline-flex">
+              <kbd className="pointer-events-none hidden h-5 select-none items-center gap-1 rounded border border-green-500/20 bg-secondary/50 px-1.5 font-mono text-[10px] font-medium opacity-100 sm:inline-flex dark:bg-zinc-800/50 dark:border-green-500/15">
                 <span className="text-xs">⌘</span>K
               </kbd>
             </div>

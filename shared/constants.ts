@@ -36,7 +36,18 @@ export const DATE_FORMATS = [
 
 export const TIME_FORMATS = ['12h', '24h'] as const;
 
-// Priority constants
+/**
+ * Priority weight constants for task scoring.
+ * 
+ * IMPORTANT: These values MUST match renderer/src/lib/progress.ts PRIORITY_WEIGHTS
+ * The canonical source of truth for progress calculations is progress.ts
+ * 
+ * Weight System (NON-NEGOTIABLE):
+ * - critical: 4 (Highest priority - urgent + important)
+ * - high: 3 (High-value tasks)
+ * - medium: 2 (Standard tasks)  
+ * - low: 1 (Low-priority tasks)
+ */
 export const PRIORITY_WEIGHTS = {
   low: 1,
   medium: 2,

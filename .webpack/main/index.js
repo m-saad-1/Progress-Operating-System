@@ -872,6 +872,42 @@ class ProgressDatabase {
           -- This is safe because SQLite ignores duplicate column additions silently via transaction rollback
         `,
             },
+            // Version 6: Add daily_progress column to tasks if it doesn't exist
+            {
+                version: 6,
+                up: `
+          -- Add daily_progress column if missing (for per-day task progress tracking)
+          -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, so we check via pragma
+        `,
+            },
+            // Version 7: Add reviews table for the Review System
+            {
+                version: 7,
+                up: `
+          CREATE TABLE IF NOT EXISTS reviews (
+            id TEXT PRIMARY KEY,
+            type TEXT CHECK(type IN ('daily', 'weekly', 'monthly')) NOT NULL,
+            status TEXT CHECK(status IN ('draft', 'completed')) NOT NULL DEFAULT 'draft',
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            responses TEXT NOT NULL DEFAULT '{}',
+            insights TEXT NOT NULL DEFAULT '{}',
+            action_items TEXT NOT NULL DEFAULT '[]',
+            tags TEXT NOT NULL DEFAULT '[]',
+            mood TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            deleted_at TEXT,
+            version INTEGER NOT NULL DEFAULT 1
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_reviews_type ON reviews(type);
+          CREATE INDEX IF NOT EXISTS idx_reviews_period ON reviews(period_start, period_end);
+          CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status);
+          CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON reviews(created_at);
+        `,
+            },
         ];
         // Run migrations
         for (const migration of migrations) {
@@ -893,6 +929,25 @@ class ProgressDatabase {
                     }
                     catch (error) {
                         console.error('Failed to check/add completed_at column:', error);
+                        throw error;
+                    }
+                }
+                // Special handling for version 6 - check if daily_progress column exists
+                if (migration.version === 6) {
+                    try {
+                        const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all();
+                        const hasDailyProgress = tableInfo.some(col => col.name === 'daily_progress');
+                        if (!hasDailyProgress) {
+                            console.log('Adding daily_progress column to tasks table');
+                            this.db.exec("ALTER TABLE tasks ADD COLUMN daily_progress TEXT NOT NULL DEFAULT '{}'");
+                        }
+                        // Update version
+                        this.db.exec(`PRAGMA user_version = ${migration.version}`);
+                        console.log(`Migration to version ${migration.version} completed successfully`);
+                        continue;
+                    }
+                    catch (error) {
+                        console.error('Failed to check/add daily_progress column:', error);
                         throw error;
                     }
                 }
@@ -932,9 +987,14 @@ class ProgressDatabase {
         try {
             const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all();
             const hasCompletedAt = tableInfo.some(col => col.name === 'completed_at');
+            const hasDailyProgress = tableInfo.some(col => col.name === 'daily_progress');
             if (!hasCompletedAt) {
                 console.log('Adding missing completed_at column to tasks table (post-migration check)');
                 this.db.exec('ALTER TABLE tasks ADD COLUMN completed_at TEXT');
+            }
+            if (!hasDailyProgress) {
+                console.log('Adding missing daily_progress column to tasks table (post-migration check)');
+                this.db.exec("ALTER TABLE tasks ADD COLUMN daily_progress TEXT NOT NULL DEFAULT '{}'");
             }
         }
         catch (error) {
@@ -1500,40 +1560,61 @@ class ProgressDatabase {
     }
     updateHabitCompletion(habitId, date, completed) {
         const now = new Date().toISOString();
+        const dateStr = date.slice(0, 10);
         if (completed) {
             this.db.prepare(`
         INSERT OR REPLACE INTO habit_completions (id, habit_id, date, completed, notes, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
-      `).run(crypto_1.default.randomUUID(), habitId, date, 1, null, now);
-            // Update streak
-            this.db.prepare(`
-        UPDATE habits 
-        SET streak_current = streak_current + 1,
-            streak_longest = MAX(streak_current + 1, streak_longest),
-            consistency_score = (
-              SELECT 
-                (COUNT(CASE WHEN completed = 1 THEN 1 END) * 100.0 / COUNT(*))
-              FROM habit_completions 
-              WHERE habit_id = ?
-                AND date >= date('now', '-30 days')
-            ),
-            updated_at = ?
-        WHERE id = ?
-      `).run(habitId, now, habitId);
+      `).run(crypto_1.default.randomUUID(), habitId, dateStr, 1, null, now);
         }
         else {
             this.db.prepare(`
         DELETE FROM habit_completions 
         WHERE habit_id = ? AND date = ?
-      `).run(habitId, date);
-            // Reset streak if breaking current streak
-            this.db.prepare(`
-        UPDATE habits 
-        SET streak_current = 0,
-            updated_at = ?
-        WHERE id = ?
-      `).run(now, habitId);
+      `).run(habitId, dateStr);
         }
+        const completionRows = this.db.prepare(`
+      SELECT date FROM habit_completions 
+      WHERE habit_id = ? AND completed = 1
+      ORDER BY date DESC
+    `).all(habitId);
+        const completedDates = new Set(completionRows.map((row) => row.date?.slice(0, 10)));
+        const toDateKey = (d) => d.toISOString().split('T')[0];
+        let currentStreak = 0;
+        let cursor = new Date();
+        if (completedDates.has(toDateKey(cursor))) {
+            currentStreak += 1;
+            cursor.setDate(cursor.getDate() - 1);
+        }
+        else {
+            cursor.setDate(cursor.getDate() - 1);
+            if (completedDates.has(toDateKey(cursor))) {
+                currentStreak += 1;
+                cursor.setDate(cursor.getDate() - 1);
+            }
+        }
+        if (currentStreak > 0) {
+            while (completedDates.has(toDateKey(cursor))) {
+                currentStreak += 1;
+                cursor.setDate(cursor.getDate() - 1);
+            }
+        }
+        const consistencyCount = this.db.prepare(`
+      SELECT COUNT(*) as count 
+      FROM habit_completions 
+      WHERE habit_id = ? 
+      AND completed = 1 
+      AND date >= date('now', '-30 days')
+    `).get(habitId);
+        const consistencyScore = Math.min(100, Math.round(((consistencyCount?.count || 0) / 30) * 100));
+        this.db.prepare(`
+      UPDATE habits 
+      SET streak_current = ?,
+          streak_longest = MAX(?, streak_longest),
+          consistency_score = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(currentStreak, currentStreak, consistencyScore, now, habitId);
     }
     getProgressStats() {
         const stats = this.db.prepare(`
@@ -1546,6 +1627,272 @@ class ProgressDatabase {
         (SELECT SUM(duration) FROM time_blocks WHERE date(start_time) = date('now')) as total_focus_time
     `).get();
         return stats;
+    }
+    // ============ REVIEW SYSTEM METHODS ============
+    getReviews(type, limit = 50) {
+        let query = `
+      SELECT * FROM reviews 
+      WHERE deleted_at IS NULL
+    `;
+        const params = [];
+        if (type) {
+            query += ` AND type = ?`;
+            params.push(type);
+        }
+        query += ` ORDER BY created_at DESC LIMIT ?`;
+        params.push(limit);
+        return this.executeQuery(query, params);
+    }
+    getReviewById(id) {
+        const result = this.executeQuery(`SELECT * FROM reviews WHERE id = ? AND deleted_at IS NULL`, [id]);
+        return result[0] || null;
+    }
+    getLatestReview(type) {
+        const result = this.executeQuery(`SELECT * FROM reviews 
+       WHERE type = ? AND deleted_at IS NULL 
+       ORDER BY created_at DESC LIMIT 1`, [type]);
+        return result[0] || null;
+    }
+    getReviewForPeriod(type, periodStart, periodEnd) {
+        const result = this.executeQuery(`SELECT * FROM reviews 
+       WHERE type = ? 
+         AND period_start = ? 
+         AND period_end = ?
+         AND deleted_at IS NULL 
+       LIMIT 1`, [type, periodStart, periodEnd]);
+        return result[0] || null;
+    }
+    createReview(data) {
+        const now = new Date().toISOString();
+        const id = crypto_1.default.randomUUID();
+        this.db.prepare(`
+      INSERT INTO reviews (
+        id, type, status, period_start, period_end, responses, insights, 
+        action_items, tags, mood, created_at, updated_at, version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, data.type, data.status || 'draft', data.period_start, data.period_end, JSON.stringify(data.responses || {}), JSON.stringify(data.insights || {}), JSON.stringify(data.action_items || []), JSON.stringify(data.tags || []), data.mood || null, now, now, 1);
+        return this.getReviewById(id);
+    }
+    updateReview(id, data) {
+        const now = new Date().toISOString();
+        const existing = this.getReviewById(id);
+        if (!existing) {
+            throw new Error('Review not found');
+        }
+        const updates = ['updated_at = ?', 'version = version + 1'];
+        const params = [now];
+        if (data.responses !== undefined) {
+            updates.push('responses = ?');
+            params.push(JSON.stringify(data.responses));
+        }
+        if (data.insights !== undefined) {
+            updates.push('insights = ?');
+            params.push(JSON.stringify(data.insights));
+        }
+        if (data.action_items !== undefined) {
+            updates.push('action_items = ?');
+            params.push(JSON.stringify(data.action_items));
+        }
+        if (data.tags !== undefined) {
+            updates.push('tags = ?');
+            params.push(JSON.stringify(data.tags));
+        }
+        if (data.mood !== undefined) {
+            updates.push('mood = ?');
+            params.push(data.mood);
+        }
+        if (data.status !== undefined) {
+            updates.push('status = ?');
+            params.push(data.status);
+            if (data.status === 'completed') {
+                updates.push('completed_at = ?');
+                params.push(now);
+            }
+        }
+        params.push(id);
+        this.db.prepare(`
+      UPDATE reviews SET ${updates.join(', ')} WHERE id = ?
+    `).run(...params);
+        return this.getReviewById(id);
+    }
+    deleteReview(id) {
+        return this.deleteData('reviews', id, true);
+    }
+    // Get insights data for a review period
+    getReviewInsights(periodStart, periodEnd) {
+        const startDate = periodStart.split('T')[0];
+        const endDate = periodEnd.split('T')[0];
+        // Task insights
+        const taskStats = this.db.prepare(`
+      SELECT 
+        COUNT(CASE WHEN status = 'completed' AND date(completed_at) BETWEEN ? AND ? THEN 1 END) as tasks_completed,
+        COUNT(CASE WHEN date(created_at) BETWEEN ? AND ? THEN 1 END) as tasks_created,
+        COUNT(CASE WHEN status != 'completed' AND due_date < ? AND deleted_at IS NULL THEN 1 END) as overdue_tasks,
+        COUNT(CASE WHEN status = 'blocked' AND deleted_at IS NULL THEN 1 END) as blocked_tasks
+      FROM tasks
+    `).get(startDate, endDate, startDate, endDate, endDate);
+        // Top completed tasks
+        const topCompletedTasks = this.db.prepare(`
+      SELECT id, title, completed_at
+      FROM tasks
+      WHERE status = 'completed' 
+        AND date(completed_at) BETWEEN ? AND ?
+        AND deleted_at IS NULL
+      ORDER BY completed_at DESC
+      LIMIT 10
+    `).all(startDate, endDate);
+        // Habit insights
+        const habitStats = this.db.prepare(`
+      SELECT 
+        COUNT(CASE WHEN completed = 1 THEN 1 END) as habits_completed,
+        COUNT(CASE WHEN completed = 0 OR completed IS NULL THEN 1 END) as habits_missed,
+        COUNT(*) as total_habit_entries
+      FROM habit_completions
+      WHERE date BETWEEN ? AND ?
+    `).get(startDate, endDate);
+        // Current streaks
+        const currentStreaks = this.db.prepare(`
+      SELECT id, title, streak_current as streak
+      FROM habits
+      WHERE deleted_at IS NULL AND streak_current > 0
+      ORDER BY streak_current DESC
+      LIMIT 5
+    `).all();
+        // Goal progress
+        const goalProgress = this.db.prepare(`
+      SELECT id, title, progress
+      FROM goals
+      WHERE status = 'active' AND deleted_at IS NULL
+      ORDER BY progress DESC
+    `).all();
+        // Goals at risk (low progress, approaching deadline)
+        const goalsAtRisk = this.db.prepare(`
+      SELECT id, title, progress, target_date
+      FROM goals
+      WHERE status = 'active' 
+        AND deleted_at IS NULL
+        AND target_date IS NOT NULL
+        AND date(target_date) <= date('now', '+30 days')
+        AND progress < 50
+    `).all();
+        // Productivity by day of week
+        const productivityByDay = this.db.prepare(`
+      SELECT 
+        strftime('%w', completed_at) as day_of_week,
+        COUNT(*) as completed_count
+      FROM tasks
+      WHERE status = 'completed'
+        AND date(completed_at) BETWEEN ? AND ?
+        AND deleted_at IS NULL
+      GROUP BY strftime('%w', completed_at)
+      ORDER BY completed_count DESC
+    `).all(startDate, endDate);
+        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const mostProductiveDay = productivityByDay.length > 0
+            ? dayNames[parseInt(productivityByDay[0].day_of_week)]
+            : undefined;
+        const leastProductiveDay = productivityByDay.length > 0
+            ? dayNames[parseInt(productivityByDay[productivityByDay.length - 1].day_of_week)]
+            : undefined;
+        // Average habit consistency
+        const avgConsistency = this.db.prepare(`
+      SELECT AVG(consistency_score) as avg_consistency
+      FROM habits
+      WHERE deleted_at IS NULL
+    `).get();
+        // Calculate completion rate
+        const taskCompletionRate = taskStats.tasks_created > 0
+            ? Math.round((taskStats.tasks_completed / taskStats.tasks_created) * 100)
+            : 0;
+        const habitConsistencyRate = habitStats.total_habit_entries > 0
+            ? Math.round((habitStats.habits_completed / habitStats.total_habit_entries) * 100)
+            : 0;
+        // Determine trends
+        const previousPeriodStart = new Date(startDate);
+        const periodLength = Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24));
+        previousPeriodStart.setDate(previousPeriodStart.getDate() - periodLength);
+        const prevStartDate = previousPeriodStart.toISOString().split('T')[0];
+        const prevTaskStats = this.db.prepare(`
+      SELECT COUNT(CASE WHEN status = 'completed' THEN 1 END) as prev_completed
+      FROM tasks
+      WHERE date(completed_at) BETWEEN ? AND ?
+    `).get(prevStartDate, startDate);
+        let productivityTrend = 'stable';
+        if (prevTaskStats.prev_completed > 0) {
+            const diff = taskStats.tasks_completed - prevTaskStats.prev_completed;
+            const percentChange = (diff / prevTaskStats.prev_completed) * 100;
+            if (percentChange > 10)
+                productivityTrend = 'improving';
+            else if (percentChange < -10)
+                productivityTrend = 'declining';
+        }
+        return {
+            tasksCompleted: taskStats.tasks_completed || 0,
+            tasksCreated: taskStats.tasks_created || 0,
+            taskCompletionRate,
+            overdueTasksCount: taskStats.overdue_tasks || 0,
+            blockedTasksCount: taskStats.blocked_tasks || 0,
+            avgTaskCompletionTime: 0,
+            topCompletedTasks: topCompletedTasks.map(t => ({
+                id: t.id,
+                title: t.title,
+                completedAt: t.completed_at
+            })),
+            skippedOrAbandonedTasks: [],
+            habitConsistencyRate,
+            habitsCompleted: habitStats.habits_completed || 0,
+            habitsMissed: habitStats.habits_missed || 0,
+            currentStreaks: currentStreaks.map(h => ({
+                id: h.id,
+                title: h.title,
+                streak: h.streak
+            })),
+            brokenStreaks: [],
+            habitTrend: productivityTrend,
+            activeGoalsProgress: goalProgress.map(g => ({
+                id: g.id,
+                title: g.title,
+                progress: g.progress,
+                change: 0
+            })),
+            goalsCompletedThisPeriod: 0,
+            goalsAtRisk: goalsAtRisk.map(g => ({
+                id: g.id,
+                title: g.title,
+                reason: `Only ${g.progress}% complete with deadline approaching`
+            })),
+            mostProductiveDay,
+            leastProductiveDay,
+            productivityTrend,
+            consistencyScore: Math.round(avgConsistency?.avg_consistency || 0),
+            periodStart,
+            periodEnd,
+        };
+    }
+    // Get review history with aggregated stats
+    getReviewHistory(type, startDate, endDate) {
+        let query = `
+      SELECT 
+        r.*,
+        (SELECT COUNT(*) FROM reviews r2 WHERE r2.type = r.type AND r2.deleted_at IS NULL) as total_reviews
+      FROM reviews r
+      WHERE r.deleted_at IS NULL
+    `;
+        const params = [];
+        if (type) {
+            query += ` AND r.type = ?`;
+            params.push(type);
+        }
+        if (startDate) {
+            query += ` AND r.period_start >= ?`;
+            params.push(startDate);
+        }
+        if (endDate) {
+            query += ` AND r.period_end <= ?`;
+            params.push(endDate);
+        }
+        query += ` ORDER BY r.created_at DESC`;
+        return this.executeQuery(query, params);
     }
 }
 exports.ProgressDatabase = ProgressDatabase;
@@ -2031,6 +2378,133 @@ function initializeIpcMain(mainWindow) {
         }
         else {
             mainWindow?.webContents.send('menu:action', 'about');
+        }
+    });
+    // ============ REVIEW SYSTEM IPC HANDLERS ============
+    electron_1.ipcMain.handle('reviews:getAll', async (event, type, limit) => {
+        try {
+            const db = (0, database_1.getDatabase)();
+            const reviews = db.getReviews(type, limit);
+            return { success: true, data: reviews };
+        }
+        catch (error) {
+            if (error instanceof Error) {
+                console.error('Get reviews failed:', error.message);
+                return { success: false, error: error.message };
+            }
+            return { success: false, error: String(error) };
+        }
+    });
+    electron_1.ipcMain.handle('reviews:getById', async (event, id) => {
+        try {
+            const db = (0, database_1.getDatabase)();
+            const review = db.getReviewById(id);
+            return { success: true, data: review };
+        }
+        catch (error) {
+            if (error instanceof Error) {
+                console.error('Get review failed:', error.message);
+                return { success: false, error: error.message };
+            }
+            return { success: false, error: String(error) };
+        }
+    });
+    electron_1.ipcMain.handle('reviews:getLatest', async (event, type) => {
+        try {
+            const db = (0, database_1.getDatabase)();
+            const review = db.getLatestReview(type);
+            return { success: true, data: review };
+        }
+        catch (error) {
+            if (error instanceof Error) {
+                console.error('Get latest review failed:', error.message);
+                return { success: false, error: error.message };
+            }
+            return { success: false, error: String(error) };
+        }
+    });
+    electron_1.ipcMain.handle('reviews:getForPeriod', async (event, type, periodStart, periodEnd) => {
+        try {
+            const db = (0, database_1.getDatabase)();
+            const review = db.getReviewForPeriod(type, periodStart, periodEnd);
+            return { success: true, data: review };
+        }
+        catch (error) {
+            if (error instanceof Error) {
+                console.error('Get review for period failed:', error.message);
+                return { success: false, error: error.message };
+            }
+            return { success: false, error: String(error) };
+        }
+    });
+    electron_1.ipcMain.handle('reviews:create', async (event, data) => {
+        try {
+            const db = (0, database_1.getDatabase)();
+            const review = db.createReview(data);
+            return { success: true, data: review };
+        }
+        catch (error) {
+            if (error instanceof Error) {
+                console.error('Create review failed:', error.message);
+                return { success: false, error: error.message };
+            }
+            return { success: false, error: String(error) };
+        }
+    });
+    electron_1.ipcMain.handle('reviews:update', async (event, id, data) => {
+        try {
+            const db = (0, database_1.getDatabase)();
+            const review = db.updateReview(id, data);
+            return { success: true, data: review };
+        }
+        catch (error) {
+            if (error instanceof Error) {
+                console.error('Update review failed:', error.message);
+                return { success: false, error: error.message };
+            }
+            return { success: false, error: String(error) };
+        }
+    });
+    electron_1.ipcMain.handle('reviews:delete', async (event, id) => {
+        try {
+            const db = (0, database_1.getDatabase)();
+            const success = db.deleteReview(id);
+            return { success };
+        }
+        catch (error) {
+            if (error instanceof Error) {
+                console.error('Delete review failed:', error.message);
+                return { success: false, error: error.message };
+            }
+            return { success: false, error: String(error) };
+        }
+    });
+    electron_1.ipcMain.handle('reviews:getInsights', async (event, periodStart, periodEnd) => {
+        try {
+            const db = (0, database_1.getDatabase)();
+            const insights = db.getReviewInsights(periodStart, periodEnd);
+            return { success: true, data: insights };
+        }
+        catch (error) {
+            if (error instanceof Error) {
+                console.error('Get review insights failed:', error.message);
+                return { success: false, error: error.message };
+            }
+            return { success: false, error: String(error) };
+        }
+    });
+    electron_1.ipcMain.handle('reviews:getHistory', async (event, type, startDate, endDate) => {
+        try {
+            const db = (0, database_1.getDatabase)();
+            const history = db.getReviewHistory(type, startDate, endDate);
+            return { success: true, data: history };
+        }
+        catch (error) {
+            if (error instanceof Error) {
+                console.error('Get review history failed:', error.message);
+                return { success: false, error: error.message };
+            }
+            return { success: false, error: String(error) };
         }
     });
 }
@@ -23331,7 +23805,18 @@ exports.DATE_FORMATS = [
     'MMMM D, YYYY',
 ];
 exports.TIME_FORMATS = ['12h', '24h'];
-// Priority constants
+/**
+ * Priority weight constants for task scoring.
+ *
+ * IMPORTANT: These values MUST match renderer/src/lib/progress.ts PRIORITY_WEIGHTS
+ * The canonical source of truth for progress calculations is progress.ts
+ *
+ * Weight System (NON-NEGOTIABLE):
+ * - critical: 4 (Highest priority - urgent + important)
+ * - high: 3 (High-value tasks)
+ * - medium: 2 (Standard tasks)
+ * - low: 1 (Low-priority tasks)
+ */
 exports.PRIORITY_WEIGHTS = {
     low: 1,
     medium: 2,

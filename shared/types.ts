@@ -42,6 +42,7 @@ export interface Task extends BaseEntity {
   priority: Priority;
   status: TaskStatus;
   progress: number;
+  daily_progress?: Record<string, number>;
   estimated_time: number | null;
   actual_time: number | null;
   recurrence_rule: string | null;
@@ -300,4 +301,117 @@ export interface MonthlyStats {
   habitsCreated: number;
   averageConsistency: number;
   totalFocusTime: number;
+}
+
+// Review System Types
+export enum ReviewType {
+  DAILY = 'daily',
+  WEEKLY = 'weekly',
+  MONTHLY = 'monthly',
+}
+
+export enum ReviewStatus {
+  DRAFT = 'draft',
+  COMPLETED = 'completed',
+}
+
+// Review Questions and Responses
+export interface DailyReviewResponses {
+  completedToday: string;
+  blockers: string;
+  habitsImpact: string;
+  tomorrowFocus: string;
+  energyLevel: number; // 1-5
+  productivityRating: number; // 1-5
+  additionalNotes: string;
+}
+
+export interface WeeklyReviewResponses {
+  tasksThatMattered: string;
+  tasksWasted: string;
+  habitsSlipped: string;
+  habitsMaintained: string;
+  stopDoing: string;
+  continueDoing: string;
+  adjustments: string;
+  weeklyWin: string;
+  biggestChallenge: string;
+  nextWeekPriorities: string;
+  overallSatisfaction: number; // 1-5
+}
+
+export interface MonthlyReviewResponses {
+  progressAssessment: string;
+  highProgressReasons: string;
+  lowProgressReasons: string;
+  goalsAlignment: string;
+  goalsToAdjust: string;
+  goalsToAdd: string;
+  goalsToRemove: string;
+  habitsIdentityAlignment: string;
+  keyLearnings: string;
+  nextMonthChanges: string;
+  nextMonthGoals: string;
+  monthlyHighlight: string;
+  overallRating: number; // 1-5
+}
+
+// Review data pulled from system
+export interface ReviewInsights {
+  // Task insights
+  tasksCompleted: number;
+  tasksCreated: number;
+  taskCompletionRate: number;
+  overdueTasksCount: number;
+  blockedTasksCount: number;
+  avgTaskCompletionTime: number;
+  topCompletedTasks: Array<{ id: string; title: string; completedAt: string }>;
+  skippedOrAbandonedTasks: Array<{ id: string; title: string; reason: string }>;
+  
+  // Habit insights
+  habitConsistencyRate: number;
+  habitsCompleted: number;
+  habitsMissed: number;
+  currentStreaks: Array<{ id: string; title: string; streak: number }>;
+  brokenStreaks: Array<{ id: string; title: string; previousStreak: number }>;
+  habitTrend: 'improving' | 'stable' | 'declining';
+  
+  // Goal insights
+  activeGoalsProgress: Array<{ id: string; title: string; progress: number; change: number }>;
+  goalsCompletedThisPeriod: number;
+  goalsAtRisk: Array<{ id: string; title: string; reason: string }>;
+  
+  // Patterns
+  mostProductiveDay?: string;
+  leastProductiveDay?: string;
+  productivityTrend: 'improving' | 'stable' | 'declining';
+  consistencyScore: number;
+  
+  // Period-specific
+  periodStart: string;
+  periodEnd: string;
+}
+
+// Main Review Interface
+export interface Review extends BaseEntity {
+  type: ReviewType;
+  status: ReviewStatus;
+  period_start: string;
+  period_end: string;
+  responses: DailyReviewResponses | WeeklyReviewResponses | MonthlyReviewResponses;
+  insights: ReviewInsights;
+  action_items: ReviewActionItem[];
+  tags: string[];
+  mood?: string;
+  completed_at: string | null;
+}
+
+export interface ReviewActionItem {
+  id: string;
+  type: 'task' | 'habit' | 'goal' | 'adjustment';
+  description: string;
+  completed: boolean;
+  created_from_review: string;
+  linked_entity_id?: string;
+  due_date?: string;
 }

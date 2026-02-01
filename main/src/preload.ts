@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteData: (table: string, id: string, softDelete: boolean = true) =>
     ipcRenderer.invoke('database:delete', table, id, softDelete),
   
+  // Generic IPC invoke for custom channels
+  invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args),
+  
   // Backup operations
   createBackup: () => ipcRenderer.invoke('backup:create'),
   restoreBackup: (backupId: string) => ipcRenderer.invoke('backup:restore', backupId),
@@ -111,6 +114,9 @@ declare global {
       insertData: (table: string, data: Record<string, any>) => Promise<any>;
       updateData: (table: string, id: string, data: Record<string, any>) => Promise<any>;
       deleteData: (table: string, id: string, softDelete?: boolean) => Promise<any>;
+      
+      // Generic IPC invoke
+      invoke: (channel: string, ...args: any[]) => Promise<any>;
       
       // Backup
       createBackup: () => Promise<string>;

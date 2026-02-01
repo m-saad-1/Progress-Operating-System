@@ -65,8 +65,8 @@ export function ProjectCard({
   const isOverdue = project.end_date && new Date(project.end_date) < new Date()
 
   return (
-    <Card className={cn(
-      "transition-all duration-300 hover:shadow-lg",
+    <Card interactive className={cn(
+      "transition-all duration-300",
       compact && "h-full"
     )}>
       <CardHeader className={cn(

@@ -7,6 +7,9 @@ interface ElectronAPI {
   executeQuery: (query: string, params?: any[]) => Promise<any>
   executeTransaction: (operations: Array<{query: string, params?: any[]}>) => Promise<any>
   
+  // Generic IPC invoke
+  invoke: (channel: string, ...args: any[]) => Promise<any>
+  
   // Backup operations
   createBackup: () => Promise<string>
   restoreBackup: (backupId: string) => Promise<boolean>
@@ -915,62 +918,72 @@ export const db = {
   markHabitCompleted: async (habitId: string, completed: boolean) => {
     return safeElectronCall(async () => {
       const today = new Date().toISOString().split('T')[0]
-      
-      const operations = []
-      
+      const now = new Date().toISOString()
+
       if (completed) {
-        // Insert or update completion
-        operations.push({
-          query: `
-            INSERT OR REPLACE INTO habit_completions (id, habit_id, date, completed, notes)
-            VALUES (?, ?, ?, ?, NULL)
-          `,
-          params: [crypto.randomUUID(), habitId, today, 1]
-        })
-        
-        // Update streak
-        operations.push({
-          query: `
-            UPDATE habits 
-            SET streak_current = streak_current + 1,
-                streak_longest = MAX(streak_current + 1, streak_longest),
-                consistency_score = (
-                  SELECT 
-                    (COUNT(CASE WHEN completed = 1 THEN 1 END) * 100.0 / COUNT(*))
-                  FROM habit_completions 
-                  WHERE habit_id = ?
-                  AND date >= date('now', '-30 days')
-                ),
-                updated_at = ?,
-                version = version + 1
-            WHERE id = ?
-          `,
-          params: [habitId, new Date().toISOString(), habitId]
-        })
+        await window.electronAPI.executeQuery(`
+          INSERT OR REPLACE INTO habit_completions (id, habit_id, date, completed, notes, updated_at)
+          VALUES (?, ?, ?, ?, NULL, ?)
+        `, [crypto.randomUUID(), habitId, today, 1, now])
       } else {
-        // Remove completion
-        operations.push({
-          query: `
-            DELETE FROM habit_completions 
-            WHERE habit_id = ? AND date = ?
-          `,
-          params: [habitId, today]
-        })
-        
-        // Reset streak
-        operations.push({
-          query: `
-            UPDATE habits 
-            SET streak_current = 0,
-                updated_at = ?,
-                version = version + 1
-            WHERE id = ?
-          `,
-          params: [new Date().toISOString(), habitId]
-        })
+        await window.electronAPI.executeQuery(`
+          DELETE FROM habit_completions 
+          WHERE habit_id = ? AND date = ?
+        `, [habitId, today])
       }
-      
-      return window.electronAPI.executeTransaction(operations)
+
+      const completionRows = await window.electronAPI.executeQuery(`
+        SELECT date FROM habit_completions 
+        WHERE habit_id = ? AND completed = 1
+        ORDER BY date DESC
+      `, [habitId])
+
+      const completedDates = new Set(
+        (Array.isArray(completionRows) ? completionRows : []).map((row: any) => row.date?.slice(0, 10))
+      )
+
+      const toDateKey = (d: Date) => d.toISOString().split('T')[0]
+      let currentStreak = 0
+      let cursor = new Date()
+
+      if (completedDates.has(toDateKey(cursor))) {
+        currentStreak += 1
+        cursor.setDate(cursor.getDate() - 1)
+      } else {
+        cursor.setDate(cursor.getDate() - 1)
+        if (completedDates.has(toDateKey(cursor))) {
+          currentStreak += 1
+          cursor.setDate(cursor.getDate() - 1)
+        }
+      }
+
+      if (currentStreak > 0) {
+        while (completedDates.has(toDateKey(cursor))) {
+          currentStreak += 1
+          cursor.setDate(cursor.getDate() - 1)
+        }
+      }
+
+      const consistencyResult = await window.electronAPI.executeQuery(`
+        SELECT COUNT(*) as count 
+        FROM habit_completions 
+        WHERE habit_id = ? 
+        AND completed = 1 
+        AND date >= date('now', '-30 days')
+      `, [habitId])
+
+      const consistencyCount = consistencyResult?.[0]?.count || 0
+      const consistencyScore = Math.min(100, Math.round((consistencyCount / 30) * 100))
+
+      await window.electronAPI.executeQuery(`
+        UPDATE habits 
+        SET streak_current = ?,
+            streak_longest = MAX(?, streak_longest),
+            consistency_score = ?,
+            updated_at = ?,
+            version = version + 1
+        WHERE id = ?
+      `, [currentStreak, currentStreak, consistencyScore, now, habitId])
     })
   },
   

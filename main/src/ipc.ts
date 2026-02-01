@@ -446,4 +446,132 @@ export function initializeIpcMain(mainWindow: BrowserWindow) { // Renamed and ad
       mainWindow?.webContents.send('menu:action', 'about');
     }
   });
+
+  // ============ REVIEW SYSTEM IPC HANDLERS ============
+  
+  ipcMain.handle('reviews:getAll', async (event, type?: string, limit?: number) => {
+    try {
+      const db = getDatabase();
+      const reviews = db.getReviews(type, limit);
+      return { success: true, data: reviews };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Get reviews failed:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('reviews:getById', async (event, id: string) => {
+    try {
+      const db = getDatabase();
+      const review = db.getReviewById(id);
+      return { success: true, data: review };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Get review failed:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('reviews:getLatest', async (event, type: string) => {
+    try {
+      const db = getDatabase();
+      const review = db.getLatestReview(type);
+      return { success: true, data: review };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Get latest review failed:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('reviews:getForPeriod', async (event, type: string, periodStart: string, periodEnd: string) => {
+    try {
+      const db = getDatabase();
+      const review = db.getReviewForPeriod(type, periodStart, periodEnd);
+      return { success: true, data: review };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Get review for period failed:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('reviews:create', async (event, data: any) => {
+    try {
+      const db = getDatabase();
+      const review = db.createReview(data);
+      return { success: true, data: review };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Create review failed:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('reviews:update', async (event, id: string, data: any) => {
+    try {
+      const db = getDatabase();
+      const review = db.updateReview(id, data);
+      return { success: true, data: review };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Update review failed:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('reviews:delete', async (event, id: string) => {
+    try {
+      const db = getDatabase();
+      const success = db.deleteReview(id);
+      return { success };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Delete review failed:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('reviews:getInsights', async (event, periodStart: string, periodEnd: string) => {
+    try {
+      const db = getDatabase();
+      const insights = db.getReviewInsights(periodStart, periodEnd);
+      return { success: true, data: insights };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Get review insights failed:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('reviews:getHistory', async (event, type?: string, startDate?: string, endDate?: string) => {
+    try {
+      const db = getDatabase();
+      const history = db.getReviewHistory(type, startDate, endDate);
+      return { success: true, data: history };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Get review history failed:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: false, error: String(error) };
+    }
+  });
 }

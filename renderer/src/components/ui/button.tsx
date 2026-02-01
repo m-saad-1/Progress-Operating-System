@@ -7,17 +7,17 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90 hover:shadow-md shadow-sm",
+        default: "bg-primary text-primary-foreground hover:bg-primary/90 hover:shadow-lg shadow-sm",
         destructive:
-          "bg-destructive text-destructive-foreground hover:bg-destructive/90 hover:shadow-md shadow-sm",
+          "bg-destructive text-destructive-foreground hover:bg-destructive/90 hover:shadow-lg shadow-sm",
         outline:
-          "border-2 border-primary/30 bg-background hover:bg-primary/10 hover:border-primary/50 hover:text-primary shadow-sm",
+          "border border-border/30 bg-background hover:bg-accent hover:text-accent-foreground hover:shadow-md shadow-sm dark:border-border/20 dark:bg-secondary/30 dark:hover:bg-accent",
         secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/80 hover:shadow-md shadow-sm",
-        ghost: "hover:bg-primary/10 hover:text-primary",
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80 hover:shadow-lg shadow-sm",
+        ghost: "hover:bg-accent hover:text-accent-foreground hover:shadow-sm",
         link: "text-primary underline-offset-4 hover:underline",
-        success: "bg-status-completed text-white hover:bg-status-completed/90 hover:shadow-md shadow-sm",
-        warning: "bg-status-paused text-white hover:bg-status-paused/90 hover:shadow-md shadow-sm",
+        success: "bg-status-completed text-white hover:bg-status-completed/90 hover:shadow-lg shadow-sm",
+        warning: "bg-status-paused text-white hover:bg-status-paused/90 hover:shadow-lg shadow-sm",
       },
       size: {
         default: "h-10 px-4 py-2",

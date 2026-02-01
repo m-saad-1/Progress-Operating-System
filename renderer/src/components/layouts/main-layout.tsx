@@ -24,7 +24,7 @@ export function MainLayout() {
         {/* Main Content Wrapper */}
         <div className={cn(
           "flex-1 flex flex-col min-w-0 overflow-hidden transition-all duration-300 ease-in-out",
-          sidebarCollapsed ? 'pl-16' : 'pl-64'
+          sidebarCollapsed ? 'pl-16' : 'pl-56'
         )}>
           {/* Header */}
           <Header 
@@ -33,14 +33,14 @@ export function MainLayout() {
           />
 
           {/* Main Content Area */}
-          <main className="flex-1 overflow-auto bg-muted/40 text-foreground">
+          <main className="flex-1 overflow-auto bg-muted/30 text-foreground dark:bg-background">
             <div className="container mx-auto p-6 min-h-full">
               <Outlet />
             </div>
           </main>
 
           {/* Footer */}
-          <footer className="z-10 border-t bg-card px-6 py-3 text-xs text-muted-foreground flex items-center justify-between">
+          <footer className="z-10 bg-secondary/70 dark:bg-zinc-800/95 px-6 py-3 text-xs text-muted-foreground flex items-center justify-between shadow-[0_-1px_3px_rgba(0,0,0,0.05)] dark:shadow-[0_-1px_3px_rgba(0,0,0,0.2)]">
             <div className="flex items-center space-x-4">
               <span className="flex items-center">
                 <div className="mr-2 h-2 w-2 rounded-full bg-status-active animate-pulse" />

@@ -23,6 +23,7 @@ import Settings from '@/pages/settings';
 import Backup from '@/pages/backup';
 import Time from '@/pages/time';
 import Archive from '@/pages/archive';
+import Reviews from '@/pages/reviews';
 
 const queryClient = new QueryClient();
 
@@ -60,6 +61,7 @@ function App() {
                     <Route path="/tasks" element={<Tasks />} />
                     <Route path="/habits" element={<Habits />} />
                     <Route path="/notes" element={<Notes />} />
+                    <Route path="/reviews" element={<Reviews />} />
                     <Route path="/analytics" element={<Analytics />} />
                     <Route path="/settings" element={<Settings />} />
                     <Route path="/backup" element={<Backup />} />

@@ -36,8 +36,16 @@ interface ProgressChartProps {
   data?: ChartDataPoint[]
 }
 
-const generateData = (days: number) => {
-  const data = []
+/**
+ * Generates empty placeholder data structure for days with no activity.
+ * This does NOT generate fake/random data - it creates zeroed placeholders
+ * to maintain chart structure while ensuring progress reflects actual behavior.
+ * 
+ * IMPORTANT: Real data should always be passed via the `data` prop.
+ * This fallback only provides structure, not fake productivity metrics.
+ */
+const generateEmptyData = (days: number): ChartDataPoint[] => {
+  const data: ChartDataPoint[] = []
   const today = new Date()
   
   for (let i = days - 1; i >= 0; i--) {
@@ -47,12 +55,12 @@ const generateData = (days: number) => {
     data.push({
       date: date.toLocaleDateString('en-US', { weekday: 'short' }),
       fullDate: date.toLocaleDateString(),
-      tasks: Math.floor(Math.random() * 20) + 10,
-      completed: Math.floor(Math.random() * 15) + 5,
-      habits: Math.floor(Math.random() * 10) + 5,
-      completedHabits: Math.floor(Math.random() * 8) + 3,
-      productivity: Math.floor(Math.random() * 40) + 60,
-      focusTime: Math.floor(Math.random() * 6) + 2,
+      tasks: 0,        // No fake data - actual count required
+      completed: 0,    // No fake data - actual count required
+      habits: 0,       // No fake data - actual count required
+      completedHabits: 0, // No fake data - actual count required
+      productivity: 0,    // No fake productivity - must be calculated from real data
+      focusTime: 0,       // No fake time - must come from time_blocks table
     })
   }
   
@@ -89,15 +97,19 @@ export function ProgressChart({
   className,
   data: providedData
 }: ProgressChartProps) {
-  const data = providedData || generateData(days)
+  // Use provided data or empty structure - NEVER fake/random data
+  const data = providedData || generateEmptyData(days)
+  
+  // Only calculate stats if we have real data (at least some tasks exist)
+  const hasRealData = data.some(d => d.tasks > 0 || d.habits > 0)
   
   const weeklyStats = {
     totalTasks: data.reduce((sum, day) => sum + day.tasks, 0),
     completedTasks: data.reduce((sum, day) => sum + day.completed, 0),
-    taskCompletionRate: Math.round(
+    taskCompletionRate: hasRealData ? Math.round(
       (data.reduce((sum, day) => sum + day.completed, 0) / 
-       data.reduce((sum, day) => sum + day.tasks, 0)) * 100
-    ),
+       Math.max(data.reduce((sum, day) => sum + day.tasks, 0), 1)) * 100
+    ) : 0,
     avgProductivity: Math.round(
       data.reduce((sum, day) => sum + day.productivity, 0) / days
     ),
