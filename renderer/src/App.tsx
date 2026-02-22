@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 import { HashRouter as Router, Routes, Route } from 'react-router-dom';
 import { Toaster } from '@/components/ui/toaster'
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -8,6 +8,7 @@ import { ErrorBoundary } from '@/components/error-boundary';
 
 import { database } from '@/lib/database';
 import { useStore } from '@/store';
+import { useDailyReset } from '@/hooks/use-daily-reset';
 
 // Layout
 import { MainLayout } from '@/components/layouts/main-layout';
@@ -21,6 +22,7 @@ import Notes from '@/pages/notes';
 import Analytics from '@/pages/analytics';
 import Settings from '@/pages/settings';
 import Backup from '@/pages/backup';
+import HelpSupport from './pages/help-support';
 import Time from '@/pages/time';
 import Archive from '@/pages/archive';
 import Reviews from '@/pages/reviews';
@@ -29,6 +31,9 @@ const queryClient = new QueryClient();
 
 function App() {
   const { setInitialData } = useStore();
+  
+  // Initialize daily reset hook for automatic midnight reset of continuous tasks
+  useDailyReset();
 
   useEffect(() => {
     const fetchData = async () => {
@@ -65,6 +70,7 @@ function App() {
                     <Route path="/analytics" element={<Analytics />} />
                     <Route path="/settings" element={<Settings />} />
                     <Route path="/backup" element={<Backup />} />
+                    <Route path="/help-support" element={<HelpSupport />} />
                     <Route path="/time" element={<Time />} />
                     <Route path="/archive" element={<Archive />} />
                   </Route>

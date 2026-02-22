@@ -183,11 +183,11 @@ export function ProgressChart({
                   <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
                   <XAxis
                     dataKey="date"
-                    stroke="#000000"
+                    stroke="hsl(var(--muted-foreground))"
                     fontSize={12}
                   />
                   <YAxis
-                    stroke="#000000"
+                    stroke="hsl(var(--muted-foreground))"
                     fontSize={12}
                   />
                   <Tooltip content={<CustomTooltip />} />
@@ -216,11 +216,11 @@ export function ProgressChart({
                   <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
                   <XAxis
                     dataKey="date"
-                    stroke="#000000"
+                    stroke="hsl(var(--muted-foreground))"
                     fontSize={12}
                   />
                   <YAxis
-                    stroke="#000000"
+                    stroke="hsl(var(--muted-foreground))"
                     fontSize={12}
                   />
                   <Tooltip content={<CustomTooltip />} />
@@ -261,11 +261,11 @@ export function ProgressChart({
                   <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
                   <XAxis
                     dataKey="date"
-                    stroke="#000000"
+                    stroke="hsl(var(--muted-foreground))"
                     fontSize={12}
                   />
                   <YAxis
-                    stroke="#000000"
+                    stroke="hsl(var(--muted-foreground))"
                     fontSize={12}
                   />
                   <Tooltip content={<CustomTooltip />} />

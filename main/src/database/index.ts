@@ -89,12 +89,15 @@ export class ProgressDatabase {
     
     // Run migrations
     await this.runMigrations();
-    
-    // Initialize demo data if database is empty
-    await this.initializeDemoData();
-    
-    // Setup backup schedule
-    this.setupBackupSchedule();
+
+    // IMPORTANT:
+    // - Do NOT auto-seed demo data in production or after a user-initiated wipe.
+    // - Do NOT run a second hidden backup system here.
+    // Backups are handled by main/src/backup and restore must be explicit.
+    const enableDemoData = process.env.PERSONALOS_ENABLE_DEMO_DATA === 'true';
+    if (enableDemoData) {
+      await this.initializeDemoData();
+    }
     
     // Setup change tracking
     this.setupChangeTracking();
@@ -331,7 +334,7 @@ export class ProgressDatabase {
           SELECT 
             g.*,
             COUNT(DISTINCT t.id) as task_count,
-            COUNT(DISTINCT CASE WHEN t.status = 'completed' THEN t.id END) as completed_tasks,
+            COUNT(DISTINCT CASE WHEN (t.status = 'completed' OR t.progress IN (25, 50, 75, 100)) THEN t.id END) as completed_tasks,
             COUNT(DISTINCT p.id) as project_count
           FROM goals g
           LEFT JOIN projects p ON g.id = p.goal_id AND p.deleted_at IS NULL
@@ -348,7 +351,7 @@ export class ProgressDatabase {
           FROM tasks t
           LEFT JOIN goals g ON t.goal_id = g.id
           LEFT JOIN projects p ON t.project_id = p.id
-          WHERE t.status != 'completed'
+          WHERE NOT (t.status = 'completed' OR t.progress IN (25, 50, 75, 100))
             AND t.due_date IS NOT NULL
             AND date(t.due_date) <= date('now')
             AND t.deleted_at IS NULL
@@ -458,6 +461,42 @@ export class ProgressDatabase {
           CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON reviews(created_at);
         `,
       },
+      
+      // Version 8: Add duration_type column to tasks and update status/priority constraints
+      {
+        version: 8,
+        up: `
+          -- Add duration_type column to tasks if missing
+          -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, handled programmatically
+        `,
+      },
+      
+      // Version 9: Add completed_at column to goals table
+      {
+        version: 9,
+        up: `
+          -- Add completed_at column to goals if missing
+          -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, handled programmatically
+        `,
+      },
+      
+      // Version 10: Add is_paused and paused_at columns to tasks for continuous task pause functionality
+      {
+        version: 10,
+        up: `
+          -- Add is_paused and paused_at columns to tasks if missing
+          -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, handled programmatically
+        `,
+      },
+      
+      // Version 11: Add last_reset_date column to tasks for daily reset tracking
+      {
+        version: 11,
+        up: `
+          -- Add last_reset_date column to tasks if missing
+          -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, handled programmatically
+        `,
+      },
     ];
     
     // Run migrations
@@ -507,6 +546,96 @@ export class ProgressDatabase {
           }
         }
         
+        // Special handling for version 8 - add duration_type column to tasks
+        if (migration.version === 8) {
+          try {
+            const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all() as Array<{name: string}>;
+            const hasDurationType = tableInfo.some(col => col.name === 'duration_type');
+
+            if (!hasDurationType) {
+              console.log('Adding duration_type column to tasks table');
+              this.db.exec("ALTER TABLE tasks ADD COLUMN duration_type TEXT NOT NULL DEFAULT 'today'");
+            }
+
+            // Update version
+            this.db.exec(`PRAGMA user_version = ${migration.version}`);
+            console.log(`Migration to version ${migration.version} completed successfully`);
+            continue;
+          } catch (error) {
+            console.error('Failed to check/add duration_type column:', error);
+            throw error;
+          }
+        }
+        
+        // Special handling for version 9 - add completed_at column to goals
+        if (migration.version === 9) {
+          try {
+            const tableInfo = this.db.prepare('PRAGMA table_info(goals)').all() as Array<{name: string}>;
+            const hasCompletedAt = tableInfo.some(col => col.name === 'completed_at');
+
+            if (!hasCompletedAt) {
+              console.log('Adding completed_at column to goals table');
+              this.db.exec("ALTER TABLE goals ADD COLUMN completed_at TEXT");
+            }
+
+            // Update version
+            this.db.exec(`PRAGMA user_version = ${migration.version}`);
+            console.log(`Migration to version ${migration.version} completed successfully`);
+            continue;
+          } catch (error) {
+            console.error('Failed to check/add completed_at column to goals:', error);
+            throw error;
+          }
+        }
+        
+        // Special handling for version 10 - add is_paused and paused_at columns to tasks
+        if (migration.version === 10) {
+          try {
+            const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all() as Array<{name: string}>;
+            const hasIsPaused = tableInfo.some(col => col.name === 'is_paused');
+            const hasPausedAt = tableInfo.some(col => col.name === 'paused_at');
+
+            if (!hasIsPaused) {
+              console.log('Adding is_paused column to tasks table');
+              this.db.exec("ALTER TABLE tasks ADD COLUMN is_paused INTEGER NOT NULL DEFAULT 0");
+            }
+            
+            if (!hasPausedAt) {
+              console.log('Adding paused_at column to tasks table');
+              this.db.exec("ALTER TABLE tasks ADD COLUMN paused_at TEXT");
+            }
+
+            // Update version
+            this.db.exec(`PRAGMA user_version = ${migration.version}`);
+            console.log(`Migration to version ${migration.version} completed successfully`);
+            continue;
+          } catch (error) {
+            console.error('Failed to check/add is_paused/paused_at columns to tasks:', error);
+            throw error;
+          }
+        }
+        
+        // Special handling for version 11 - add last_reset_date column to tasks
+        if (migration.version === 11) {
+          try {
+            const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all() as Array<{name: string}>;
+            const hasLastResetDate = tableInfo.some(col => col.name === 'last_reset_date');
+
+            if (!hasLastResetDate) {
+              console.log('Adding last_reset_date column to tasks table');
+              this.db.exec("ALTER TABLE tasks ADD COLUMN last_reset_date TEXT");
+            }
+
+            // Update version
+            this.db.exec(`PRAGMA user_version = ${migration.version}`);
+            console.log(`Migration to version ${migration.version} completed successfully`);
+            continue;
+          } catch (error) {
+            console.error('Failed to check/add last_reset_date column to tasks:', error);
+            throw error;
+          }
+        }
+        
         // Run migration in transaction
         const transaction = this.db.transaction(() => {
           try {
@@ -541,20 +670,48 @@ export class ProgressDatabase {
     // Also check completed_at column even if migrations are up to date (for older databases)
     try {
       const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all() as Array<{name: string}>;
+      console.log('Post-migration check: tasks table columns:', tableInfo.map(c => c.name).join(', '));
+      
       const hasCompletedAt = tableInfo.some(col => col.name === 'completed_at');
       const hasDailyProgress = tableInfo.some(col => col.name === 'daily_progress');
+      const hasDurationType = tableInfo.some(col => col.name === 'duration_type');
+      const hasIsPaused = tableInfo.some(col => col.name === 'is_paused');
+      const hasPausedAt = tableInfo.some(col => col.name === 'paused_at');
+      const hasLastResetDate = tableInfo.some(col => col.name === 'last_reset_date');
       
       if (!hasCompletedAt) {
         console.log('Adding missing completed_at column to tasks table (post-migration check)');
         this.db.exec('ALTER TABLE tasks ADD COLUMN completed_at TEXT');
+      } else {
+        console.log('completed_at column already exists');
       }
 
       if (!hasDailyProgress) {
         console.log('Adding missing daily_progress column to tasks table (post-migration check)');
         this.db.exec("ALTER TABLE tasks ADD COLUMN daily_progress TEXT NOT NULL DEFAULT '{}'");
       }
+      
+      if (!hasDurationType) {
+        console.log('Adding missing duration_type column to tasks table (post-migration check)');
+        this.db.exec("ALTER TABLE tasks ADD COLUMN duration_type TEXT NOT NULL DEFAULT 'today'");
+      }
+      
+      if (!hasIsPaused) {
+        console.log('Adding missing is_paused column to tasks table (post-migration check)');
+        this.db.exec("ALTER TABLE tasks ADD COLUMN is_paused INTEGER NOT NULL DEFAULT 0");
+      }
+      
+      if (!hasPausedAt) {
+        console.log('Adding missing paused_at column to tasks table (post-migration check)');
+        this.db.exec("ALTER TABLE tasks ADD COLUMN paused_at TEXT");
+      }
+      
+      if (!hasLastResetDate) {
+        console.log('Adding missing last_reset_date column to tasks table (post-migration check)');
+        this.db.exec("ALTER TABLE tasks ADD COLUMN last_reset_date TEXT");
+      }
     } catch (error) {
-      console.error('Failed to check/add completed_at column (post-migration):', error);
+      console.error('Failed to check/add columns (post-migration):', error);
     }
   }
   
@@ -841,11 +998,38 @@ export class ProgressDatabase {
     });
     
     try {
-      return transaction();
+      const result = transaction();
+      
+      // Check if any operation was a DELETE or UPDATE deleted_at (indicating deletion)
+      const hasDeleteOps = operations.some(op => {
+        const query = op.query.trim().toUpperCase();
+        return query.startsWith('DELETE') || (query.includes('UPDATE') && query.includes('deleted_at'));
+      });
+      
+      // Force WAL checkpoint after delete operations to ensure persistence
+      if (hasDeleteOps) {
+        try {
+          this.db.pragma('wal_checkpoint(RESTART)');
+          console.log('WAL checkpoint completed after delete operations');
+        } catch (error) {
+          console.error('WAL checkpoint failed:', error);
+        }
+      }
+      
+      return result;
     } catch (error) {
       console.error('Transaction failed:', error);
       throw error;
     }
+  }
+
+  /**
+   * Run an arbitrary set of database operations atomically.
+   * If the callback throws, the transaction is rolled back.
+   */
+  runAtomic<T>(fn: () => T): T {
+    const transaction = this.db.transaction(fn);
+    return transaction();
   }
   
   getData<T = any>(table: string, where?: Record<string, any>): T[] {
@@ -918,6 +1102,15 @@ export class ProgressDatabase {
         const query = `DELETE FROM ${table} WHERE id = ?`;
         this.executeQuery(query, [id]);
       }
+      
+      // Force WAL checkpoint to ensure deletion persists to disk
+      try {
+        this.db.pragma('wal_checkpoint(RESTART)');
+        console.log('WAL checkpoint completed after deleteData');
+      } catch (error) {
+        console.error('WAL checkpoint failed:', error);
+      }
+      
       return true;
     } catch (error) {
       console.error('Delete failed:', error);
@@ -1141,7 +1334,15 @@ export class ProgressDatabase {
     }
     
     if (this.db) {
-      this.db.close();
+      try {
+        // Force final WAL checkpoint before closing
+        console.log('Performing final WAL checkpoint before close...');
+        this.db.pragma('wal_checkpoint(TRUNCATE)');
+        this.db.close();
+        console.log('Database closed successfully');
+      } catch (error) {
+        console.error('Error closing database:', error);
+      }
     }
     
     this.isInitialized = false;
@@ -1200,6 +1401,23 @@ export class ProgressDatabase {
     const now = new Date().toISOString();
     const dateStr = date.slice(0, 10);
 
+    // Get the habit to check creation date
+    const habit = this.db.prepare(`
+      SELECT created_at FROM habits WHERE id = ?
+    `).get(habitId) as { created_at: string } | undefined;
+
+    if (!habit) {
+      throw new Error(`Habit ${habitId} not found`);
+    }
+
+    const habitCreatedDate = habit.created_at.slice(0, 10); // YYYY-MM-DD format
+
+    // Validate: don't allow marking dates before habit creation
+    if (dateStr < habitCreatedDate) {
+      console.warn(`[HABIT] Cannot mark date before habit creation: ${dateStr} < ${habitCreatedDate}`);
+      return;
+    }
+
     if (completed) {
       this.db.prepare(`
         INSERT OR REPLACE INTO habit_completions (id, habit_id, date, completed, notes, updated_at)
@@ -1212,11 +1430,12 @@ export class ProgressDatabase {
       `).run(habitId, dateStr);
     }
 
+    // Get all completions from habit creation date onward (enforce creation date boundary)
     const completionRows = this.db.prepare(`
       SELECT date FROM habit_completions 
-      WHERE habit_id = ? AND completed = 1
+      WHERE habit_id = ? AND completed = 1 AND date >= ?
       ORDER BY date DESC
-    `).all(habitId) as Array<{ date: string }>;
+    `).all(habitId, habitCreatedDate) as Array<{ date: string }>;
 
     const completedDates = new Set(completionRows.map((row) => row.date?.slice(0, 10)));
 
@@ -1242,15 +1461,28 @@ export class ProgressDatabase {
       }
     }
 
+    // Calculate consistency: count completions from creation date to 30 days ago (or creation date, whichever is later)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+    
+    // The calculation window starts from the later of: habit creation date or 30 days ago
+    const consistencyStartDate = habitCreatedDate > thirtyDaysAgoStr ? habitCreatedDate : thirtyDaysAgoStr;
+
     const consistencyCount = this.db.prepare(`
       SELECT COUNT(*) as count 
       FROM habit_completions 
       WHERE habit_id = ? 
       AND completed = 1 
-      AND date >= date('now', '-30 days')
-    `).get(habitId) as { count: number };
+      AND date >= ? AND date <= date('now')
+    `).get(habitId, consistencyStartDate) as { count: number };
 
-    const consistencyScore = Math.min(100, Math.round(((consistencyCount?.count || 0) / 30) * 100));
+    // Calculate expected days: days from consistency start date to today
+    const startDate = new Date(consistencyStartDate);
+    const today = new Date();
+    const expectedDays = Math.max(1, Math.floor((today.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+
+    const consistencyScore = Math.min(100, Math.round(((consistencyCount?.count || 0) / expectedDays) * 100));
 
     this.db.prepare(`
       UPDATE habits 
@@ -1265,8 +1497,8 @@ export class ProgressDatabase {
   getProgressStats() {
     const stats = this.db.prepare(`
       SELECT 
-        (SELECT COUNT(*) FROM tasks WHERE status = 'completed' AND date(completed_at) = date('now')) as completed_today,
-        (SELECT COUNT(*) FROM tasks WHERE status = 'completed' AND date(completed_at) >= date('now', '-7 days')) as completed_week,
+        (SELECT COUNT(*) FROM tasks WHERE (status = 'completed' OR progress IN (25, 50, 75, 100)) AND date(completed_at) = date('now')) as completed_today,
+        (SELECT COUNT(*) FROM tasks WHERE (status = 'completed' OR progress IN (25, 50, 75, 100)) AND date(completed_at) >= date('now', '-7 days')) as completed_week,
         (SELECT AVG(progress) FROM goals WHERE status = 'active' AND deleted_at IS NULL) as avg_goal_progress,
         (SELECT AVG(consistency_score) FROM habits WHERE deleted_at IS NULL) as avg_habit_consistency,
         (SELECT COUNT(DISTINCT date) FROM time_blocks WHERE date(start_time) = date('now')) as focus_sessions_today,
@@ -1430,38 +1662,254 @@ export class ProgressDatabase {
     const startDate = periodStart.split('T')[0];
     const endDate = periodEnd.split('T')[0];
     
-    // Task insights
-    const taskStats = this.db.prepare(`
-      SELECT 
-        COUNT(CASE WHEN status = 'completed' AND date(completed_at) BETWEEN ? AND ? THEN 1 END) as tasks_completed,
-        COUNT(CASE WHEN date(created_at) BETWEEN ? AND ? THEN 1 END) as tasks_created,
-        COUNT(CASE WHEN status != 'completed' AND due_date < ? AND deleted_at IS NULL THEN 1 END) as overdue_tasks,
-        COUNT(CASE WHEN status = 'blocked' AND deleted_at IS NULL THEN 1 END) as blocked_tasks
+    // ============ TASK INSIGHTS (Using weighted calculations like Task Tab) ============
+    const priorityWeight = (priority: string): number => {
+      if (priority === 'high') return 3;
+      if (priority === 'medium') return 2;
+      if (priority === 'low') return 1;
+      return 2; // default to medium
+    };
+
+    const completionFactor = (progress: number): number => {
+      const value = Math.max(0, Math.min(progress ?? 0, 100));
+      if (value >= 100) return 1;
+      if (value >= 75) return 0.75;
+      if (value >= 50) return 0.5;
+      if (value >= 25) return 0.25;
+      return 0;
+    };
+
+    // Get all tasks with their progress data (INCLUDING due_date, estimated_time, actual_time)
+    const allTasks = this.db.prepare(`
+      SELECT id, title, priority, status, progress, created_at, completed_at, due_date, estimated_time, actual_time, deleted_at
       FROM tasks
-    `).get(startDate, endDate, startDate, endDate, endDate) as any;
+      WHERE deleted_at IS NULL
+    `).all() as any[];
+
+    // Separate tasks for period analysis
+    const tasksInPeriod = allTasks.filter(task => {
+      const createdDay = new Date(task.created_at).toISOString().split('T')[0];
+      const completedDay = task.completed_at ? new Date(task.completed_at).toISOString().split('T')[0] : null;
+      // Include tasks created OR completed in this period
+      return (createdDay >= startDate && createdDay <= endDate) || 
+             (completedDay && completedDay >= startDate && completedDay <= endDate);
+    });
+
+    // Calculate weighted task stats for the period
+    let tasksCompleted = 0;
+    let tasksCreated = 0;
+    let blockedTasksCount = 0;
+    let plannedWeight = 0;
+    let earnedWeight = 0;
+    const completedTasksList: any[] = [];
+    const skippedTasksList: any[] = [];
+    let totalCompletionTime = 0;
+    let completionTimeCount = 0;
+    const dayCompletionCounts: Record<string, number> = {};
+
+    tasksInPeriod.forEach((task) => {
+      const createdDay = new Date(task.created_at).toISOString().split('T')[0];
+      
+      // Count tasks created in period
+      if (createdDay >= startDate && createdDay <= endDate) {
+        tasksCreated++;
+      }
+      
+      // Count blocked tasks
+      if (task.status === 'blocked') {
+        blockedTasksCount++;
+      }
+
+      const weight = priorityWeight(task.priority);
+      plannedWeight += weight;
+      
+      const progress = task.progress ?? 0;
+      earnedWeight += weight * completionFactor(progress);
+      
+      // Count completed (100% progress) in this period
+      if (progress >= 100 && task.completed_at) {
+        const completedDay = new Date(task.completed_at).toISOString().split('T')[0];
+        if (completedDay >= startDate && completedDay <= endDate) {
+          tasksCompleted++;
+          completedTasksList.push({
+            id: task.id,
+            title: task.title,
+            completedAt: task.completed_at
+          });
+          
+          // Track completion time
+          if (task.actual_time) {
+            totalCompletionTime += task.actual_time;
+            completionTimeCount++;
+          }
+
+          // Track productivity by day (get day of week)
+          const dayOfWeek = new Date(task.completed_at).toLocaleDateString('en-US', { weekday: 'long' });
+          dayCompletionCounts[dayOfWeek] = (dayCompletionCounts[dayOfWeek] || 0) + 1;
+        }
+      }
+      
+      // Track skipped/abandoned tasks
+      if ((task.status === 'skipped' || task.status === 'blocked') && task.completed_at) {
+        const completedDay = new Date(task.completed_at).toISOString().split('T')[0];
+        if (completedDay >= startDate && completedDay <= endDate) {
+          skippedTasksList.push({
+            id: task.id,
+            title: task.title,
+            reason: task.status === 'blocked' ? 'Blocked' : 'Skipped'
+          });
+        }
+      }
+    });
+
+    // Task completion rate (weighted)
+    const taskCompletionRate = plannedWeight > 0 
+      ? Math.round((earnedWeight / plannedWeight) * 100)
+      : 0;
+
+    // Binary task completion counts for combined completion-rate aggregation
+    const taskEligibleCount = tasksInPeriod.length;
+
+    // Top completed tasks for period
+    const topCompletedTasks = completedTasksList.slice(0, 10);
+
+    // Overdue tasks (due date passed, not completed)
+    const overdueTasksCount = allTasks.filter(t => {
+      if (!t.completed_at && t.due_date) {
+        return t.due_date < new Date().toISOString().split('T')[0] && t.progress < 100;
+      }
+      return false;
+    }).length;
+
+    // Average task completion time
+    const avgTaskCompletionTime = completionTimeCount > 0 
+      ? Math.round(totalCompletionTime / completionTimeCount * 10) / 10
+      : 0;
+
+    // Most productive day
+    const mostProductiveDay = Object.entries(dayCompletionCounts).length > 0
+      ? Object.entries(dayCompletionCounts).sort((a, b) => b[1] - a[1])[0][0]
+      : undefined;
+
+    // ============ HABIT INSIGHTS (Using period-scoped consistency calculation) ============
     
-    // Top completed tasks
-    const topCompletedTasks = this.db.prepare(`
-      SELECT id, title, completed_at
-      FROM tasks
-      WHERE status = 'completed' 
-        AND date(completed_at) BETWEEN ? AND ?
-        AND deleted_at IS NULL
-      ORDER BY completed_at DESC
-      LIMIT 10
-    `).all(startDate, endDate) as any[];
-    
-    // Habit insights
-    const habitStats = this.db.prepare(`
-      SELECT 
-        COUNT(CASE WHEN completed = 1 THEN 1 END) as habits_completed,
-        COUNT(CASE WHEN completed = 0 OR completed IS NULL THEN 1 END) as habits_missed,
-        COUNT(*) as total_habit_entries
+    // Get all habits with their streak data
+    const habits = this.db.prepare(`
+      SELECT id, title, frequency, deleted_at, created_at, streak_current, streak_longest
+      FROM habits
+      WHERE deleted_at IS NULL
+    `).all() as any[];
+
+    const habitCompletions = this.db.prepare(`
+      SELECT habit_id, date, completed
       FROM habit_completions
       WHERE date BETWEEN ? AND ?
-    `).get(startDate, endDate) as any;
-    
-    // Current streaks
+    `).all(startDate, endDate) as any[];
+
+    // Helper to get period key
+    const getHabitPeriodKey = (dateStr: string, frequency: 'daily' | 'weekly' | 'monthly'): string => {
+      const date = new Date(dateStr);
+      if (frequency === 'daily') {
+        return dateStr;
+      } else if (frequency === 'weekly') {
+        const weekStart = new Date(date);
+        weekStart.setDate(date.getDate() - date.getDay() + (date.getDay() === 0 ? -6 : 1)); // Monday start
+        return weekStart.toISOString().split('T')[0];
+      } else if (frequency === 'monthly') {
+        return dateStr.substring(0, 7); // YYYY-MM
+      }
+      return dateStr;
+    };
+
+    // Calculate habit consistency and track individual counts
+    let expectedPeriods = 0;
+    let completedPeriods = 0;
+    let habitsCompleted = 0;
+    let habitsMissed = 0;
+    const brokenStreaks: any[] = [];
+    const prevHabitCompletions = this.db.prepare(`
+      SELECT habit_id, date, completed
+      FROM habit_completions
+      WHERE date < ?
+      ORDER BY date DESC
+      LIMIT ? 
+    `).all(startDate, habits.length * 30) as any[];
+
+    habits.forEach(habit => {
+      const createdDate = new Date(habit.created_at).toISOString().split('T')[0];
+      const effectiveStart = createdDate > startDate ? createdDate : startDate;
+      const effectiveEnd = endDate;
+
+      if (effectiveStart <= effectiveEnd) {
+        // Get all expected periods for this habit
+        const expectedKeys = new Set<string>();
+        let cursor = new Date(effectiveStart);
+        const endDateObj = new Date(effectiveEnd);
+
+        while (cursor <= endDateObj) {
+          expectedKeys.add(getHabitPeriodKey(cursor.toISOString().split('T')[0], habit.frequency));
+          cursor.setDate(cursor.getDate() + 1);
+        }
+
+        expectedPeriods += expectedKeys.size;
+
+        // Get completed periods for this habit
+        const completedKeys = new Set<string>();
+        habitCompletions
+          .filter(c => c.habit_id === habit.id && c.completed === 1)
+          .forEach(c => {
+            completedKeys.add(getHabitPeriodKey(c.date, habit.frequency));
+          });
+
+        completedPeriods += completedKeys.size;
+        
+        // Count individual completed/missed expectations
+        const periodCompletionRate = expectedKeys.size > 0 
+          ? Math.round((completedKeys.size / expectedKeys.size) * 100)
+          : 0;
+        
+        if (periodCompletionRate === 100) {
+          habitsCompleted++;
+        } else if (periodCompletionRate === 0) {
+          habitsMissed++;
+        }
+
+        // Check for broken streaks (compare with previous period)
+        const prevStartDate = new Date(startDate);
+        const periodLength = Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24));
+        prevStartDate.setDate(prevStartDate.getDate() - periodLength);
+        const prevPeriodEnd = new Date(startDate);
+        prevPeriodEnd.setDate(prevPeriodEnd.getDate() - 1);
+        const prevPeriodEndStr = prevPeriodEnd.toISOString().split('T')[0];
+
+        // Get the last completion before this period
+        const lastCompletionBefore = prevHabitCompletions
+          .filter(c => c.habit_id === habit.id && c.date <= prevPeriodEndStr && c.completed === 1)
+          .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+
+        // If there was a streak before and now it's broken
+        if (lastCompletionBefore && habit.streak_current === 0 && habit.streak_longest > 0) {
+          brokenStreaks.push({
+            id: habit.id,
+            title: habit.title,
+            previousStreak: habit.streak_longest
+          });
+        }
+      }
+    });
+
+    const habitConsistencyRate = expectedPeriods > 0
+      ? Math.round((completedPeriods / expectedPeriods) * 100)
+      : 0;
+
+    // Combined completion rate uses strict count-based aggregation across tasks + habit periods
+    const combinedCompletionDenominator = taskEligibleCount + expectedPeriods;
+    const combinedCompletionNumerator = tasksCompleted + completedPeriods;
+    const combinedCompletionRate = combinedCompletionDenominator > 0
+      ? Math.round((combinedCompletionNumerator / combinedCompletionDenominator) * 100)
+      : 0;
+
+    // Current streaks (all active habits)
     const currentStreaks = this.db.prepare(`
       SELECT id, title, streak_current as streak
       FROM habits
@@ -1469,126 +1917,190 @@ export class ProgressDatabase {
       ORDER BY streak_current DESC
       LIMIT 5
     `).all() as any[];
-    
-    // Goal progress
-    const goalProgress = this.db.prepare(`
-      SELECT id, title, progress
-      FROM goals
-      WHERE status = 'active' AND deleted_at IS NULL
-      ORDER BY progress DESC
-    `).all() as any[];
-    
-    // Goals at risk (low progress, approaching deadline)
+
+    // Habit trend (compare with previous period)
+    const prevHabitStartDate = new Date(startDate);
+    const prevHabitEndDate = new Date(startDate);
+    prevHabitEndDate.setDate(prevHabitEndDate.getDate() - 1);
+    const prevPeriodLength = Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24));
+    prevHabitStartDate.setDate(prevHabitStartDate.getDate() - prevPeriodLength);
+
+    const prevHabitStr = prevHabitStartDate.toISOString().split('T')[0];
+    const prevHabitEndStr = prevHabitEndDate.toISOString().split('T')[0];
+    const prevPeriodHabitCompletions = this.db.prepare(`
+      SELECT habit_id, date, completed
+      FROM habit_completions
+      WHERE date BETWEEN ? AND ?
+    `).all(prevHabitStr, prevHabitEndStr) as any[];
+
+    let prevExpectedHabitPeriods = 0;
+    let prevCompletedHabitPeriods = 0;
+
+    habits.forEach(habit => {
+      const createdDate = new Date(habit.created_at).toISOString().split('T')[0];
+      const effectiveStart = createdDate > prevHabitStr ? createdDate : prevHabitStr;
+      const effectiveEnd = prevHabitEndStr;
+
+      if (effectiveStart <= effectiveEnd) {
+        const expectedKeys = new Set<string>();
+        let cursor = new Date(effectiveStart);
+        const endDateObj = new Date(effectiveEnd);
+
+        while (cursor <= endDateObj) {
+          expectedKeys.add(getHabitPeriodKey(cursor.toISOString().split('T')[0], habit.frequency));
+          cursor.setDate(cursor.getDate() + 1);
+        }
+
+        prevExpectedHabitPeriods += expectedKeys.size;
+
+        const completedKeys = new Set<string>();
+        prevPeriodHabitCompletions
+          .filter(c => c.habit_id === habit.id && c.completed === 1)
+          .forEach(c => {
+            completedKeys.add(getHabitPeriodKey(c.date, habit.frequency));
+          });
+
+        prevCompletedHabitPeriods += completedKeys.size;
+      }
+    });
+
+    const prevHabitRate = prevExpectedHabitPeriods > 0 
+      ? prevCompletedHabitPeriods / prevExpectedHabitPeriods
+      : 0;
+    const currentHabitRate = expectedPeriods > 0 
+      ? completedPeriods / expectedPeriods
+      : 0;
+
+    let habitTrend: 'improving' | 'stable' | 'declining' = 'stable';
+    if (prevExpectedHabitPeriods > 0) {
+      const habitPercentChange = ((currentHabitRate - prevHabitRate) / prevHabitRate) * 100;
+      if (habitPercentChange > 10) habitTrend = 'improving';
+      else if (habitPercentChange < -10) habitTrend = 'declining';
+    }
+
+    // ============ GOAL INSIGHTS ============
+
+    // Goals at risk (active goals with low progress or approaching deadline)
     const goalsAtRisk = this.db.prepare(`
       SELECT id, title, progress, target_date
       FROM goals
       WHERE status = 'active' 
         AND deleted_at IS NULL
         AND target_date IS NOT NULL
-        AND date(target_date) <= date('now', '+30 days')
         AND progress < 50
     `).all() as any[];
-    
-    // Productivity by day of week
-    const productivityByDay = this.db.prepare(`
-      SELECT 
-        strftime('%w', completed_at) as day_of_week,
-        COUNT(*) as completed_count
-      FROM tasks
+
+    // Goals completed this period
+    const goalsCompletedThisPeriod = this.db.prepare(`
+      SELECT id, title, progress
+      FROM goals
       WHERE status = 'completed'
-        AND date(completed_at) BETWEEN ? AND ?
         AND deleted_at IS NULL
-      GROUP BY strftime('%w', completed_at)
-      ORDER BY completed_count DESC
+        AND updated_at BETWEEN datetime(?) AND datetime(?)
     `).all(startDate, endDate) as any[];
-    
-    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const mostProductiveDay = productivityByDay.length > 0 
-      ? dayNames[parseInt(productivityByDay[0].day_of_week)] 
-      : undefined;
-    const leastProductiveDay = productivityByDay.length > 0 
-      ? dayNames[parseInt(productivityByDay[productivityByDay.length - 1].day_of_week)] 
-      : undefined;
-    
-    // Average habit consistency
-    const avgConsistency = this.db.prepare(`
-      SELECT AVG(consistency_score) as avg_consistency
-      FROM habits
-      WHERE deleted_at IS NULL
-    `).get() as any;
-    
-    // Calculate completion rate
-    const taskCompletionRate = taskStats.tasks_created > 0 
-      ? Math.round((taskStats.tasks_completed / taskStats.tasks_created) * 100)
-      : 0;
+
+    // Active goals progress
+    const activeGoalsProgress = this.db.prepare(`
+      SELECT id, title, progress
+      FROM goals
+      WHERE status = 'active'
+        AND deleted_at IS NULL
+    `).all() as any[];
+
+    // Calculate progress change for active goals
+    const activeGoalsWithChange = activeGoalsProgress.map((goal: any) => {
+      // Get previous progress (7 days ago for daily, or 1 week for weekly, etc.)
+      const prevCheck = this.db.prepare(`
+        SELECT progress
+        FROM goals
+        WHERE id = ?
+        LIMIT 1
+      `).get(goal.id) as any;
       
-    const habitConsistencyRate = habitStats.total_habit_entries > 0
-      ? Math.round((habitStats.habits_completed / habitStats.total_habit_entries) * 100)
-      : 0;
-    
-    // Determine trends
+      const change = prevCheck ? goal.progress - prevCheck.progress : 0;
+      return {
+        id: goal.id,
+        title: goal.title,
+        progress: goal.progress,
+        change
+      };
+    });
+
+    // Productivity trend (compare previous period based on task completion)
     const previousPeriodStart = new Date(startDate);
     const periodLength = Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24));
     previousPeriodStart.setDate(previousPeriodStart.getDate() - periodLength);
     const prevStartDate = previousPeriodStart.toISOString().split('T')[0];
-    
-    const prevTaskStats = this.db.prepare(`
-      SELECT COUNT(CASE WHEN status = 'completed' THEN 1 END) as prev_completed
-      FROM tasks
-      WHERE date(completed_at) BETWEEN ? AND ?
-    `).get(prevStartDate, startDate) as any;
-    
+
+    let prevEarnedWeight = 0;
+    let prevPlannedWeight = 0;
+
+    allTasks.forEach((task) => {
+      const createdDay = new Date(task.created_at).toISOString().split('T')[0];
+      const completedDay = task.completed_at ? new Date(task.completed_at).toISOString().split('T')[0] : null;
+      
+      // Include tasks from previous period by creation or completion
+      if ((createdDay >= prevStartDate && createdDay < startDate) ||
+          (completedDay && completedDay >= prevStartDate && completedDay < startDate)) {
+        const weight = priorityWeight(task.priority);
+        prevPlannedWeight += weight;
+        prevEarnedWeight += weight * completionFactor(task.progress ?? 0);
+      }
+    });
+
+    const prevRate = prevPlannedWeight > 0 ? (prevEarnedWeight / prevPlannedWeight) : 0;
+    const currentRate = plannedWeight > 0 ? (earnedWeight / plannedWeight) : 0;
+
     let productivityTrend: 'improving' | 'stable' | 'declining' = 'stable';
-    if (prevTaskStats.prev_completed > 0) {
-      const diff = taskStats.tasks_completed - prevTaskStats.prev_completed;
-      const percentChange = (diff / prevTaskStats.prev_completed) * 100;
+    if (prevPlannedWeight > 0) {
+      const percentChange = ((currentRate - prevRate) / prevRate) * 100;
       if (percentChange > 10) productivityTrend = 'improving';
       else if (percentChange < -10) productivityTrend = 'declining';
     }
-    
+
+    // Consistency score (overall consistency across all areas)
+    const consistencyScore = Math.round((taskCompletionRate * 0.4 + habitConsistencyRate * 0.4 + 
+      (activeGoalsWithChange.length > 0 ? 
+        Math.round(activeGoalsWithChange.reduce((sum, g) => sum + g.progress, 0) / activeGoalsWithChange.length) 
+      : 0) * 0.2));
+
     return {
-      tasksCompleted: taskStats.tasks_completed || 0,
-      tasksCreated: taskStats.tasks_created || 0,
+      tasksCompleted,
+      tasksCreated,
       taskCompletionRate,
-      overdueTasksCount: taskStats.overdue_tasks || 0,
-      blockedTasksCount: taskStats.blocked_tasks || 0,
-      avgTaskCompletionTime: 0,
-      topCompletedTasks: topCompletedTasks.map(t => ({
-        id: t.id,
-        title: t.title,
-        completedAt: t.completed_at
-      })),
-      skippedOrAbandonedTasks: [],
+      taskEligibleCount,
+      overdueTasksCount,
+      blockedTasksCount,
+      avgTaskCompletionTime,
+      topCompletedTasks,
+      skippedOrAbandonedTasks: skippedTasksList,
       
       habitConsistencyRate,
-      habitsCompleted: habitStats.habits_completed || 0,
-      habitsMissed: habitStats.habits_missed || 0,
+      habitsCompleted,
+      habitsMissed,
+      habitPeriodsCompleted: completedPeriods,
+      habitPeriodsExpected: expectedPeriods,
       currentStreaks: currentStreaks.map(h => ({
         id: h.id,
         title: h.title,
         streak: h.streak
       })),
-      brokenStreaks: [],
-      habitTrend: productivityTrend,
+      brokenStreaks,
+      habitTrend,
       
-      activeGoalsProgress: goalProgress.map(g => ({
-        id: g.id,
-        title: g.title,
-        progress: g.progress,
-        change: 0
-      })),
-      goalsCompletedThisPeriod: 0,
+      activeGoalsProgress: activeGoalsWithChange,
+      goalsCompletedThisPeriod: goalsCompletedThisPeriod.length,
       goalsAtRisk: goalsAtRisk.map(g => ({
         id: g.id,
         title: g.title,
-        reason: `Only ${g.progress}% complete with deadline approaching`
+        progress: g.progress,
+        reason: `${g.progress}% complete`
       })),
       
       mostProductiveDay,
-      leastProductiveDay,
       productivityTrend,
-      consistencyScore: Math.round(avgConsistency?.avg_consistency || 0),
-      
+      consistencyScore,
+      combinedCompletionRate,
       periodStart,
       periodEnd,
     };

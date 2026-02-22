@@ -27,6 +27,12 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false)
   const navigate = useNavigate()
 
+  useEffect(() => {
+    const onOpen = () => setOpen(true)
+    document.addEventListener('open-command-palette', onOpen)
+    return () => document.removeEventListener('open-command-palette', onOpen)
+  }, [])
+
   // Open command palette with Cmd/Ctrl + K
   useHotkeys('ctrl+k, cmd+k', (e) => {
     e.preventDefault()

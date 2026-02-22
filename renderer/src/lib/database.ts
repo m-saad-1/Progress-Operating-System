@@ -1,3 +1,7 @@
+import { endOfMonth, endOfWeek, startOfMonth, startOfWeek } from 'date-fns'
+import { calculateHabitStreaks } from '@/lib/habit-streaks'
+import type { Habit as SharedHabit, HabitCompletion as SharedHabitCompletion } from '@/types'
+
 // Database types and interfaces
 export interface Goal {
   id: string;
@@ -34,15 +38,22 @@ export interface Project {
   version: number;
 }
 
+export interface DailyTaskState {
+  progress: number;
+  status: 'pending' | 'in-progress' | 'blocked' | 'completed' | 'skipped';
+  recorded_at: string;
+  source: 'user' | 'rollover' | 'reset' | 'restore' | 'paused';
+}
+
 export interface Task {
   id: string;
   title: string;
   description: string;
   due_date: string | null;
-  priority: 'low' | 'medium' | 'high' | 'critical';
-  status: 'pending' | 'in-progress' | 'blocked' | 'completed';
+  priority: 'low' | 'medium' | 'high';
+  status: 'pending' | 'in-progress' | 'blocked' | 'completed' | 'skipped';
   progress: number;
-  daily_progress?: Record<string, number>;
+  daily_progress?: Record<string, DailyTaskState>;
   estimated_time: number | null;
   actual_time: number | null;
   recurrence_rule: string | null;
@@ -50,12 +61,16 @@ export interface Task {
   goal_id: string | null;
   parent_task_id: string | null;
   tags: string[];
+  last_reset_date?: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
   deleted_at: string | null;
   version: number;
   goal_title?: string; // Joined from goals table
+  duration_type?: 'today' | 'continuous';
+  is_paused?: boolean;
+  paused_at?: string | null;
 }
 
 export interface ChecklistItem {
@@ -128,6 +143,7 @@ export interface TimeBlock {
   task_title?: string; // Joined from tasks table
   habit_title?: string; // Joined from habits table
 }
+
 
 export interface UserPreferences {
   id: string;
@@ -230,6 +246,7 @@ export interface CreateGoalDTO {
 export interface UpdateGoalDTO extends Partial<CreateGoalDTO> {
   status?: Goal['status'];
   progress?: number;
+  completed_at?: string | null;
 }
 
 export interface CreateTaskDTO {
@@ -240,13 +257,19 @@ export interface CreateTaskDTO {
   estimated_time?: number;
   goal_id?: string;
   tags?: string[];
+  duration_type?: 'today' | 'continuous'; // Today only vs Multi-day/Continuous
 }
 
 export interface UpdateTaskDTO extends Partial<CreateTaskDTO> {
   status?: Task['status'];
   progress?: number;
   actual_time?: number;
-  daily_progress?: Record<string, number>;
+  daily_progress?: Record<string, DailyTaskState>;
+  duration_type?: 'today' | 'continuous';
+  is_paused?: boolean;
+  paused_at?: string | null;
+  last_reset_date?: string | null;
+  completed_at?: string | null;
 }
 
 export interface CreateHabitDTO {
@@ -283,6 +306,205 @@ export interface CreateTimeBlockDTO {
   duration: number;
   notes?: string;
 }
+
+export interface TaskPeriodStats {
+  total: number;
+  completed: number;
+  partially: number;
+  skipped: number;
+  plannedWeight: number;
+  earnedWeight: number;
+  weightedProgress: number;
+}
+
+export interface TaskTabStatsSnapshot {
+  today: {
+    total: number;
+    completed: number;
+    partially: number;
+    skipped: number;
+    plannedWeight: number;
+    earnedWeight: number;
+    weightedProgress: number;
+  };
+  weekly: TaskPeriodStats;
+  previousWeekly: TaskPeriodStats;
+  monthly: TaskPeriodStats;
+  previousMonthly: TaskPeriodStats;
+  health: TaskPeriodStats;
+}
+
+export interface TaskMonthlyTrendPoint {
+  dateKey: string;
+  day: string;
+  month: string;
+  fullMonth: string;
+  progress: number;
+  completionRate: number;
+  completed: number;
+  total: number;
+  target: number;
+}
+
+export interface TaskDailyActivityPoint {
+  dateKey: string;
+  date: string;
+  day: string;
+  completed: number;
+  updates: number;
+  progress: number;
+}
+
+export interface TaskAnalyticsChartSnapshot {
+  monthlyTrend: TaskMonthlyTrendPoint[];
+  dailyActivity: TaskDailyActivityPoint[];
+  heatmap: number[][];
+  heatmapYear: number;
+  heatmapStartDate: string;
+}
+
+export interface TaskMonthlyHistoryPoint {
+  monthKey: string;
+  monthLabel: string;
+  total: number;
+  completed: number;
+  plannedWeight: number;
+  earnedWeight: number;
+  completionRate: number;
+  consistency: number;
+}
+
+export interface TaskRangePriorityStats {
+  total: number;
+  completed: number;
+  plannedWeight: number;
+  earnedWeight: number;
+}
+
+export interface TaskRangeDaySnapshot {
+  dateKey: string;
+  date: string;
+  day: string;
+  total: number;
+  completed: number;
+  partially: number;
+  skipped: number;
+  plannedWeight: number;
+  earnedWeight: number;
+  weightedProgress: number;
+}
+
+export interface TaskRangeAnalyticsSnapshot {
+  startDate: string;
+  endDate: string;
+  summary: TaskPeriodStats;
+  overdue: number;
+  byPriority: {
+    high: TaskRangePriorityStats;
+    medium: TaskRangePriorityStats;
+    low: TaskRangePriorityStats;
+  };
+  daily: TaskRangeDaySnapshot[];
+}
+
+/**
+ * Returns the current local date as YYYY-MM-DD string.
+ * This is critical for habit completions to avoid UTC timezone issues.
+ * Using toISOString() would convert to UTC which can shift the date by a day.
+ */
+export function getLocalDateString(date: Date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+const deriveStatusFromProgress = (
+  progress: number,
+  fallback: DailyTaskState['status'] = 'pending'
+): DailyTaskState['status'] => {
+  if (progress >= 100) return 'completed'
+  if (progress > 0) return 'in-progress'
+  if (progress === -1) return 'pending'
+  return fallback
+}
+
+const normalizeToLocalDayKey = (value: string | null | undefined, fallbackDayKey: string): string => {
+  if (!value) return fallbackDayKey
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  const parsed = new Date(value)
+  if (!Number.isNaN(parsed.getTime())) {
+    return getLocalDateString(parsed)
+  }
+  return fallbackDayKey
+}
+
+const isFinalizedPastDay = (dayKey: string, todayKey: string): boolean => dayKey < todayKey
+
+const isSkippedOrEmptyState = (entry: { progress?: number | null; status?: DailyTaskState['status'] | null }): boolean => {
+  const status = entry.status ?? 'pending'
+  const progress = entry.progress ?? 0
+  return status === 'skipped' || (progress <= 0 && status !== 'completed')
+}
+
+const normalizeDailyProgressFromDb = (
+  rawValue: any,
+  task: Partial<Task>
+): Record<string, DailyTaskState> => {
+  let parsed: any = rawValue
+  if (typeof rawValue === 'string') {
+    try {
+      parsed = JSON.parse(rawValue)
+    } catch {
+      parsed = {}
+    }
+  }
+
+  const normalized: Record<string, DailyTaskState> = {}
+  const fallbackTimestamp = task.updated_at || task.created_at || new Date().toISOString()
+  const fallbackDayKey = normalizeToLocalDayKey(task.created_at || task.updated_at, getLocalDateString(new Date()))
+
+  Object.entries(parsed || {}).forEach(([date, entry]) => {
+    const normalizedDate = normalizeToLocalDayKey(date, fallbackDayKey)
+
+    if (entry && typeof entry === 'object' && 'progress' in (entry as any)) {
+      const value = entry as any
+      const progress = typeof value.progress === 'number' ? value.progress : -1
+      const nextState: DailyTaskState = {
+        progress,
+        status: (value.status as DailyTaskState['status']) || deriveStatusFromProgress(progress, 'pending'),
+        recorded_at: value.recorded_at || fallbackTimestamp,
+        source: value.source || 'user',
+      }
+
+      const existing = normalized[normalizedDate]
+      if (!existing || (nextState.recorded_at || '') >= (existing.recorded_at || '')) {
+        normalized[normalizedDate] = nextState
+      }
+    } else {
+      const progress = typeof entry === 'number' ? entry : -1
+      const nextState: DailyTaskState = {
+        progress,
+        status: deriveStatusFromProgress(progress, 'pending'),
+        recorded_at: fallbackTimestamp,
+        source: 'user',
+      }
+
+      const existing = normalized[normalizedDate]
+      if (!existing || (nextState.recorded_at || '') >= (existing.recorded_at || '')) {
+        normalized[normalizedDate] = nextState
+      }
+    }
+  })
+
+  return normalized
+}
+
+const serializeDailyProgress = (history?: Record<string, DailyTaskState>): string => {
+  return JSON.stringify(history || {})
+}
+
+const TASK_METADATA_DELETED_SENTINEL = '__deleted_task_metadata__'
 
 // Database service class
 export class DatabaseService {
@@ -411,10 +633,10 @@ export class DatabaseService {
     
     query += ' ORDER BY updated_at DESC';
     
-    const results = await this.executeQuery<Goal>(query, params);
+    const results = await this.executeQuery<any>(query, params);
     return results.map(goal => ({
       ...goal,
-      tags: JSON.parse(goal.tags || '[]'),
+      tags: Array.isArray(goal.tags) ? goal.tags : JSON.parse(goal.tags || '[]'),
     }));
   }
 
@@ -429,7 +651,7 @@ export class DatabaseService {
     const goal = results[0];
     return {
       ...goal,
-      tags: JSON.parse(goal.tags || '[]'),
+      tags: Array.isArray(goal.tags) ? goal.tags : JSON.parse(goal.tags || '[]'),
     };
   }
 
@@ -496,6 +718,10 @@ export class DatabaseService {
         updates.push('progress = ?');
         params.push(100);
       }
+    }
+    if (data.completed_at !== undefined) {
+      updates.push('completed_at = ?');
+      params.push(data.completed_at);
     }
     if (data.target_date !== undefined) {
       updates.push('target_date = ?');
@@ -610,11 +836,15 @@ export class DatabaseService {
     query += ' ORDER BY t.priority DESC, t.due_date ASC';
     
     const results = await this.executeQuery<Task>(query, params);
-    return results.map(task => ({
-      ...task,
-      tags: JSON.parse(task.tags || '[]'),
-      daily_progress: JSON.parse((task as any).daily_progress || '{}'),
-    }));
+    return results.map(task => {
+      const rawIsPaused = (task as any).is_paused;
+      return {
+        ...task,
+        tags: Array.isArray(task.tags) ? task.tags : JSON.parse(typeof task.tags === 'string' ? task.tags : '[]'),
+        daily_progress: normalizeDailyProgressFromDb((task as any).daily_progress, task),
+        is_paused: rawIsPaused === 1 || rawIsPaused === '1' || rawIsPaused === true,
+      };
+    });
   }
 
   async getTaskById(id: string): Promise<Task | null> {
@@ -629,23 +859,35 @@ export class DatabaseService {
     if (results.length === 0) return null;
     
     const task = results[0];
+    const rawIsPaused = (task as any).is_paused;
     return {
       ...task,
-      tags: JSON.parse(task.tags || '[]'),
-      daily_progress: JSON.parse((task as any).daily_progress || '{}'),
+      tags: Array.isArray(task.tags) ? task.tags : JSON.parse(typeof task.tags === 'string' ? task.tags : '[]'),
+      daily_progress: normalizeDailyProgressFromDb((task as any).daily_progress, task),
+      is_paused: rawIsPaused === 1 || rawIsPaused === '1' || rawIsPaused === true,
     };
   }
 
   async createTask(data: CreateTaskDTO): Promise<string> {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+    const todayKey = getLocalDateString(new Date());
+    const initialDailyProgress = serializeDailyProgress({
+      [todayKey]: {
+        progress: 0,
+        status: 'pending',
+        recorded_at: now,
+        source: 'user',
+      },
+    });
+    const lastResetDate = data.duration_type === 'continuous' ? todayKey : null;
     
     await this.executeTransaction([{
       query: `
         INSERT INTO tasks (
           id, title, description, due_date, priority, status, progress,
-          estimated_time, actual_time, goal_id, tags, created_at, updated_at, version
-        ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, ?, ?, ?, ?, 1)
+          estimated_time, actual_time, goal_id, tags, duration_type, daily_progress, last_reset_date, created_at, updated_at, version
+        ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 1)
       `,
       params: [
         id,
@@ -656,6 +898,9 @@ export class DatabaseService {
         data.estimated_time || null,
         data.goal_id || null,
         JSON.stringify(data.tags || []),
+        data.duration_type || 'today', // Default to 'today' if not specified
+        initialDailyProgress,
+        lastResetDate,
         now,
         now,
       ]
@@ -705,9 +950,14 @@ export class DatabaseService {
       updates.push('progress = ?');
       params.push(data.progress);
     }
+    // Handle explicit completed_at when set directly (e.g., clearing it when un-completing)
+    if ('completed_at' in data && data.status === undefined) {
+      updates.push('completed_at = ?');
+      params.push(data.completed_at || null);
+    }
     if (data.daily_progress !== undefined) {
       updates.push('daily_progress = ?');
-      params.push(JSON.stringify(data.daily_progress || {}));
+      params.push(serializeDailyProgress(data.daily_progress));
     }
     if (data.estimated_time !== undefined) {
       updates.push('estimated_time = ?');
@@ -724,6 +974,22 @@ export class DatabaseService {
     if (data.tags !== undefined) {
       updates.push('tags = ?');
       params.push(JSON.stringify(data.tags || []));
+    }
+    if (data.duration_type !== undefined) {
+      updates.push('duration_type = ?');
+      params.push(data.duration_type);
+    }
+    if (data.is_paused !== undefined) {
+      updates.push('is_paused = ?');
+      params.push(data.is_paused ? 1 : 0);
+    }
+    if (data.paused_at !== undefined) {
+      updates.push('paused_at = ?');
+      params.push(data.paused_at || null);
+    }
+    if (data.last_reset_date !== undefined) {
+      updates.push('last_reset_date = ?');
+      params.push(data.last_reset_date || null);
     }
     
     // Always update timestamp and version
@@ -808,7 +1074,7 @@ export class DatabaseService {
     const results = await this.executeQuery<Habit>(query, params);
     return results.map(habit => ({
       ...habit,
-      schedule: JSON.parse(habit.schedule || '[]'),
+      schedule: Array.isArray(habit.schedule) ? habit.schedule : JSON.parse(typeof habit.schedule === 'string' ? habit.schedule : '[]'),
     }));
   }
 
@@ -826,14 +1092,13 @@ export class DatabaseService {
     const habit = results[0];
     return {
       ...habit,
-      schedule: JSON.parse(habit.schedule || '[]'),
+      schedule: Array.isArray(habit.schedule) ? habit.schedule : JSON.parse((habit.schedule as any) || '[]'),
     };
   }
 
   async getTodaysHabits(): Promise<Habit[]> {
-    const today = new Date().toISOString().split('T')[0];
-    const dayOfWeek = new Date().toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
-    const dayOfMonth = new Date().getDate().toString();
+    // Use LOCAL date to ensure consistency with habit completion recording
+    const today = getLocalDateString(new Date());
     
     const results = await this.executeQuery<Habit & { today_completed: number }>(
       `SELECT h.*, g.title as goal_title,
@@ -842,20 +1107,27 @@ export class DatabaseService {
        LEFT JOIN goals g ON h.goal_id = g.id
        LEFT JOIN habit_completions hc ON h.id = hc.habit_id AND hc.date = ?
        WHERE h.deleted_at IS NULL
-       AND (
-         h.frequency = 'daily' OR
-         (h.frequency = 'weekly' AND ? IN (SELECT value FROM json_each(h.schedule))) OR
-         (h.frequency = 'monthly' AND ? IN (SELECT value FROM json_each(h.schedule)))
-       )
+       AND h.frequency IN ('daily', 'weekly', 'monthly')
        ORDER BY h.streak_current DESC`,
-      [today, dayOfWeek, dayOfMonth]
+      [today]
     );
     
-    return results.map(habit => ({
-      ...habit,
-      schedule: JSON.parse(habit.schedule || '[]'),
-      today_completed: habit.today_completed === 1,
-    }));
+    return results.map((habit: any) => {
+      const { today_completed, ...habitRest } = habit;
+      return {
+        ...habitRest,
+        schedule: Array.isArray(habitRest.schedule) ? habitRest.schedule : JSON.parse((habitRest.schedule as any) || '[]'),
+        today_completed: today_completed === 1,
+      };
+    });
+  }
+
+  async getHabitCompletions(startDate: string, endDate: string): Promise<HabitCompletion[]> {
+    return this.executeQuery<HabitCompletion>(`
+      SELECT * FROM habit_completions 
+      WHERE date BETWEEN ? AND ?
+      ORDER BY date ASC
+    `, [startDate, endDate]);
   }
 
   async createHabit(data: CreateHabitDTO): Promise<string> {
@@ -930,8 +1202,12 @@ export class DatabaseService {
    */
   async setHabitCompletion(habitId: string, date: Date | string, completed: boolean): Promise<void> {
     const now = new Date().toISOString();
-    const today = new Date().toISOString().split('T')[0];
-    const dateStr = typeof date === 'string' ? date.slice(0, 10) : new Date(date).toISOString().split('T')[0];
+    // Use LOCAL date to avoid timezone issues where UTC conversion shifts the day
+    const today = getLocalDateString(new Date());
+    // For the target date, also use local interpretation
+    const dateStr = typeof date === 'string' 
+      ? date.slice(0, 10) 
+      : getLocalDateString(date);
 
     // INTEGRITY CHECK: Prevent future date completions (no gaming by pre-completing)
     if (dateStr > today) {
@@ -939,7 +1215,48 @@ export class DatabaseService {
       return; // Silently ignore future completions
     }
 
+    // Get the habit to check creation date
+    const habitResult = await this.executeQuery<{ created_at: string; frequency: Habit['frequency'] }>(`
+      SELECT created_at, frequency FROM habits WHERE id = ?
+    `, [habitId]);
+
+    const habit = habitResult?.[0];
+    if (!habit) {
+      throw new Error(`Habit ${habitId} not found`);
+    }
+
+    const habitCreatedDate = habit.created_at.slice(0, 10); // YYYY-MM-DD format
+    const habitFrequency = habit.frequency;
+
+    // Validate: don't allow marking dates before habit creation
+    if (dateStr < habitCreatedDate) {
+      console.warn(`[HABIT] Cannot mark date before habit creation: ${dateStr} < ${habitCreatedDate}`);
+      return;
+    }
+
     if (completed) {
+      if (habitFrequency === 'weekly' || habitFrequency === 'monthly') {
+        const targetDate = new Date(`${dateStr}T00:00:00`);
+        const periodStart = habitFrequency === 'weekly'
+          ? startOfWeek(targetDate, { weekStartsOn: 1 })
+          : startOfMonth(targetDate);
+        const periodEnd = habitFrequency === 'weekly'
+          ? endOfWeek(targetDate, { weekStartsOn: 1 })
+          : endOfMonth(targetDate);
+        const periodStartStr = getLocalDateString(periodStart);
+        const periodEndStr = getLocalDateString(periodEnd);
+
+        const existingCompletion = await this.executeQuery<{ date: string }>(`
+          SELECT date FROM habit_completions
+          WHERE habit_id = ? AND completed = 1 AND date BETWEEN ? AND ?
+          LIMIT 1
+        `, [habitId, periodStartStr, periodEndStr]);
+
+        if (Array.isArray(existingCompletion) && existingCompletion.length > 0) {
+          return;
+        }
+      }
+
       // INSERT OR REPLACE ensures only ONE record per habit/date combination
       // This prevents gaming by rapid toggling - only final state counts
       await this.executeQuery(`
@@ -953,48 +1270,68 @@ export class DatabaseService {
       `, [habitId, dateStr]);
     }
 
+    // Get all completions from habit creation date onward (enforce creation date boundary)
     const completionRows = await this.executeQuery<{ date: string }>(`
       SELECT date FROM habit_completions 
-      WHERE habit_id = ? AND completed = 1
+      WHERE habit_id = ? AND completed = 1 AND date >= ?
       ORDER BY date DESC
-    `, [habitId]);
+    `, [habitId, habitCreatedDate]);
 
-    const completedDates = new Set(
-      (Array.isArray(completionRows) ? completionRows : []).map((row) => row.date?.slice(0, 10))
+    const habitCompletionHistory: SharedHabitCompletion[] = (Array.isArray(completionRows) ? completionRows : [])
+      .filter((row) => row.date)
+      .map((row) => ({
+        id: '',
+        habit_id: habitId,
+        date: row.date.slice(0, 10),
+        completed: true,
+        notes: null,
+        created_at: '',
+        updated_at: '',
+      }));
+
+    const habitForStreaks = {
+      id: habitId,
+      frequency: habitFrequency,
+      schedule: [],
+      created_at: habit.created_at,
+      updated_at: habit.created_at,
+      title: '',
+      description: '',
+      goal_id: undefined,
+      streak_current: 0,
+      streak_longest: 0,
+      consistency_score: 0,
+    } as SharedHabit;
+
+    const { current: currentStreak, longest: longestStreak } = calculateHabitStreaks(
+      habitForStreaks,
+      habitCompletionHistory
     );
 
-    const toDateKey = (d: Date) => d.toISOString().split('T')[0];
-    let currentStreak = 0;
-    let cursor = new Date();
-
-    if (completedDates.has(toDateKey(cursor))) {
-      currentStreak += 1;
-      cursor.setDate(cursor.getDate() - 1);
-    } else {
-      cursor.setDate(cursor.getDate() - 1);
-      if (completedDates.has(toDateKey(cursor))) {
-        currentStreak += 1;
-        cursor.setDate(cursor.getDate() - 1);
-      }
-    }
-
-    if (currentStreak > 0) {
-      while (completedDates.has(toDateKey(cursor))) {
-        currentStreak += 1;
-        cursor.setDate(cursor.getDate() - 1);
-      }
-    }
+    // Calculate consistency: count completions from creation date to 30 days ago (or creation date, whichever is later)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const thirtyDaysAgoStr = getLocalDateString(thirtyDaysAgo);
+    
+    // The calculation window starts from the later of: habit creation date or 30 days ago
+    const consistencyStartDate = habitCreatedDate > thirtyDaysAgoStr ? habitCreatedDate : thirtyDaysAgoStr;
 
     const consistencyResult = await this.executeQuery<{ count: number }>(`
       SELECT COUNT(*) as count 
       FROM habit_completions 
       WHERE habit_id = ? 
       AND completed = 1 
-      AND date >= date('now', '-30 days')
-    `, [habitId]);
+      AND date >= ? AND date <= ?
+    `, [habitId, consistencyStartDate, today]);
 
     const consistencyCount = consistencyResult?.[0]?.count || 0;
-    const consistencyScore = Math.min(100, Math.round((consistencyCount / 30) * 100));
+    
+    // Calculate expected days: days from consistency start date to today
+    const startDate = new Date(consistencyStartDate);
+    const todayDate = new Date();
+    const expectedDays = Math.max(1, Math.floor((todayDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+
+    const consistencyScore = Math.min(100, Math.round((consistencyCount / expectedDays) * 100));
 
     await this.executeQuery(`
       UPDATE habits 
@@ -1004,7 +1341,7 @@ export class DatabaseService {
           updated_at = ?,
           version = version + 1
       WHERE id = ?
-    `, [currentStreak, currentStreak, consistencyScore, now, habitId]);
+    `, [currentStreak, longestStreak, consistencyScore, now, habitId]);
   }
 
   async deleteHabit(id: string): Promise<void> {
@@ -1036,14 +1373,73 @@ export class DatabaseService {
   }
 
   async restoreTask(id: string): Promise<Task | null> {
+    const existing = await this.executeQuery<{
+      id: string;
+      status: Task['status'];
+      progress: number;
+      created_at: string;
+      updated_at: string;
+      deleted_at: string | null;
+      duration_type?: 'today' | 'continuous';
+      daily_progress?: string | Record<string, DailyTaskState> | null;
+    }>(`
+      SELECT id, status, progress, created_at, updated_at, deleted_at, duration_type, daily_progress
+      FROM tasks
+      WHERE id = ?
+      LIMIT 1
+    `, [id])
+
+    const taskToRestore = existing?.[0]
+    if (!taskToRestore) {
+      return null
+    }
+
     const now = new Date().toISOString();
+
+    const todayKey = getLocalDateString(new Date())
+    const yesterdayDate = new Date()
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1)
+    const yesterdayKey = getLocalDateString(yesterdayDate)
+
+    let nextDailyProgress = normalizeDailyProgressFromDb(taskToRestore.daily_progress, {
+      created_at: taskToRestore.created_at,
+      updated_at: taskToRestore.updated_at,
+      status: taskToRestore.status,
+    } as Partial<Task>)
+
+    if ((taskToRestore.duration_type || 'today') === 'continuous') {
+      nextDailyProgress[todayKey] = {
+        progress: taskToRestore.progress ?? 0,
+        status: taskToRestore.status ?? 'pending',
+        recorded_at: now,
+        source: 'restore',
+      }
+
+      const deletedDayKey = taskToRestore.deleted_at
+        ? getLocalDateString(new Date(taskToRestore.deleted_at))
+        : null
+
+      if (deletedDayKey === todayKey) {
+        const existingYesterday = nextDailyProgress[yesterdayKey]
+        nextDailyProgress[yesterdayKey] = {
+          progress: existingYesterday?.progress ?? taskToRestore.progress ?? 0,
+          status: existingYesterday?.status ?? taskToRestore.status ?? 'pending',
+          recorded_at: existingYesterday?.recorded_at ?? now,
+          source: 'restore',
+        }
+      }
+    }
+
     await this.executeTransaction([{
       query: `
         UPDATE tasks 
-        SET deleted_at = NULL, updated_at = ?, version = version + 1
+        SET deleted_at = NULL,
+            daily_progress = ?,
+            updated_at = ?,
+            version = version + 1
         WHERE id = ?
       `,
-      params: [now, id]
+      params: [serializeDailyProgress(nextDailyProgress), now, id]
     }]);
     return this.getTaskById(id);
   }
@@ -1124,11 +1520,51 @@ export class DatabaseService {
   }
 
   // Permanently delete (for archive page's permanent delete action)
-  async permanentlyDeleteTask(id: string): Promise<void> {
+  async permanentlyDeleteTask(id: string, options?: { deleteHistory?: boolean }): Promise<void> {
+    const shouldDeleteHistory = options?.deleteHistory === true
+    const now = new Date().toISOString()
+
+    if (shouldDeleteHistory) {
+      await this.executeTransaction([
+        {
+          query: `DELETE FROM checklist_items WHERE task_id = ?`,
+          params: [id]
+        },
+        {
+          query: `DELETE FROM time_blocks WHERE task_id = ?`,
+          params: [id]
+        },
+        {
+          query: `DELETE FROM notes WHERE task_id = ?`,
+          params: [id]
+        },
+        {
+          query: `DELETE FROM tasks WHERE id = ?`,
+          params: [id]
+        }
+      ])
+      return
+    }
+
     await this.executeTransaction([{
-      query: `DELETE FROM tasks WHERE id = ?`,
-      params: [id]
-    }]);
+      query: `
+        UPDATE tasks
+        SET title = ?,
+            description = '',
+            due_date = NULL,
+            estimated_time = NULL,
+            actual_time = NULL,
+            recurrence_rule = NULL,
+            project_id = NULL,
+            goal_id = NULL,
+            parent_task_id = NULL,
+            tags = '[]',
+            updated_at = ?,
+            version = version + 1
+        WHERE id = ?
+      `,
+      params: [TASK_METADATA_DELETED_SENTINEL, now, id]
+    }])
   }
 
   async permanentlyDeleteHabit(id: string): Promise<void> {
@@ -1153,21 +1589,44 @@ export class DatabaseService {
     }]);
   }
 
+  // Review archive methods
+  async restoreReview(id: string): Promise<Review | null> {
+    const now = new Date().toISOString();
+    await this.executeTransaction([{
+      query: `
+        UPDATE reviews 
+        SET deleted_at = NULL, updated_at = ?, version = version + 1
+        WHERE id = ?
+      `,
+      params: [now, id]
+    }]);
+    return this.getReviewById(id);
+  }
+
+  async permanentlyDeleteReview(id: string): Promise<void> {
+    await this.executeTransaction([{
+      query: `DELETE FROM reviews WHERE id = ?`,
+      params: [id]
+    }]);
+  }
+
   // Get archived items for the archive page
   async getArchivedItems(): Promise<{
     tasks: Task[];
     habits: Habit[];
     goals: Goal[];
     notes: Note[];
+    reviews: Review[];
   }> {
-    const [tasks, habits, goals, notes] = await Promise.all([
+    const [tasks, habits, goals, notes, reviews] = await Promise.all([
       this.executeQuery<Task>(`
         SELECT t.*, g.title as goal_title 
         FROM tasks t
         LEFT JOIN goals g ON t.goal_id = g.id
         WHERE t.deleted_at IS NOT NULL
+          AND t.title != ?
         ORDER BY t.deleted_at DESC
-      `),
+      `, [TASK_METADATA_DELETED_SENTINEL]),
       this.executeQuery<Habit>(`
         SELECT h.*, g.title as goal_title 
         FROM habits h
@@ -1187,27 +1646,33 @@ export class DatabaseService {
         LEFT JOIN tasks t ON n.task_id = t.id
         WHERE n.deleted_at IS NOT NULL
         ORDER BY n.deleted_at DESC
+      `),
+      this.executeQuery<any>(`
+        SELECT * FROM reviews 
+        WHERE deleted_at IS NOT NULL
+        ORDER BY deleted_at DESC
       `)
     ]);
 
     return {
       tasks: tasks.map(task => ({
         ...task,
-        tags: JSON.parse(task.tags || '[]'),
-        daily_progress: JSON.parse((task as any).daily_progress || '{}'),
+        tags: Array.isArray(task.tags) ? task.tags : JSON.parse(typeof task.tags === 'string' ? task.tags : '[]'),
+        daily_progress: normalizeDailyProgressFromDb((task as any).daily_progress, task),
       })),
       habits: habits.map(habit => ({
         ...habit,
-        schedule: JSON.parse(habit.schedule || '[]'),
+        schedule: Array.isArray(habit.schedule) ? habit.schedule : JSON.parse(typeof habit.schedule === 'string' ? habit.schedule : '[]'),
       })),
-      goals: goals.map(goal => ({
+      goals: goals.map((goal: any) => ({
         ...goal,
-        tags: JSON.parse(goal.tags || '[]'),
+        tags: Array.isArray(goal.tags) ? goal.tags : JSON.parse(typeof goal.tags === 'string' ? goal.tags : '[]'),
       })),
       notes: notes.map(note => ({
         ...note,
-        tags: JSON.parse(note.tags || '[]'),
+        tags: Array.isArray(note.tags) ? note.tags : JSON.parse(typeof note.tags === 'string' ? note.tags : '[]'),
       })),
+      reviews: reviews.map(review => this.parseReview(review)),
     };
   }
 
@@ -1226,11 +1691,11 @@ export class DatabaseService {
       notes: number;
     }>(`
       SELECT 
-        (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NOT NULL) as tasks,
+        (SELECT COUNT(*) FROM tasks WHERE deleted_at IS NOT NULL AND title != ?) as tasks,
         (SELECT COUNT(*) FROM habits WHERE deleted_at IS NOT NULL) as habits,
         (SELECT COUNT(*) FROM goals WHERE deleted_at IS NOT NULL) as goals,
         (SELECT COUNT(*) FROM notes WHERE deleted_at IS NOT NULL) as notes
-    `);
+    `, [TASK_METADATA_DELETED_SENTINEL]);
 
     const stats = results[0] || { tasks: 0, habits: 0, goals: 0, notes: 0 };
     return {
@@ -1250,6 +1715,7 @@ export class DatabaseService {
       { query: `DELETE FROM habits WHERE deleted_at IS NOT NULL`, params: [] },
       { query: `DELETE FROM goals WHERE deleted_at IS NOT NULL`, params: [] },
       { query: `DELETE FROM notes WHERE deleted_at IS NOT NULL`, params: [] },
+      { query: `DELETE FROM reviews WHERE deleted_at IS NOT NULL`, params: [] },
     ]);
   }
 
@@ -1295,9 +1761,9 @@ export class DatabaseService {
     query += ' ORDER BY n.updated_at DESC';
     
     const results = await this.executeQuery<Note>(query, params);
-    return results.map(note => ({
+    return results.map((note: any) => ({
       ...note,
-      tags: JSON.parse(note.tags || '[]'),
+      tags: Array.isArray(note.tags) ? note.tags : JSON.parse(typeof note.tags === 'string' ? note.tags : '[]'),
     }));
   }
 
@@ -1313,10 +1779,10 @@ export class DatabaseService {
     
     if (results.length === 0) return null;
     
-    const note = results[0];
+    const note = results[0] as any;
     return {
       ...note,
-      tags: JSON.parse(note.tags || '[]'),
+      tags: Array.isArray(note.tags) ? note.tags : JSON.parse(typeof note.tags === 'string' ? note.tags : '[]'),
     };
   }
 
@@ -1462,6 +1928,60 @@ export class DatabaseService {
     const startOfDay = new Date(today.setHours(0, 0, 0, 0)).toISOString();
     const endOfDay = new Date(today.setHours(23, 59, 59, 999)).toISOString();
     const todayDate = new Date().toISOString().split('T')[0];
+    const todayKey = getLocalDateString(new Date())
+
+    type RawDashboardTaskRecord = {
+      id: string
+      due_date?: string | null
+      status: Task['status']
+      progress: number
+      created_at: string
+      updated_at: string
+      is_paused?: number | boolean
+      daily_progress?: string | Record<string, DailyTaskState> | null
+      deleted_at?: string | null
+    }
+
+    const toLocalDayKey = (isoLike: string | null | undefined): string => {
+      if (!isoLike) return todayKey
+      if (/^\d{4}-\d{2}-\d{2}$/.test(isoLike)) return isoLike
+      return getLocalDateString(new Date(isoLike))
+    }
+
+    const isPausedOnDay = (
+      task: RawDashboardTaskRecord,
+      dayKey: string,
+      normalizedHistory: Record<string, DailyTaskState>
+    ): boolean => {
+      const historyEntry = normalizedHistory[dayKey]
+      if (historyEntry) return historyEntry.source === 'paused'
+      const rawIsPaused = task.is_paused
+      const isPausedNow = rawIsPaused === 1 || rawIsPaused === true
+      return dayKey === todayKey && isPausedNow
+    }
+
+    const makeEntry = (
+      task: RawDashboardTaskRecord,
+      dayKey: string,
+      normalizedHistory: Record<string, DailyTaskState>
+    ) => {
+      const historyEntry = normalizedHistory[dayKey]
+      if (historyEntry) {
+        return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' }
+      }
+
+      if (dayKey === todayKey) {
+        return {
+          progress: task.progress ?? 0,
+          status: task.status ?? 'pending',
+        }
+      }
+
+      return {
+        progress: 0,
+        status: 'pending' as const,
+      }
+    }
     
     const queries = [
       // Today's tasks
@@ -1505,19 +2025,25 @@ export class DatabaseService {
           FROM time_blocks 
           WHERE start_time BETWEEN ? AND ?
           AND deleted_at IS NULL
+          AND (
+            notes IS NULL
+            OR (
+              notes NOT LIKE 'shortBreak session%'
+              AND notes NOT LIKE 'longBreak session%'
+            )
+          )
         `,
         params: [startOfDay, endOfDay]
       },
-      // Overdue tasks
+      // Overdue task candidates (finalized state evaluated below)
       {
         query: `
-          SELECT COUNT(*) as overdue_tasks
+          SELECT id, due_date, status, progress, created_at, updated_at, is_paused, daily_progress, deleted_at
           FROM tasks 
-          WHERE due_date < ?
-          AND status NOT IN ('completed', 'archived')
+          WHERE due_date IS NOT NULL
           AND deleted_at IS NULL
         `,
-        params: [new Date().toISOString()]
+        params: []
       }
     ];
     
@@ -1525,13 +2051,34 @@ export class DatabaseService {
       queries.map(q => this.executeQuery<any>(q.query, q.params))
     );
     
+    const overdueTasks = (results[4] as RawDashboardTaskRecord[]).filter((task) => {
+      if (!task.due_date) return false
+      const dueDay = toLocalDayKey(task.due_date)
+      if (!isFinalizedPastDay(dueDay, todayKey)) return false
+
+      const createdDay = toLocalDayKey(task.created_at)
+      if (createdDay > dueDay) return false
+
+      const normalizedHistory = normalizeDailyProgressFromDb(task.daily_progress, {
+        ...task,
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+        status: task.status,
+      } as Partial<Task>)
+
+      if (isPausedOnDay(task, dueDay, normalizedHistory)) return false
+
+      const entry = makeEntry(task, dueDay, normalizedHistory)
+      return isSkippedOrEmptyState(entry)
+    }).length
+
     return {
       today_tasks: results[0][0]?.today_tasks || 0,
       active_goals: results[1][0]?.active_goals || 0,
       avg_progress: results[1][0]?.avg_progress || 0,
       completed_habits: results[2][0]?.completed_habits || 0,
       focus_time_today: results[3][0]?.focus_time_today || 0,
-      overdue_tasks: results[4][0]?.overdue_tasks || 0,
+      overdue_tasks: overdueTasks,
     };
   }
 
@@ -1722,6 +2269,986 @@ export class DatabaseService {
   }
 
   // Utility methods
+  async getTaskTabStats(): Promise<TaskTabStatsSnapshot> {
+    type RawTaskStatsRecord = {
+      id: string;
+      title: string;
+      priority: Task['priority'];
+      status: Task['status'];
+      progress: number;
+      created_at: string;
+      updated_at: string;
+      deleted_at: string | null;
+      is_paused?: number | boolean;
+      duration_type?: 'today' | 'continuous';
+      daily_progress?: string | Record<string, DailyTaskState> | null;
+    };
+
+    const completionFactor = (progress: number | undefined | null): number => {
+      const value = Math.max(0, Math.min(progress ?? 0, 100));
+      if (value >= 100) return 1;
+      if (value >= 75) return 0.75;
+      if (value >= 50) return 0.5;
+      if (value >= 25) return 0.25;
+      return 0;
+    };
+
+    const priorityWeight = (priority: Task['priority'] | undefined): number => {
+      if (priority === 'high') return 3;
+      if (priority === 'medium') return 2;
+      if (priority === 'low') return 1;
+      return 2;
+    };
+
+    const todayDate = new Date();
+    const todayKey = getLocalDateString(todayDate);
+
+    const weekStartDate = new Date(todayDate);
+    const dayOfWeek = weekStartDate.getDay();
+    const daysSinceMonday = (dayOfWeek + 6) % 7;
+    weekStartDate.setDate(weekStartDate.getDate() - daysSinceMonday);
+    const weekStartKey = getLocalDateString(weekStartDate);
+
+    const previousWeekStartDate = new Date(todayDate);
+    previousWeekStartDate.setDate(weekStartDate.getDate() - 7);
+    const previousWeekStartKey = getLocalDateString(previousWeekStartDate);
+    const previousWeekEndDate = new Date(todayDate);
+    previousWeekEndDate.setDate(weekStartDate.getDate() - 1);
+    const previousWeekEndKey = getLocalDateString(previousWeekEndDate);
+
+    const monthStartDate = new Date(todayDate.getFullYear(), todayDate.getMonth(), 1);
+    const monthEndDate = new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 0);
+    const monthStartKey = getLocalDateString(monthStartDate);
+    const monthEndKey = getLocalDateString(monthEndDate);
+
+    const previousMonthStartDate = new Date(todayDate.getFullYear(), todayDate.getMonth() - 1, 1);
+    const previousMonthEndDate = new Date(todayDate.getFullYear(), todayDate.getMonth(), 0);
+    const previousMonthStartKey = getLocalDateString(previousMonthStartDate);
+    const previousMonthEndKey = getLocalDateString(previousMonthEndDate);
+
+    const toLocalDayKey = (isoLike: string | null | undefined): string => {
+      if (!isoLike) return todayKey;
+      return getLocalDateString(new Date(isoLike));
+    };
+
+    const inRange = (dayKey: string, startKey: string, endKey: string): boolean => {
+      return dayKey >= startKey && dayKey <= endKey;
+    };
+
+    const makeEntry = (
+      task: RawTaskStatsRecord,
+      dayKey: string,
+      normalizedHistory: Record<string, DailyTaskState>
+    ) => {
+      const historyEntry = normalizedHistory[dayKey];
+      if (historyEntry) {
+        return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' };
+      }
+
+      if (dayKey === todayKey) {
+        return {
+          progress: task.progress ?? 0,
+          status: task.status ?? 'pending',
+        };
+      }
+
+      return {
+        progress: 0,
+        status: 'pending' as const,
+      };
+    };
+
+    const isPausedOnDay = (
+      task: RawTaskStatsRecord,
+      dayKey: string,
+      normalizedHistory: Record<string, DailyTaskState>
+    ): boolean => {
+      const historyEntry = normalizedHistory[dayKey];
+      if (historyEntry) {
+        return historyEntry.source === 'paused';
+      }
+
+      const rawIsPaused = task.is_paused;
+      const isPausedNow = rawIsPaused === 1 || rawIsPaused === true;
+      return dayKey === todayKey && isPausedNow;
+    };
+
+    const buildDayKeys = (startKey: string, endKey: string): string[] => {
+      const keys: string[] = [];
+      const cursor = new Date(startKey);
+      const end = new Date(endKey);
+
+      while (cursor.getTime() <= end.getTime()) {
+        keys.push(getLocalDateString(cursor));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      return keys;
+    };
+
+    const getTaskLifecycleEndKey = (task: RawTaskStatsRecord): string => {
+      if (!task.deleted_at) return todayKey;
+      const deletedDay = toLocalDayKey(task.deleted_at);
+      return deletedDay < todayKey ? deletedDay : todayKey;
+    };
+
+    const computePeriodStats = (
+      taskRecords: RawTaskStatsRecord[],
+      startKey: string,
+      endKey: string
+    ): TaskPeriodStats => {
+      let total = 0;
+      let completed = 0;
+      let partially = 0;
+      let skipped = 0;
+      let plannedWeight = 0;
+      let earnedWeight = 0;
+
+      taskRecords.forEach((task) => {
+        const createdDay = toLocalDayKey(task.created_at);
+        const lifecycleEndKey = getTaskLifecycleEndKey(task);
+        if (createdDay > lifecycleEndKey) {
+          return;
+        }
+        const normalizedHistory = normalizeDailyProgressFromDb(task.daily_progress, {
+          ...task,
+          created_at: task.created_at,
+          updated_at: task.updated_at,
+          status: task.status,
+        } as Partial<Task>);
+
+        const historyKeysInRange = Object.keys(normalizedHistory)
+          .filter((key) => inRange(key, startKey, endKey) && key <= lifecycleEndKey)
+          .sort();
+
+        const occurrenceKeys = new Set<string>();
+
+        if ((task.duration_type || 'today') === 'continuous') {
+          const effectiveStartKey = createdDay > startKey ? createdDay : startKey;
+          const effectiveEndKey = [endKey, todayKey, lifecycleEndKey].sort()[0];
+
+          if (effectiveStartKey <= effectiveEndKey) {
+            buildDayKeys(effectiveStartKey, effectiveEndKey).forEach((dayKey) => occurrenceKeys.add(dayKey));
+          }
+        } else if (inRange(createdDay, startKey, endKey) && createdDay <= lifecycleEndKey) {
+          occurrenceKeys.add(createdDay);
+        }
+
+        historyKeysInRange.forEach((dayKey) => occurrenceKeys.add(dayKey));
+
+        if (occurrenceKeys.size === 0) {
+          return;
+        }
+
+        Array.from(occurrenceKeys).forEach((dayKey) => {
+          const entry = makeEntry(task, dayKey, normalizedHistory);
+          if (isPausedOnDay(task, dayKey, normalizedHistory)) {
+            return;
+          }
+          const weight = priorityWeight(task.priority);
+
+          total += 1;
+          plannedWeight += weight;
+          earnedWeight += weight * completionFactor(entry.progress);
+
+          if (entry.progress >= 100) {
+            completed += 1;
+          } else if (entry.progress > 0) {
+            partially += 1;
+          }
+
+          // Skipped/overdue penalties apply only after date rollover.
+          // Never penalize the current day.
+          if (isFinalizedPastDay(dayKey, todayKey) && isSkippedOrEmptyState(entry)) {
+            skipped += 1
+          }
+        });
+      });
+
+      const weightedProgress = plannedWeight > 0
+        ? Math.round((earnedWeight / plannedWeight) * 100)
+        : 0;
+
+      return {
+        total,
+        completed,
+        partially,
+        skipped,
+        plannedWeight,
+        earnedWeight,
+        weightedProgress,
+      };
+    };
+
+    const computeAllTimeRange = (taskRecords: RawTaskStatsRecord[]): { startKey: string; endKey: string } => {
+      let earliestKey = todayKey;
+
+      taskRecords.forEach((task) => {
+        const createdDay = toLocalDayKey(task.created_at);
+        if (createdDay < earliestKey) {
+          earliestKey = createdDay;
+        }
+
+        const normalizedHistory = normalizeDailyProgressFromDb(task.daily_progress, {
+          ...task,
+          created_at: task.created_at,
+          updated_at: task.updated_at,
+          status: task.status,
+        } as Partial<Task>);
+
+        Object.keys(normalizedHistory).forEach((dayKey) => {
+          if (dayKey < earliestKey) {
+            earliestKey = dayKey;
+          }
+        });
+      });
+
+      return {
+        startKey: earliestKey,
+        endKey: todayKey,
+      };
+    };
+
+    const taskRecords = await this.executeQuery<RawTaskStatsRecord>(`
+      SELECT id, title, priority, status, progress, created_at, updated_at, deleted_at, is_paused, duration_type, daily_progress
+      FROM tasks
+    `);
+
+    // Keep all task records (including UI-only metadata-deleted tasks) in historical stats.
+    // UI-only deletion must not remove historical weekly/monthly/health/weight contributions.
+    const scopedTaskRecords = taskRecords
+
+    const activeTaskRecords = scopedTaskRecords.filter((task) => !task.deleted_at)
+
+    const activeTodayTasks = activeTaskRecords.filter((task) => {
+      if (task.deleted_at) return false;
+      const createdDay = toLocalDayKey(task.created_at);
+      const normalizedHistory = normalizeDailyProgressFromDb(task.daily_progress, {
+        ...task,
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+        status: task.status,
+      } as Partial<Task>);
+      if (isPausedOnDay(task, todayKey, normalizedHistory)) return false;
+      if ((task.duration_type || 'today') === 'continuous') {
+        return createdDay <= todayKey;
+      }
+      return createdDay === todayKey;
+    });
+
+    const today = activeTodayTasks.reduce(
+      (acc, task) => {
+        const normalizedHistory = normalizeDailyProgressFromDb(task.daily_progress, {
+          ...task,
+          created_at: task.created_at,
+          updated_at: task.updated_at,
+          status: task.status,
+        } as Partial<Task>);
+
+        const entry = makeEntry(task, todayKey, normalizedHistory);
+        const weight = priorityWeight(task.priority);
+
+        acc.total += 1;
+        if (entry.progress >= 100) {
+          acc.completed += 1;
+        } else if (entry.progress > 0) {
+          acc.partially += 1;
+        }
+        // Today's section has no live skipped penalties; skipped is only post-rollover.
+        acc.plannedWeight += weight;
+        acc.earnedWeight += weight * completionFactor(entry.progress);
+
+        return acc;
+      },
+      { total: 0, completed: 0, partially: 0, skipped: 0, plannedWeight: 0, earnedWeight: 0, weightedProgress: 0 }
+    );
+
+    today.weightedProgress = today.plannedWeight > 0
+      ? Math.round((today.earnedWeight / today.plannedWeight) * 100)
+      : 0;
+
+    const weekly = computePeriodStats(scopedTaskRecords, weekStartKey, todayKey);
+    const previousWeekly = computePeriodStats(scopedTaskRecords, previousWeekStartKey, previousWeekEndKey);
+    const monthly = computePeriodStats(scopedTaskRecords, monthStartKey, monthEndKey);
+    const previousMonthly = computePeriodStats(scopedTaskRecords, previousMonthStartKey, previousMonthEndKey);
+
+    const healthRange = computeAllTimeRange(taskRecords)
+    const health = computePeriodStats(taskRecords, healthRange.startKey, healthRange.endKey)
+
+    return {
+      today,
+      weekly,
+      previousWeekly,
+      monthly,
+      previousMonthly,
+      health,
+    };
+  }
+
+  async getTaskRangeAnalyticsSnapshot(startDate: string, endDate: string): Promise<TaskRangeAnalyticsSnapshot> {
+    type RawTaskStatsRecord = {
+      id: string;
+      title: string;
+      due_date?: string | null;
+      priority: Task['priority'];
+      status: Task['status'];
+      progress: number;
+      created_at: string;
+      updated_at: string;
+      deleted_at: string | null;
+      is_paused?: number | boolean;
+      duration_type?: 'today' | 'continuous';
+      daily_progress?: string | Record<string, DailyTaskState> | null;
+    };
+
+    const completionFactor = (progress: number | undefined | null): number => {
+      const value = Math.max(0, Math.min(progress ?? 0, 100));
+      if (value >= 100) return 1;
+      if (value >= 75) return 0.75;
+      if (value >= 50) return 0.5;
+      if (value >= 25) return 0.25;
+      return 0;
+    };
+
+    const priorityWeight = (priority: Task['priority'] | undefined): number => {
+      if (priority === 'high') return 3;
+      if (priority === 'medium') return 2;
+      if (priority === 'low') return 1;
+      return 2;
+    };
+
+    const normalizeDayKey = (value: string, fallback: string): string => {
+      if (!value) return fallback;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+      return getLocalDateString(new Date(value));
+    };
+
+    const todayKey = getLocalDateString(new Date());
+    let normalizedStart = normalizeDayKey(startDate, todayKey);
+    let normalizedEnd = normalizeDayKey(endDate, todayKey);
+    if (normalizedStart > normalizedEnd) {
+      const tmp = normalizedStart;
+      normalizedStart = normalizedEnd;
+      normalizedEnd = tmp;
+    }
+
+    const toLocalDayKey = (isoLike: string | null | undefined): string => {
+      if (!isoLike) return todayKey;
+      return getLocalDateString(new Date(isoLike));
+    };
+
+    const inRange = (dayKey: string, startKey: string, endKey: string): boolean => {
+      return dayKey >= startKey && dayKey <= endKey;
+    };
+
+    const makeEntry = (
+      task: RawTaskStatsRecord,
+      dayKey: string,
+      normalizedHistory: Record<string, DailyTaskState>
+    ) => {
+      const historyEntry = normalizedHistory[dayKey];
+      if (historyEntry) {
+        return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' };
+      }
+
+      if (dayKey === todayKey) {
+        return {
+          progress: task.progress ?? 0,
+          status: task.status ?? 'pending',
+        };
+      }
+
+      return {
+        progress: 0,
+        status: 'pending' as const,
+      };
+    };
+
+    const isPausedOnDay = (
+      task: RawTaskStatsRecord,
+      dayKey: string,
+      normalizedHistory: Record<string, DailyTaskState>
+    ): boolean => {
+      const historyEntry = normalizedHistory[dayKey];
+      if (historyEntry) {
+        return historyEntry.source === 'paused';
+      }
+
+      const rawIsPaused = task.is_paused;
+      const isPausedNow = rawIsPaused === 1 || rawIsPaused === true;
+      return dayKey === todayKey && isPausedNow;
+    };
+
+    const buildDayKeys = (startKey: string, endKey: string): string[] => {
+      const keys: string[] = [];
+      const cursor = new Date(startKey);
+      const end = new Date(endKey);
+
+      while (cursor.getTime() <= end.getTime()) {
+        keys.push(getLocalDateString(cursor));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      return keys;
+    };
+
+    const getTaskLifecycleEndKey = (task: RawTaskStatsRecord): string => {
+      if (!task.deleted_at) return todayKey;
+      const deletedDay = toLocalDayKey(task.deleted_at);
+      return deletedDay < todayKey ? deletedDay : todayKey;
+    };
+
+    const computePeriodStats = (
+      taskRecords: RawTaskStatsRecord[],
+      startKey: string,
+      endKey: string
+    ): TaskPeriodStats => {
+      let total = 0;
+      let completed = 0;
+      let partially = 0;
+      let skipped = 0;
+      let plannedWeight = 0;
+      let earnedWeight = 0;
+
+      taskRecords.forEach((task) => {
+        const createdDay = toLocalDayKey(task.created_at);
+        const lifecycleEndKey = getTaskLifecycleEndKey(task);
+        if (createdDay > lifecycleEndKey) {
+          return;
+        }
+        const normalizedHistory = normalizeDailyProgressFromDb(task.daily_progress, {
+          ...task,
+          created_at: task.created_at,
+          updated_at: task.updated_at,
+          status: task.status,
+        } as Partial<Task>);
+
+        const historyKeysInRange = Object.keys(normalizedHistory)
+          .filter((key) => inRange(key, startKey, endKey) && key <= lifecycleEndKey)
+          .sort();
+
+        const occurrenceKeys = new Set<string>();
+
+        if ((task.duration_type || 'today') === 'continuous') {
+          const effectiveStartKey = createdDay > startKey ? createdDay : startKey;
+          const effectiveEndKey = [endKey, todayKey, lifecycleEndKey].sort()[0];
+
+          if (effectiveStartKey <= effectiveEndKey) {
+            buildDayKeys(effectiveStartKey, effectiveEndKey).forEach((dayKey) => occurrenceKeys.add(dayKey));
+          }
+        } else if (inRange(createdDay, startKey, endKey) && createdDay <= lifecycleEndKey) {
+          occurrenceKeys.add(createdDay);
+        }
+
+        historyKeysInRange.forEach((dayKey) => occurrenceKeys.add(dayKey));
+
+        if (occurrenceKeys.size === 0) {
+          return;
+        }
+
+        Array.from(occurrenceKeys).forEach((dayKey) => {
+          const entry = makeEntry(task, dayKey, normalizedHistory);
+          if (isPausedOnDay(task, dayKey, normalizedHistory)) {
+            return;
+          }
+          const weight = priorityWeight(task.priority);
+
+          total += 1;
+          plannedWeight += weight;
+          earnedWeight += weight * completionFactor(entry.progress);
+
+          if (entry.progress >= 100) {
+            completed += 1;
+          } else if (entry.progress > 0) {
+            partially += 1;
+          }
+
+          if (isFinalizedPastDay(dayKey, todayKey) && isSkippedOrEmptyState(entry)) {
+            skipped += 1;
+          }
+        });
+      });
+
+      const weightedProgress = plannedWeight > 0
+        ? Math.round((earnedWeight / plannedWeight) * 100)
+        : 0;
+
+      return {
+        total,
+        completed,
+        partially,
+        skipped,
+        plannedWeight,
+        earnedWeight,
+        weightedProgress,
+      };
+    };
+
+    const taskRecords = await this.executeQuery<RawTaskStatsRecord>(`
+      SELECT id, title, due_date, priority, status, progress, created_at, updated_at, deleted_at, is_paused, duration_type, daily_progress
+      FROM tasks
+    `);
+
+    const summary = computePeriodStats(taskRecords, normalizedStart, normalizedEnd);
+
+    const createPriorityBucket = (): TaskRangePriorityStats => ({
+      total: 0,
+      completed: 0,
+      plannedWeight: 0,
+      earnedWeight: 0,
+    });
+
+    const byPriority: TaskRangeAnalyticsSnapshot['byPriority'] = {
+      high: createPriorityBucket(),
+      medium: createPriorityBucket(),
+      low: createPriorityBucket(),
+    };
+
+    taskRecords.forEach((task) => {
+      const createdDay = toLocalDayKey(task.created_at);
+      const lifecycleEndKey = getTaskLifecycleEndKey(task);
+      if (createdDay > lifecycleEndKey) return;
+      const normalizedHistory = normalizeDailyProgressFromDb(task.daily_progress, {
+        ...task,
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+        status: task.status,
+      } as Partial<Task>);
+
+      const historyKeysInRange = Object.keys(normalizedHistory)
+        .filter((key) => inRange(key, normalizedStart, normalizedEnd) && key <= lifecycleEndKey)
+        .sort();
+
+      const occurrenceKeys = new Set<string>();
+      if ((task.duration_type || 'today') === 'continuous') {
+        const effectiveStartKey = createdDay > normalizedStart ? createdDay : normalizedStart;
+        const effectiveEndKey = [normalizedEnd, todayKey, lifecycleEndKey].sort()[0];
+        if (effectiveStartKey <= effectiveEndKey) {
+          buildDayKeys(effectiveStartKey, effectiveEndKey).forEach((dayKey) => occurrenceKeys.add(dayKey));
+        }
+      } else if (inRange(createdDay, normalizedStart, normalizedEnd) && createdDay <= lifecycleEndKey) {
+        occurrenceKeys.add(createdDay);
+      }
+      historyKeysInRange.forEach((dayKey) => occurrenceKeys.add(dayKey));
+      if (occurrenceKeys.size === 0) return;
+
+      const priorityKey: keyof TaskRangeAnalyticsSnapshot['byPriority'] =
+        task.priority === 'high' || task.priority === 'low' ? task.priority : 'medium';
+      const bucket = byPriority[priorityKey];
+
+      Array.from(occurrenceKeys).forEach((dayKey) => {
+        if (isPausedOnDay(task, dayKey, normalizedHistory)) return;
+        const entry = makeEntry(task, dayKey, normalizedHistory);
+        const weight = priorityWeight(task.priority);
+        bucket.total += 1;
+        bucket.plannedWeight += weight;
+        bucket.earnedWeight += weight * completionFactor(entry.progress);
+        if (entry.progress >= 100) bucket.completed += 1;
+      });
+    });
+
+    const daily = buildDayKeys(normalizedStart, normalizedEnd).map((dayKey) => {
+      const dayStats = computePeriodStats(taskRecords, dayKey, dayKey);
+      const dayDate = new Date(`${dayKey}T00:00:00`);
+      return {
+        dateKey: dayKey,
+        date: dayDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+        day: dayDate.toLocaleDateString(undefined, { weekday: 'short' }),
+        total: dayStats.total,
+        completed: dayStats.completed,
+        partially: dayStats.partially,
+        skipped: dayStats.skipped,
+        plannedWeight: dayStats.plannedWeight,
+        earnedWeight: dayStats.earnedWeight,
+        weightedProgress: dayStats.weightedProgress,
+      };
+    });
+
+    const overdue = taskRecords.filter((task) => {
+      if (!task.due_date) return false;
+      const dueDay = toLocalDayKey(task.due_date);
+      if (!inRange(dueDay, normalizedStart, normalizedEnd)) return false;
+      // No same-day overdue penalties; overdue starts only after rollover.
+      if (!isFinalizedPastDay(dueDay, todayKey)) return false;
+      const createdDay = toLocalDayKey(task.created_at);
+      if (createdDay > dueDay) return false;
+      const lifecycleEndKey = getTaskLifecycleEndKey(task);
+      if (dueDay > lifecycleEndKey) return false;
+      const normalizedHistory = normalizeDailyProgressFromDb(task.daily_progress, {
+        ...task,
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+        status: task.status,
+      } as Partial<Task>);
+      if (isPausedOnDay(task, dueDay, normalizedHistory)) return false;
+      const entry = makeEntry(task, dueDay, normalizedHistory);
+      return isSkippedOrEmptyState(entry);
+    }).length;
+
+    return {
+      startDate: normalizedStart,
+      endDate: normalizedEnd,
+      summary,
+      overdue,
+      byPriority,
+      daily,
+    };
+  }
+
+  async getTaskAnalyticsChartSnapshot(): Promise<TaskAnalyticsChartSnapshot> {
+    type RawTaskStatsRecord = {
+      id: string;
+      priority: Task['priority'];
+      status: Task['status'];
+      progress: number;
+      created_at: string;
+      updated_at: string;
+      deleted_at: string | null;
+      is_paused?: number | boolean;
+      duration_type?: 'today' | 'continuous';
+      daily_progress?: string | Record<string, DailyTaskState> | null;
+    };
+
+    const completionFactor = (progress: number | undefined | null): number => {
+      const value = Math.max(0, Math.min(progress ?? 0, 100));
+      if (value >= 100) return 1;
+      if (value >= 75) return 0.75;
+      if (value >= 50) return 0.5;
+      if (value >= 25) return 0.25;
+      return 0;
+    };
+
+    const priorityWeight = (priority: Task['priority'] | undefined): number => {
+      if (priority === 'high') return 3;
+      if (priority === 'medium') return 2;
+      if (priority === 'low') return 1;
+      return 2;
+    };
+
+    const toLocalDayKey = (isoLike: string | null | undefined): string => {
+      if (!isoLike) return getLocalDateString(new Date());
+      return getLocalDateString(new Date(isoLike));
+    };
+
+    const inRange = (dayKey: string, startKey: string, endKey: string): boolean => {
+      return dayKey >= startKey && dayKey <= endKey;
+    };
+
+    const getDayFromDateKey = (dateKey: string): string => {
+      const date = new Date(`${dateKey}T00:00:00`);
+      return date.toLocaleDateString(undefined, { weekday: 'short' });
+    };
+
+    const getMonthLabel = (date: Date): string => {
+      return date.toLocaleDateString(undefined, { month: 'short' });
+    };
+
+    const getDayOfMonthLabel = (dateKey: string): string => {
+      return dateKey.slice(8, 10);
+    };
+
+    const getFullDateLabel = (dateKey: string): string => {
+      const date = new Date(`${dateKey}T00:00:00`);
+      return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    };
+
+    const taskRecords = await this.executeQuery<RawTaskStatsRecord>(`
+      SELECT id, priority, status, progress, created_at, updated_at, deleted_at, is_paused, duration_type, daily_progress
+      FROM tasks
+    `);
+
+    const today = new Date();
+    const todayKey = getLocalDateString(today);
+
+    const buildDayKeys = (startKey: string, endKey: string): string[] => {
+      const keys: string[] = [];
+      const cursor = new Date(startKey);
+      const end = new Date(endKey);
+
+      while (cursor.getTime() <= end.getTime()) {
+        keys.push(getLocalDateString(cursor));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      return keys;
+    };
+
+    const getTaskLifecycleEndKey = (task: RawTaskStatsRecord): string => {
+      if (!task.deleted_at) return todayKey;
+      const deletedDay = toLocalDayKey(task.deleted_at);
+      return deletedDay < todayKey ? deletedDay : todayKey;
+    };
+
+    const makeEntry = (
+      task: RawTaskStatsRecord,
+      dayKey: string,
+      normalizedHistory: Record<string, DailyTaskState>
+    ) => {
+      const historyEntry = normalizedHistory[dayKey];
+      if (historyEntry) {
+        return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' };
+      }
+
+      if (dayKey === todayKey) {
+        return {
+          progress: task.progress ?? 0,
+          status: task.status ?? 'pending',
+        };
+      }
+
+      return {
+        progress: 0,
+        status: 'pending' as const,
+      };
+    };
+
+    const isPausedOnDay = (
+      task: RawTaskStatsRecord,
+      dayKey: string,
+      normalizedHistory: Record<string, DailyTaskState>
+    ): boolean => {
+      const historyEntry = normalizedHistory[dayKey];
+      if (historyEntry) {
+        return historyEntry.source === 'paused';
+      }
+
+      const rawIsPaused = task.is_paused;
+      const isPausedNow = rawIsPaused === 1 || rawIsPaused === true;
+      return dayKey === todayKey && isPausedNow;
+    };
+
+    const computePeriodWeights = (
+      records: RawTaskStatsRecord[],
+      startKey: string,
+      endKey: string,
+      fallbackDayKey?: string
+    ) => {
+      let plannedWeight = 0;
+      let earnedWeight = 0;
+
+      records.forEach((task) => {
+        const createdDay = toLocalDayKey(task.created_at);
+        const lifecycleEndKey = getTaskLifecycleEndKey(task);
+        if (createdDay > lifecycleEndKey) {
+          return;
+        }
+        const normalizedHistory = normalizeDailyProgressFromDb(task.daily_progress, {
+          ...task,
+          created_at: task.created_at,
+          updated_at: task.updated_at,
+          status: task.status,
+        } as Partial<Task>);
+
+        const historyKeysInRange = Object.keys(normalizedHistory)
+          .filter((key) => inRange(key, startKey, endKey) && key <= lifecycleEndKey)
+          .sort();
+
+        const occurrenceKeys = new Set<string>();
+        if ((task.duration_type || 'today') === 'continuous') {
+          const effectiveStartKey = createdDay > startKey ? createdDay : startKey;
+          const effectiveEndKey = [endKey, todayKey, lifecycleEndKey].sort()[0];
+
+          if (effectiveStartKey <= effectiveEndKey) {
+            buildDayKeys(effectiveStartKey, effectiveEndKey).forEach((dayKey) => occurrenceKeys.add(dayKey));
+          }
+        } else if (inRange(createdDay, startKey, endKey) && createdDay <= lifecycleEndKey) {
+          occurrenceKeys.add(createdDay);
+        }
+
+        historyKeysInRange.forEach((dayKey) => occurrenceKeys.add(dayKey));
+
+        if (occurrenceKeys.size === 0) {
+          return;
+        }
+
+        Array.from(occurrenceKeys).forEach((dayKey) => {
+          if (fallbackDayKey && dayKey !== fallbackDayKey) {
+            return;
+          }
+
+          if (isPausedOnDay(task, dayKey, normalizedHistory)) {
+            return;
+          }
+
+          const entry = makeEntry(task, dayKey, normalizedHistory);
+          const weight = priorityWeight(task.priority);
+
+          plannedWeight += weight;
+          earnedWeight += weight * completionFactor(entry.progress);
+        });
+      });
+
+      const weightedProgress = plannedWeight > 0
+        ? Math.round((earnedWeight / plannedWeight) * 100)
+        : 0;
+
+      return {
+        plannedWeight,
+        earnedWeight,
+        weightedProgress,
+      };
+    };
+
+    // Progress Trend: daily weighted completion rate with rolling average line
+    const trendRates: number[] = [];
+    const monthlyTrend: TaskMonthlyTrendPoint[] = [];
+    for (let i = 29; i >= 0; i--) {
+      const date = new Date(today);
+      date.setDate(date.getDate() - i);
+      const dateKey = getLocalDateString(date);
+      const dayStats = computePeriodWeights(taskRecords, dateKey, dateKey, dateKey);
+      const completionRate = dayStats.weightedProgress;
+
+      trendRates.push(completionRate);
+      const lookback = trendRates.slice(Math.max(0, trendRates.length - 7));
+      const avgProgress = lookback.length > 0
+        ? Math.round(lookback.reduce((sum, value) => sum + value, 0) / lookback.length)
+        : 0;
+
+      monthlyTrend.push({
+        dateKey,
+        day: getDayOfMonthLabel(dateKey),
+        month: getMonthLabel(date),
+        fullMonth: getFullDateLabel(dateKey),
+        progress: avgProgress,
+        completionRate,
+        completed: dayStats.earnedWeight,
+        total: dayStats.plannedWeight,
+        target: 75,
+      });
+    }
+
+    // Daily Activity: full current month (complete month grid)
+    const currentMonthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    const daysInCurrentMonth = currentMonthEnd.getDate();
+
+    const dailyActivity: TaskDailyActivityPoint[] = [];
+    for (let dayNumber = 1; dayNumber <= daysInCurrentMonth; dayNumber++) {
+      const date = new Date(today.getFullYear(), today.getMonth(), dayNumber);
+      const dateKey = getLocalDateString(date);
+      const isFuture = dateKey > todayKey;
+      const dayStats = isFuture
+        ? { plannedWeight: 0, earnedWeight: 0, weightedProgress: 0 }
+        : computePeriodWeights(taskRecords, dateKey, dateKey, dateKey);
+
+      dailyActivity.push({
+        dateKey,
+        date: getDayOfMonthLabel(dateKey),
+        day: getDayFromDateKey(dateKey),
+        completed: dayStats.earnedWeight,
+        updates: dayStats.plannedWeight,
+        progress: dayStats.weightedProgress,
+      });
+    }
+
+    // Consistency Heatmap: full current year (GitHub-style weeks x days)
+    const heatmapYear = today.getFullYear();
+    const yearStart = new Date(heatmapYear, 0, 1);
+    const yearEnd = new Date(heatmapYear, 11, 31);
+    const heatmapStart = new Date(yearStart);
+    heatmapStart.setDate(heatmapStart.getDate() - heatmapStart.getDay()); // align to Sunday
+    const heatmapEnd = new Date(yearEnd);
+    heatmapEnd.setDate(heatmapEnd.getDate() + (6 - heatmapEnd.getDay())); // align to Saturday
+
+    const heatmap: number[][] = [];
+    for (let cursor = new Date(heatmapStart); cursor <= heatmapEnd; cursor.setDate(cursor.getDate() + 7)) {
+      const weekData: number[] = [];
+
+      for (let day = 0; day < 7; day++) {
+        const targetDate = new Date(cursor);
+        targetDate.setDate(targetDate.getDate() + day);
+        const targetKey = getLocalDateString(targetDate);
+
+        const isOutsideYear = targetDate < yearStart || targetDate > yearEnd;
+        const isFuture = targetKey > todayKey;
+        if (isOutsideYear || isFuture) {
+          weekData.push(0);
+          continue;
+        }
+
+        const dayStats = computePeriodWeights(taskRecords, targetKey, targetKey, targetKey);
+        const pct = dayStats.weightedProgress;
+        const intensity = pct <= 0
+          ? 0
+          : pct <= 20
+            ? 1
+            : pct <= 40
+              ? 2
+              : pct <= 60
+                ? 3
+                : pct <= 80
+                  ? 4
+                  : 5;
+
+        weekData.push(intensity);
+      }
+
+      heatmap.push(weekData);
+    }
+
+    return {
+      monthlyTrend,
+      dailyActivity,
+      heatmap,
+      heatmapYear,
+      heatmapStartDate: getLocalDateString(heatmapStart),
+    };
+  }
+
+  async getTaskMonthlyHistory(): Promise<TaskMonthlyHistoryPoint[]> {
+    const now = new Date();
+    const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [bounds] = await this.executeQuery<{ earliest_created_at: string | null }>(`
+      SELECT MIN(created_at) as earliest_created_at
+      FROM tasks
+    `);
+
+    if (!bounds?.earliest_created_at) {
+      return [];
+    }
+
+    const earliestCreatedAt = new Date(bounds.earliest_created_at);
+    if (Number.isNaN(earliestCreatedAt.getTime())) {
+      return [];
+    }
+
+    const earliestMonthStart = new Date(earliestCreatedAt.getFullYear(), earliestCreatedAt.getMonth(), 1);
+    if (earliestMonthStart >= currentMonthStart) {
+      return [];
+    }
+
+    const history: TaskMonthlyHistoryPoint[] = [];
+    const cursor = new Date(earliestMonthStart);
+
+    while (cursor < currentMonthStart) {
+      const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+      const monthEnd = endOfMonth(monthStart);
+      const monthStartKey = getLocalDateString(monthStart);
+      const monthEndKey = getLocalDateString(monthEnd);
+
+      const snapshot = await this.getTaskRangeAnalyticsSnapshot(monthStartKey, monthEndKey);
+      const summary = snapshot.summary;
+      const consistency = summary.total > 0 ? Math.round((summary.completed / summary.total) * 100) : 0;
+
+      history.push({
+        monthKey: monthStartKey.slice(0, 7),
+        monthLabel: monthStart.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
+        total: summary.total,
+        completed: summary.completed,
+        plannedWeight: summary.plannedWeight,
+        earnedWeight: summary.earnedWeight,
+        completionRate: summary.weightedProgress,
+        consistency,
+      });
+
+      cursor.setMonth(cursor.getMonth() + 1);
+      cursor.setDate(1);
+    }
+
+    return history.reverse();
+  }
+
   async getStats(): Promise<{
     totalGoals: number;
     totalTasks: number;
@@ -1956,6 +3483,7 @@ export interface ReviewInsights {
   tasksCompleted: number;
   tasksCreated: number;
   taskCompletionRate: number;
+  taskEligibleCount?: number;
   overdueTasksCount: number;
   blockedTasksCount: number;
   avgTaskCompletionTime: number;
@@ -1964,16 +3492,19 @@ export interface ReviewInsights {
   habitConsistencyRate: number;
   habitsCompleted: number;
   habitsMissed: number;
+  habitPeriodsCompleted?: number;
+  habitPeriodsExpected?: number;
   currentStreaks: Array<{ id: string; title: string; streak: number }>;
   brokenStreaks: Array<{ id: string; title: string; previousStreak: number }>;
   habitTrend: 'improving' | 'stable' | 'declining';
   activeGoalsProgress: Array<{ id: string; title: string; progress: number; change: number }>;
   goalsCompletedThisPeriod: number;
-  goalsAtRisk: Array<{ id: string; title: string; reason: string }>;
+  goalsAtRisk: Array<{ id: string; title: string; progress: number; reason: string }>;
   mostProductiveDay?: string;
   leastProductiveDay?: string;
   productivityTrend: 'improving' | 'stable' | 'declining';
   consistencyScore: number;
+  combinedCompletionRate?: number;
   periodStart: string;
   periodEnd: string;
 }

@@ -1,14 +1,17 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Play, Pause, RotateCcw, Coffee, BookOpen } from 'lucide-react'
-
-const POMODORO_TIME = 25 * 60;
-const SHORT_BREAK_TIME = 5 * 60;
-const LONG_BREAK_TIME = 15 * 60;
-
-type TimerMode = 'pomodoro' | 'shortBreak' | 'longBreak';
+import { Play, Pause, RotateCcw, Coffee, BookOpen, Volume2, VolumeX } from 'lucide-react'
+import {
+  DEFAULT_LONG_BREAK_DURATION_MS,
+  DEFAULT_POMODORO_DURATION_MS,
+  DEFAULT_SHORT_BREAK_DURATION_MS,
+  TimerMode,
+  TimerAlarmSound,
+} from '@/store'
+import { formatTimeFromMs, useSharedTimer } from '@/hooks/use-shared-timer'
 
 const CircularProgress = ({ progress, timeLeft, mode }: { progress: number; timeLeft: string; mode: TimerMode }) => {
   const radius = 90;
@@ -58,67 +61,107 @@ const CircularProgress = ({ progress, timeLeft, mode }: { progress: number; time
 
 
 export function PomodoroTimer() {
-  const [mode, setMode] = useState<TimerMode>('pomodoro');
-  const [timeLeft, setTimeLeft] = useState(POMODORO_TIME);
-  const [isRunning, setIsRunning] = useState(false);
-  const [key, setKey] = useState(0); // To force re-render of timer animation
+  const [mode, setMode] = useState<TimerMode>('pomodoro')
+  const [animationKey, setAnimationKey] = useState(0)
 
-  const timeSettings = useMemo(() => ({
-    pomodoro: POMODORO_TIME,
-    shortBreak: SHORT_BREAK_TIME,
-    longBreak: LONG_BREAK_TIME,
-  }), []);
+  const {
+    timerMode,
+    timerRunning,
+    timeLeftMs,
+    progress,
+    soundEnabled,
+    timerAlarmSound,
+    alarmOptions,
+    previewAlarm,
+    setSoundEnabled,
+    setTimerAlarmSound,
+    startTimer,
+    stopTimer,
+    resetTimer,
+  } = useSharedTimer()
 
+  const timeSettingsMs = useMemo(
+    () => ({
+      pomodoro: DEFAULT_POMODORO_DURATION_MS,
+      shortBreak: DEFAULT_SHORT_BREAK_DURATION_MS,
+      longBreak: DEFAULT_LONG_BREAK_DURATION_MS,
+    }),
+    []
+  ) as Record<string, number>
+
+  const isActiveMode = timerMode === mode
+  const currentDurationMs = timeSettingsMs[mode]
+  const displayedTimeLeft = isActiveMode ? timeLeftMs : currentDurationMs
+  const displayedProgress = isActiveMode ? progress : 0
+
+  // Keep Focus as the default when opening the Time tab.
+  // Only sync external timer mode while a timer is actively running.
   useEffect(() => {
-    setIsRunning(false);
-    setTimeLeft(timeSettings[mode]);
-    setKey(prev => prev + 1); // Reset animation
-  }, [mode, timeSettings]);
+    if (!timerRunning || !timerMode || timerMode === 'custom') return
+    setMode(timerMode)
+  }, [timerMode, timerRunning])
 
-  useEffect(() => {
-    if (!isRunning) return;
-
-    if (timeLeft === 0) {
-      setIsRunning(false);
-      // TODO: Add notification and auto-switch logic
-      console.log(`${mode} timer complete!`);
-      return;
+  const handleToggle = () => {
+    if (isActiveMode && timerRunning) {
+      stopTimer()
+      return
     }
 
-    const timer = setInterval(() => {
-      setTimeLeft(prev => prev - 1);
-    }, 1000);
+    startTimer(mode, currentDurationMs)
+    setAnimationKey((prev) => prev + 1)
+  }
 
-    return () => clearInterval(timer);
-  }, [isRunning, timeLeft, mode]);
-
-  const toggleTimer = () => {
-    setIsRunning(prev => !prev);
-  };
-
-  const resetTimer = () => {
-    setIsRunning(false);
-    setTimeLeft(timeSettings[mode]);
-    setKey(prev => prev + 1); // Reset animation
-  };
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const progress = ((timeSettings[mode] - timeLeft) / timeSettings[mode]) * 100;
+  const handleReset = () => {
+    resetTimer(currentDurationMs)
+    setAnimationKey((prev) => prev + 1)
+  }
 
   return (
     <Card className="flex h-full flex-col">
       <CardHeader>
-        <CardTitle>Pomodoro Timer</CardTitle>
-        <CardDescription>Focus, take a break, repeat.</CardDescription>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle>Pomodoro Timer</CardTitle>
+            <CardDescription>Focus, take a break, repeat.</CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              aria-label={soundEnabled ? 'Disable timer alarm' : 'Enable timer alarm'}
+              onClick={() => setSoundEnabled(!soundEnabled)}
+              title={soundEnabled ? 'Alarm enabled' : 'Alarm disabled'}
+            >
+              {soundEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+            </Button>
+
+            <Select
+              value={timerAlarmSound}
+              onValueChange={(value) => {
+                const selectedSound = value as TimerAlarmSound
+                setTimerAlarmSound(selectedSound)
+                previewAlarm(selectedSound, soundEnabled)
+              }}
+            >
+              <SelectTrigger className="h-8 w-36 bg-secondary/50 border-transparent">
+                <SelectValue placeholder="Alarm" />
+              </SelectTrigger>
+              <SelectContent>
+                {alarmOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
       </CardHeader>
       <CardContent className="flex flex-grow flex-col items-center justify-center space-y-6">
         <Tabs value={mode} onValueChange={(value) => setMode(value as TimerMode)} className="w-full max-w-sm">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-3 bg-secondary/30 dark:bg-secondary/20 p-1 h-12 border-transparent">
             <TabsTrigger value="pomodoro"><BookOpen className="mr-1 h-4 w-4" />Focus</TabsTrigger>
             <TabsTrigger value="shortBreak"><Coffee className="mr-1 h-4 w-4" />Short Break</TabsTrigger>
             <TabsTrigger value="longBreak"><Coffee className="mr-1 h-4 w-4" />Long Break</TabsTrigger>
@@ -126,20 +169,35 @@ export function PomodoroTimer() {
         </Tabs>
 
         <div className="my-6">
-          <CircularProgress key={key} progress={progress} timeLeft={formatTime(timeLeft)} mode={mode} />
+          <CircularProgress
+            key={animationKey}
+            progress={displayedProgress}
+            timeLeft={formatTimeFromMs(displayedTimeLeft)}
+            mode={mode}
+          />
         </div>
 
         <div className="flex w-full max-w-xs items-center justify-center space-x-4">
-          <Button onClick={toggleTimer} size="lg" className="w-40 text-lg">
-            {isRunning ? <Pause className="mr-2 h-5 w-5" /> : <Play className="mr-2 h-5 w-5" />}
-            {isRunning ? 'Pause' : 'Start'}
+          <Button onClick={handleToggle} size="lg" className="w-40 text-lg">
+            {isActiveMode && timerRunning ? (
+              <Pause className="mr-2 h-5 w-5" />
+            ) : (
+              <Play className="mr-2 h-5 w-5" />
+            )}
+            {isActiveMode && timerRunning ? 'Pause' : 'Start'}
           </Button>
-          <Button onClick={resetTimer} variant="secondary" size="lg" aria-label="Reset Timer" className="bg-secondary/80 hover:bg-secondary border-transparent shadow-none hover:shadow-none">
+          <Button
+            onClick={handleReset}
+            variant="secondary"
+            size="lg"
+            aria-label="Reset Timer"
+            className="bg-secondary/80 hover:bg-secondary border-transparent shadow-none hover:shadow-none"
+          >
             <RotateCcw className="h-5 w-5" />
           </Button>
         </div>
       </CardContent>
     </Card>
-  );
+  )
 }
 

@@ -1,10 +1,16 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
-import { Check } from "lucide-react"
+import { Check, HelpCircle } from "lucide-react"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 // Progress levels with their visual states
 const PROGRESS_LEVELS = [
-  { value: 0, label: "Not Started", color: "bg-red-500", textColor: "text-red-500", borderColor: "border-red-500", strokeColor: "stroke-red-500" },
+  { value: 0, label: "Skipped", color: "bg-red-500", textColor: "text-red-500", borderColor: "border-red-500", strokeColor: "stroke-red-500" },
   { value: 25, label: "25%", color: "bg-gray-400", textColor: "text-gray-400", borderColor: "border-gray-400", strokeColor: "stroke-gray-400" },
   { value: 50, label: "50%", color: "bg-yellow-500", textColor: "text-yellow-500", borderColor: "border-yellow-500", strokeColor: "stroke-yellow-500" },
   { value: 75, label: "75%", color: "bg-green-400/70", textColor: "text-green-400", borderColor: "border-green-400", strokeColor: "stroke-green-400" },
@@ -195,10 +201,29 @@ export const CircularProgressSelector = React.forwardRef<HTMLDivElement, Circula
         {/* Expanded selector */}
         {isExpanded && (
           <div 
-            className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-50 bg-popover border rounded-lg shadow-lg p-2 animate-in fade-in zoom-in-95 duration-150"
+            className="absolute left-1/2 -translate-x-[40%] top-full mt-2 z-50 w-52 bg-popover border rounded-lg shadow-lg p-2 animate-in fade-in zoom-in-95 duration-150"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex flex-col gap-1">
+            <div className="space-y-1">
+              <div className="flex items-center justify-between pb-1 mb-1 border-b border-border/50">
+                <span className="text-xs font-medium text-muted-foreground">How much work done?</span>
+                <TooltipProvider delayDuration={0}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <HelpCircle className="h-3.5 w-3.5 text-muted-foreground/70 hover:text-primary cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs p-3">
+                      <div className="space-y-2 text-xs">
+                        <p><strong>0% (Skipped):</strong> No work completed; excluded from completion.</p>
+                        <p><strong>25% complete:</strong> Started with initial progress.</p>
+                        <p><strong>50% complete:</strong> Roughly half of the work is done.</p>
+                        <p><strong>75% complete:</strong> Most work finished; final steps remain.</p>
+                        <p><strong>100% complete:</strong> Task fully completed.</p>
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
               {PROGRESS_LEVELS.map((level) => (
                 <button
                   key={level.value}
@@ -208,15 +233,20 @@ export const CircularProgressSelector = React.forwardRef<HTMLDivElement, Circula
                     setIsExpanded(false)
                   }}
                   className={cn(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap",
-                    "transition-colors duration-150",
-                    value === level.value 
-                      ? cn(level.color, "text-white") 
-                      : "hover:bg-secondary"
+                    "w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-xs transition-colors",
+                    value === level.value ? "bg-secondary" : "hover:bg-secondary/70"
                   )}
                 >
-                  <div className={cn("w-3 h-3 rounded-full", level.color)} />
-                  <span>{level.label}</span>
+                  <div className={cn(
+                    "w-4 h-4 rounded-sm",
+                    level.value === 0 ? "bg-rose-500" :
+                    level.value === 25 ? "bg-slate-400" :
+                    level.value === 50 ? "bg-amber-500" :
+                    level.value === 75 ? "bg-emerald-400" :
+                    "bg-emerald-600"
+                  )} />
+                  <span className="text-foreground/90 font-medium">{level.value}%</span>
+                  <span className="text-muted-foreground/70 ml-auto text-[10px]">{level.label}</span>
                 </button>
               ))}
             </div>

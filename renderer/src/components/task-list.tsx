@@ -2,7 +2,7 @@ import React from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { MoreHorizontal } from 'lucide-react';
+import { MoreHorizontal, Edit, Archive } from 'lucide-react';
 import { Task } from '../types';
 import { 
   CircularProgressSelector, 
@@ -11,6 +11,12 @@ import {
   type ProgressValue 
 } from '@/components/ui/progress-selector';
 import { cn } from '@/lib/utils';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 interface TaskListProps {
   tasks: Task[];
@@ -19,6 +25,8 @@ interface TaskListProps {
   compact?: boolean;
   maxItems?: number;
   onProgressChange?: (taskId: string, progress: ProgressValue) => void;
+  onEdit?: (task: Task) => void;
+  onArchive?: (taskId: string) => void;
 }
 
 export const TaskList: React.FC<TaskListProps> = ({
@@ -28,6 +36,8 @@ export const TaskList: React.FC<TaskListProps> = ({
   compact = false,
   maxItems,
   onProgressChange,
+  onEdit,
+  onArchive,
 }) => {
   const tasksToShow = maxItems ? tasks.slice(0, maxItems) : tasks;
 
@@ -37,12 +47,15 @@ export const TaskList: React.FC<TaskListProps> = ({
 
   return (
     <div className="space-y-2">
-      {tasksToShow.map((task) => (
+      {tasksToShow.map((task) => {
+        const progress = task.progress || 0;
+        const isCompleted = progress === 100;
+        return (
         <Card key={task.id} interactive={false} className={cn(
           "transition-all duration-300 border border-green-500/10 shadow-sm",
-          task.status === 'completed' || task.progress === 100 
-            ? "bg-muted/30 dark:bg-muted/20" 
-            : "bg-secondary/40 dark:bg-secondary/30",
+          isCompleted 
+            ? "bg-muted/30 dark:bg-zinc-900/55" 
+            : "bg-secondary/40 dark:bg-zinc-900/75 dark:border-zinc-700/60",
           compact ? 'py-2' : 'py-4'
         )}>
           <CardContent className="flex items-center justify-between p-0 px-4">
@@ -58,7 +71,7 @@ export const TaskList: React.FC<TaskListProps> = ({
                   htmlFor={`task-${task.id}`} 
                   className={cn(
                     "font-medium cursor-pointer transition-all duration-300",
-                    task.progress === 100 && "line-through text-muted-foreground"
+                    isCompleted && "line-through text-muted-foreground"
                   )}
                 >
                   {task.title}
@@ -95,14 +108,29 @@ export const TaskList: React.FC<TaskListProps> = ({
                 </Badge>
               )}
               {showActions && (
-                <Button variant="ghost" size="icon">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-8 w-8">
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => onEdit?.(task)}>
+                      <Edit className="mr-2 h-4 w-4" />
+                      Edit
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onArchive?.(task.id)} className="text-orange-600 focus:text-orange-600">
+                      <Archive className="mr-2 h-4 w-4" />
+                      Archive
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
             </div>
           </CardContent>
         </Card>
-      ))}
+        );
+      })}
     </div>
   );
 };

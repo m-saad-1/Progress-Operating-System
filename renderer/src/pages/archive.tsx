@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Progress } from '@/components/ui/progress'
@@ -31,15 +32,17 @@ import {
   TrendingUp,
   FolderArchive,
   History,
-  Undo2
+  Undo2,
+  ClipboardList
 } from 'lucide-react'
-import { parseISO, formatDistanceToNow } from 'date-fns'
+import { parseISO, format, formatDistanceToNow } from 'date-fns'
 import { useToaster } from '@/hooks/use-toaster'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 import { database, Task, Habit, Goal } from '@/lib/database'
+import { ContextTipsDialog } from '@/components/context-tips-dialog'
 
-type ArchivedItemType = 'goal' | 'task' | 'habit' | 'note'
+type ArchivedItemType = 'goal' | 'task' | 'habit' | 'note' | 'review'
 
 interface ArchivedItem {
   id: string
@@ -58,16 +61,49 @@ interface ArchivedItem {
   category?: string
   content?: string
   goal_title?: string
+  // Review-specific fields
+  review_type?: 'daily' | 'weekly' | 'monthly'
+  period_start?: string
+  period_end?: string
 }
+
+const ARCHIVE_TIPS_SECTIONS = [
+  {
+    title: 'Archive Purpose',
+    points: [
+      'Archive is for cleanup without losing operational history immediately.',
+      'Use restore when an item becomes relevant again, preserving continuity.',
+      'Use permanent delete only when data should never be used again.',
+    ],
+  },
+  {
+    title: 'Safety and Recovery',
+    points: [
+      'Review selected items before bulk deletion to avoid accidental loss.',
+      'Restoring tasks, habits, goals, notes, or reviews returns them to active workflows.',
+      'Keep high-value context archived until you are certain it is no longer needed.',
+    ],
+  },
+  {
+    title: 'Best Practices',
+    points: [
+      'Search and filter before action to verify scope.',
+      'Archive gradually as part of weekly cleanup to keep active views focused.',
+      'Prefer archive over deletion when decisions or trends may be audited later.',
+    ],
+  },
+] as const
 
 export default function Archive() {
   const queryClient = useQueryClient()
   const { success, error: toastError } = useToaster()
-  const { restoreTask, restoreHabit, restoreGoal } = useStore()
+  const { restoreTask, restoreHabit, restoreGoal, allowHistoryDeletion } = useStore()
   
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedType, setSelectedType] = useState<string>('all')
   const [confirmClearAll, setConfirmClearAll] = useState(false)
+  const [multiSelectMode, setMultiSelectMode] = useState(false)
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
 
   // Fetch archived items using the new database method
   const { data: archivedData, isLoading } = useQuery({
@@ -79,6 +115,13 @@ export default function Archive() {
         habits: data.habits.map(h => ({ ...h, type: 'habit' as const })),
         goals: data.goals.map(g => ({ ...g, type: 'goal' as const })),
         notes: data.notes.map(n => ({ ...n, type: 'note' as const })),
+        reviews: data.reviews.map(r => ({ 
+          ...r, 
+          type: 'review' as const,
+          title: `${r.type.charAt(0).toUpperCase() + r.type.slice(1)} Review`,
+          review_type: r.type,
+          description: r.status === 'completed' ? 'Completed review' : 'Draft review',
+        })),
       }
     },
   })
@@ -91,6 +134,7 @@ export default function Archive() {
       ...archivedData.tasks,
       ...archivedData.habits,
       ...archivedData.notes,
+      ...archivedData.reviews,
     ].sort((a, b) => 
       new Date(b.deleted_at!).getTime() - new Date(a.deleted_at!).getTime()
     )
@@ -102,6 +146,7 @@ export default function Archive() {
     tasks: archivedData?.tasks.length || 0,
     habits: archivedData?.habits.length || 0,
     notes: archivedData?.notes.length || 0,
+    reviews: archivedData?.reviews.length || 0,
   }), [allItems, archivedData])
 
   // Filter items based on search and selected type
@@ -118,6 +163,8 @@ export default function Archive() {
       items = archivedData?.habits || []
     } else if (selectedType === 'notes') {
       items = archivedData?.notes || []
+    } else if (selectedType === 'reviews') {
+      items = archivedData?.reviews || []
     }
 
     if (searchQuery) {
@@ -131,6 +178,57 @@ export default function Archive() {
     return items
   }, [selectedType, searchQuery, allItems, archivedData])
 
+  const getItemKey = (item: ArchivedItem) => `${item.type}:${item.id}`
+
+  const selectedArchivedItems = useMemo(() => {
+    if (selectedItems.size === 0) return []
+    return allItems.filter((item) => selectedItems.has(getItemKey(item)))
+  }, [allItems, selectedItems])
+
+  const clearSelection = () => setSelectedItems(new Set())
+
+  const toggleMultiSelectMode = () => {
+    setMultiSelectMode((previous) => {
+      if (previous) {
+        clearSelection()
+      }
+      return !previous
+    })
+  }
+
+  const toggleItemSelection = (item: ArchivedItem) => {
+    const key = getItemKey(item)
+    setSelectedItems((previous) => {
+      const next = new Set(previous)
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }
+
+  const permanentlyDeleteArchivedItem = async (type: ArchivedItemType, id: string) => {
+    switch (type) {
+      case 'task':
+        await database.permanentlyDeleteTask(id, { deleteHistory: allowHistoryDeletion })
+        break
+      case 'habit':
+        await database.permanentlyDeleteHabit(id)
+        break
+      case 'goal':
+        await database.permanentlyDeleteGoal(id)
+        break
+      case 'note':
+        await database.permanentlyDeleteNote(id)
+        break
+      case 'review':
+        await database.permanentlyDeleteReview(id)
+        break
+    }
+  }
+
   // Restore item mutation
   const restoreItemMutation = useMutation({
     mutationFn: async ({ type, id }: { type: ArchivedItemType; id: string }) => {
@@ -143,6 +241,8 @@ export default function Archive() {
           return { type, data: await database.restoreGoal(id) }
         case 'note':
           return { type, data: await database.restoreNote(id) }
+        case 'review':
+          return { type, data: await database.restoreReview(id) }
       }
     },
     onSuccess: (result) => {
@@ -166,8 +266,11 @@ export default function Archive() {
       queryClient.invalidateQueries({ queryKey: ['habits'] })
       queryClient.invalidateQueries({ queryKey: ['goals'] })
       queryClient.invalidateQueries({ queryKey: ['notes'] })
+      queryClient.invalidateQueries({ queryKey: ['reviews'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['task-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
       success('Item restored successfully! Historical progress preserved.')
     },
     onError: (error) => {
@@ -179,29 +282,41 @@ export default function Archive() {
   // Permanently delete item mutation
   const deleteItemMutation = useMutation({
     mutationFn: async ({ type, id }: { type: ArchivedItemType; id: string }) => {
-      switch (type) {
-        case 'task':
-          await database.permanentlyDeleteTask(id)
-          break
-        case 'habit':
-          await database.permanentlyDeleteHabit(id)
-          break
-        case 'goal':
-          await database.permanentlyDeleteGoal(id)
-          break
-        case 'note':
-          await database.permanentlyDeleteNote(id)
-          break
-      }
+      await permanentlyDeleteArchivedItem(type, id)
       return { type, id }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archive'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['task-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
       success('Item permanently deleted')
     },
     onError: (error) => {
       console.error('Failed to delete item:', error)
       toastError('Failed to delete item')
+    },
+  })
+
+  const batchDeleteMutation = useMutation({
+    mutationFn: async (items: ArchivedItem[]) => {
+      await Promise.all(items.map((item) => permanentlyDeleteArchivedItem(item.type, item.id)))
+      return items.length
+    },
+    onSuccess: (deletedCount) => {
+      queryClient.invalidateQueries({ queryKey: ['archive'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['task-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
+      clearSelection()
+      setMultiSelectMode(false)
+      success(`${deletedCount} item${deletedCount === 1 ? '' : 's'} permanently deleted`)
+    },
+    onError: (error) => {
+      console.error('Failed to batch delete items:', error)
+      toastError('Failed to delete selected items')
     },
   })
 
@@ -227,6 +342,7 @@ export default function Archive() {
       case 'task': return <CheckSquare className="h-5 w-5" />
       case 'habit': return <Calendar className="h-5 w-5" />
       case 'note': return <FileText className="h-5 w-5" />
+      case 'review': return <ClipboardList className="h-5 w-5" />
     }
   }
 
@@ -236,6 +352,7 @@ export default function Archive() {
       case 'task': return 'bg-blue-500/10 text-blue-500 border-blue-500/20'
       case 'habit': return 'bg-green-500/10 text-green-500 border-green-500/20'
       case 'note': return 'bg-amber-500/10 text-amber-500 border-amber-500/20'
+      case 'review': return 'bg-indigo-500/10 text-indigo-500 border-indigo-500/20'
     }
   }
 
@@ -249,16 +366,42 @@ export default function Archive() {
     }
   }
 
+  const getFrequencyColor = (frequency: string) => {
+    switch (frequency) {
+      case 'daily': return 'bg-blue-500/10 text-blue-600 border-blue-500/30'
+      case 'weekly': return 'bg-purple-500/10 text-purple-600 border-purple-500/30'
+      case 'monthly': return 'bg-emerald-500/10 text-emerald-600 border-emerald-500/30'
+      default: return 'bg-muted text-muted-foreground border-border'
+    }
+  }
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'completed': return 'bg-green-500/10 text-green-600 border-green-500/30'
+      case 'in-progress': return 'bg-blue-500/10 text-blue-600 border-blue-500/30'
+      case 'blocked': return 'bg-amber-500/10 text-amber-600 border-amber-500/30'
+      case 'pending': return 'bg-slate-500/10 text-slate-600 border-slate-500/30'
+      case 'draft': return 'bg-orange-500/10 text-orange-600 border-orange-500/30'
+      default: return 'bg-muted text-muted-foreground border-border'
+    }
+  }
+
   return (
     <div className="space-y-6 p-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-green-500/20 to-emerald-500/20 flex items-center justify-center">
-            <FolderArchive className="h-6 w-6 text-green-500" />
-          </div>
           <div>
-            <h1 className="text-3xl font-bold">Archive</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-3xl font-bold">Archive</h1>
+              <ContextTipsDialog
+                title="Archive Tab Tips"
+                description="Guidance for safe restore/delete decisions and archive hygiene."
+                sections={ARCHIVE_TIPS_SECTIONS}
+                triggerLabel="Open archive tips"
+                onboardingKey="archive-tab-tips"
+              />
+            </div>
             <p className="text-muted-foreground">
               Restore or permanently delete archived items. Progress history is preserved.
             </p>
@@ -273,15 +416,15 @@ export default function Archive() {
           <AlertDialog open={confirmClearAll} onOpenChange={setConfirmClearAll}>
             <AlertDialogTrigger asChild>
               <Button
-                variant="destructive"
+                variant="default"
                 disabled={stats.total === 0 || clearArchiveMutation.isPending}
-                className="shadow-md"
+                className="bg-red-600 dark:bg-red-700 text-white hover:bg-red-700 dark:hover:bg-red-800 border-0 shadow-sm"
               >
                 <Trash2 className="mr-2 h-4 w-4" />
                 Clear All
               </Button>
             </AlertDialogTrigger>
-            <AlertDialogContent>
+            <AlertDialogContent className="bg-white dark:bg-card border border-border shadow-lg">
               <AlertDialogHeader>
                 <AlertDialogTitle className="flex items-center gap-2">
                   <AlertTriangle className="h-5 w-5 text-destructive" />
@@ -294,6 +437,7 @@ export default function Archive() {
                     {stats.tasks > 0 && <li>{stats.tasks} tasks</li>}
                     {stats.habits > 0 && <li>{stats.habits} habits (and their completion history)</li>}
                     {stats.notes > 0 && <li>{stats.notes} notes</li>}
+                    {stats.reviews > 0 && <li>{stats.reviews} reviews</li>}
                   </ul>
                   <p className="mt-3 text-destructive font-medium">This action cannot be undone.</p>
                 </AlertDialogDescription>
@@ -302,18 +446,50 @@ export default function Archive() {
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
                 <AlertDialogAction
                   onClick={() => clearArchiveMutation.mutate()}
-                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  className="bg-red-600 hover:bg-red-700"
                 >
                   {clearArchiveMutation.isPending ? 'Clearing...' : 'Delete All'}
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
+          
+          {selectedArchivedItems.length > 0 && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="default"
+                  disabled={selectedArchivedItems.length === 0 || batchDeleteMutation.isPending}
+                  className="bg-red-600 dark:bg-red-700 text-white hover:bg-red-700 dark:hover:bg-red-800 border-0"
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete Selected ({selectedArchivedItems.length})
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent className="bg-white dark:bg-card border border-border shadow-lg">
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete selected archive items?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will permanently delete <strong>{selectedArchivedItems.length}</strong> selected item(s). This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => batchDeleteMutation.mutate(selectedArchivedItems)}
+                    className="bg-orange-500 hover:bg-orange-600"
+                  >
+                    {batchDeleteMutation.isPending ? 'Deleting...' : 'Delete Selected'}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
         </div>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         <Card className="border-border/50 bg-gradient-to-br from-card to-muted/20">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Archived</CardTitle>
@@ -388,6 +564,21 @@ export default function Archive() {
             </p>
           </CardContent>
         </Card>
+        
+        <Card className="border-indigo-500/20 bg-gradient-to-br from-indigo-500/5 to-indigo-500/10">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Reviews</CardTitle>
+            <div className="h-8 w-8 rounded-lg bg-indigo-500/10 flex items-center justify-center">
+              <ClipboardList className="h-4 w-4 text-indigo-500" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold text-indigo-500">{stats.reviews}</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Archived reviews
+            </p>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Info Banner */}
@@ -446,6 +637,10 @@ export default function Archive() {
             <FileText className="mr-2 h-4 w-4" />
             Notes ({stats.notes})
           </TabsTrigger>
+          <TabsTrigger value="reviews" className="flex-1">
+            <ClipboardList className="mr-2 h-4 w-4" />
+            Reviews ({stats.reviews})
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value={selectedType} className="mt-6">
@@ -496,6 +691,12 @@ export default function Archive() {
                   getItemIcon={getItemIcon}
                   getItemColor={getItemColor}
                   getPriorityColor={getPriorityColor}
+                  getFrequencyColor={getFrequencyColor}
+                  getStatusColor={getStatusColor}
+                  allowHistoryDeletion={allowHistoryDeletion}
+                  multiSelectMode={multiSelectMode}
+                  isSelected={selectedItems.has(getItemKey(item))}
+                  onSelectToggle={() => toggleItemSelection(item)}
                 />
               ))}
             </div>
@@ -516,6 +717,12 @@ function ArchivedItemCard({
   getItemIcon,
   getItemColor,
   getPriorityColor,
+  getFrequencyColor,
+  getStatusColor,
+  allowHistoryDeletion,
+  multiSelectMode,
+  isSelected,
+  onSelectToggle,
 }: {
   item: ArchivedItem
   onRestore: () => void
@@ -525,6 +732,12 @@ function ArchivedItemCard({
   getItemIcon: (type: ArchivedItemType) => React.ReactNode
   getItemColor: (type: ArchivedItemType) => string
   getPriorityColor: (priority: string) => string
+  getFrequencyColor: (frequency: string) => string
+  getStatusColor: (status: string) => string
+  allowHistoryDeletion: boolean
+  multiSelectMode: boolean
+  isSelected: boolean
+  onSelectToggle: () => void
 }) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
@@ -547,17 +760,22 @@ function ArchivedItemCard({
                 {/* Title and badges */}
                 <div className="flex items-center gap-2 flex-wrap mb-1">
                   <h3 className="font-semibold truncate">{item.title}</h3>
-                  <Badge variant="outline" className="capitalize text-xs">
+                  <Badge className={cn('capitalize text-xs border pointer-events-none', getItemColor(item.type))}>
                     {item.type}
                   </Badge>
                   {item.priority && (
-                    <Badge className={cn("text-xs border", getPriorityColor(item.priority))}>
+                    <Badge className={cn("text-xs border pointer-events-none", getPriorityColor(item.priority))}>
                       {item.priority}
                     </Badge>
                   )}
-                  {item.status && item.status === 'completed' && (
-                    <Badge variant="secondary" className="text-xs bg-green-500/10 text-green-500">
-                      Completed
+                  {item.status && (
+                    <Badge className={cn('text-xs border capitalize pointer-events-none', getStatusColor(item.status))}>
+                      {item.status}
+                    </Badge>
+                  )}
+                  {item.review_type && (
+                    <Badge className="text-xs border bg-indigo-500/10 text-indigo-600 border-indigo-500/30 capitalize pointer-events-none">
+                      {item.review_type}
                     </Badge>
                   )}
                 </div>
@@ -601,6 +819,12 @@ function ArchivedItemCard({
                           Streak: {item.streak_current} days
                         </span>
                       )}
+                      {item.streak_longest !== undefined && item.streak_longest > 0 && (
+                        <span className="flex items-center">
+                          <Flame className="mr-1.5 h-3.5 w-3.5 text-amber-500" />
+                          Best: {item.streak_longest} days
+                        </span>
+                      )}
                       {item.consistency_score !== undefined && (
                         <span className="flex items-center">
                           <TrendingUp className="mr-1.5 h-3.5 w-3.5" />
@@ -618,34 +842,38 @@ function ArchivedItemCard({
                   )}
 
                   {item.category && (
-                    <Badge variant="outline" className="text-xs capitalize">
+                    <Badge className="text-xs capitalize border bg-violet-500/10 text-violet-600 border-violet-500/30 pointer-events-none">
                       {item.category}
                     </Badge>
                   )}
 
                   {item.frequency && (
-                    <Badge variant="outline" className="text-xs capitalize">
+                    <Badge className={cn('text-xs capitalize border pointer-events-none', getFrequencyColor(item.frequency))}>
                       {item.frequency}
                     </Badge>
                   )}
+
+                  {item.type === 'review' && item.period_start && item.period_end && (
+                    <span className="flex items-center">
+                      <Calendar className="mr-1.5 h-3.5 w-3.5 text-indigo-500" />
+                      {format(parseISO(item.period_start), 'MMM d, yyyy')} - {format(parseISO(item.period_end), 'MMM d, yyyy')}
+                    </span>
+                  )}
                 </div>
 
-                {/* Progress bar for tasks and goals */}
-                {(item.type === 'task' || item.type === 'goal') && item.progress !== undefined && item.progress > 0 && (
-                  <div className="mt-3">
-                    <Progress value={item.progress} className="h-1.5" />
-                  </div>
-                )}
               </div>
 
               {/* Actions */}
-              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className={cn(
+                "flex items-center gap-2 transition-opacity",
+                "opacity-100"
+              )}>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={onRestore}
                   disabled={isRestoring}
-                  className="border-green-500/30 text-green-600 hover:bg-green-500/10 hover:text-green-600 hover:border-green-500/50"
+                  className="bg-transparent dark:bg-transparent border-green-500/30 text-green-600 dark:text-green-300 hover:bg-green-500/10 hover:text-green-600 dark:hover:text-green-200 hover:border-green-500/50 transition-colors duration-200"
                 >
                   <Undo2 className="mr-2 h-4 w-4" />
                   {isRestoring ? 'Restoring...' : 'Restore'}
@@ -662,33 +890,61 @@ function ArchivedItemCard({
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </AlertDialogTrigger>
-                  <AlertDialogContent>
+                  <AlertDialogContent className="bg-white dark:bg-card border border-border shadow-lg">
                     <AlertDialogHeader>
                       <AlertDialogTitle className="flex items-center gap-2">
                         <AlertTriangle className="h-5 w-5 text-destructive" />
                         Permanently Delete?
                       </AlertDialogTitle>
                       <AlertDialogDescription>
-                        This will permanently delete "<strong>{item.title}</strong>" and all its associated data.
-                        {item.type === 'habit' && (
-                          <span className="block mt-2 text-destructive">
-                            This includes all completion history for this habit.
-                          </span>
+                        {item.type === 'task' ? (
+                          allowHistoryDeletion ? (
+                            <>
+                              This will permanently remove the task AND all its historical progress data.
+                              <span className="block mt-2 font-medium">This action cannot be undone.</span>
+                            </>
+                          ) : (
+                            <>
+                              This will permanently remove the task from your workspace.
+                              <span className="block mt-2">Historical progress data will NOT be deleted.</span>
+                              <span className="block mt-3">
+                                If you want to delete historical data, enable
+                                <span className="font-medium"> "Allow history deletion" </span>
+                                in Settings.
+                              </span>
+                            </>
+                          )
+                        ) : (
+                          <>
+                            This will permanently delete "<strong>{item.title}</strong>" and all its associated data.
+                            {item.type === 'habit' && (
+                              <span className="block mt-2 text-destructive">
+                                This includes all completion history for this habit.
+                              </span>
+                            )}
+                            <span className="block mt-2 font-medium">This action cannot be undone.</span>
+                          </>
                         )}
-                        <span className="block mt-2 font-medium">This action cannot be undone.</span>
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                       <AlertDialogCancel>Cancel</AlertDialogCancel>
                       <AlertDialogAction
                         onClick={onDelete}
-                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        className="bg-orange-500 hover:bg-orange-600"
                       >
                         {isDeleting ? 'Deleting...' : 'Delete Permanently'}
                       </AlertDialogAction>
                     </AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
+
+                <Checkbox
+                  checked={isSelected}
+                  onCheckedChange={onSelectToggle}
+                  aria-label={`Select ${item.title}`}
+                  className="data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+                />
               </div>
             </div>
           </div>

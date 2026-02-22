@@ -40,9 +40,14 @@ export interface Task {
   title: string;
   description: string;
   due_date: string | null;
-  priority: 'low' | 'medium' | 'high' | 'critical';
-  status: 'pending' | 'in-progress' | 'blocked' | 'completed';
+  priority: 'low' | 'medium' | 'high';
+  status: 'pending' | 'in-progress' | 'blocked' | 'completed' | 'skipped';
   progress: number;
+  duration_type: 'today' | 'continuous'; // Today only vs Multi-day/Continuous
+  daily_progress?: Record<string, number>;
+  last_reset_date?: string; // Track when continuous task was last reset (YYYY-MM-DD)
+  is_paused?: boolean; // Whether continuous task is paused (freezes progress/analytics)
+  paused_at?: string; // When the task was paused
   estimated_time: number | null;
   actual_time: number | null;
   recurrence_rule: string | null;

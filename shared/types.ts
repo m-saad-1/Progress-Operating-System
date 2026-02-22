@@ -42,7 +42,9 @@ export interface Task extends BaseEntity {
   priority: Priority;
   status: TaskStatus;
   progress: number;
-  daily_progress?: Record<string, number>;
+  // Per-day history keyed by YYYY-MM-DD; captures status + progress for stats/analytics
+  daily_progress?: Record<string, DailyTaskState>;
+  last_reset_date?: string; // Track when continuous task was last reset (YYYY-MM-DD)
   estimated_time: number | null;
   actual_time: number | null;
   recurrence_rule: string | null;
@@ -50,6 +52,10 @@ export interface Task extends BaseEntity {
   goal_id: UUID | null;
   parent_task_id: UUID | null;
   tags: string[];
+  // UI/runtime behavior flags
+  duration_type?: 'today' | 'continuous';
+  is_paused?: boolean;
+  paused_at?: string | null;
   completed_at: string | null;
 }
 
@@ -163,6 +169,15 @@ export enum TaskStatus {
   IN_PROGRESS = 'in-progress',
   BLOCKED = 'blocked',
   COMPLETED = 'completed',
+  SKIPPED = 'skipped',
+}
+
+// Daily task snapshot used for rollovers, analytics, and historical stats
+export interface DailyTaskState {
+  progress: number;
+  status: TaskStatus;
+  recorded_at: string; // ISO timestamp of when the snapshot was written
+  source: 'user' | 'rollover' | 'reset' | 'restore' | 'paused';
 }
 
 export enum HabitFrequency {
@@ -362,6 +377,7 @@ export interface ReviewInsights {
   tasksCompleted: number;
   tasksCreated: number;
   taskCompletionRate: number;
+  taskEligibleCount?: number;
   overdueTasksCount: number;
   blockedTasksCount: number;
   avgTaskCompletionTime: number;
@@ -372,6 +388,8 @@ export interface ReviewInsights {
   habitConsistencyRate: number;
   habitsCompleted: number;
   habitsMissed: number;
+  habitPeriodsCompleted?: number;
+  habitPeriodsExpected?: number;
   currentStreaks: Array<{ id: string; title: string; streak: number }>;
   brokenStreaks: Array<{ id: string; title: string; previousStreak: number }>;
   habitTrend: 'improving' | 'stable' | 'declining';
@@ -386,6 +404,7 @@ export interface ReviewInsights {
   leastProductiveDay?: string;
   productivityTrend: 'improving' | 'stable' | 'declining';
   consistencyScore: number;
+  combinedCompletionRate?: number;
   
   // Period-specific
   periodStart: string;

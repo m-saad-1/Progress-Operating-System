@@ -26,10 +26,19 @@ interface NotificationSettings {
   desktop: boolean
   email: boolean
   taskReminders: boolean
+  taskReminderTime: string
   habitReminders: boolean
+  habitReminderTime: string
   goalDeadlines: boolean
+  goalDeadlineDaysAhead: number
+  goalReminderTime: string
+  reviewReminders: boolean
+  reviewReminderTime: string
   dailySummary: boolean
+  dailySummaryTime: string
   weeklyReport: boolean
+  weeklyReportDay: 'sunday' | 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday'
+  weeklyReportTime: string
 }
 
 // Privacy Settings Interface
@@ -41,6 +50,24 @@ interface PrivacySettings {
   localOnly: boolean
 }
 
+// Review Question Interface
+export interface ReviewQuestion {
+  id: string
+  key: string
+  question: string
+  placeholder: string
+  enabled: boolean
+  isCustom: boolean
+  order: number
+}
+
+// Custom Review Questions by Type
+export interface CustomReviewQuestions {
+  daily: ReviewQuestion[]
+  weekly: ReviewQuestion[]
+  monthly: ReviewQuestion[]
+}
+
 // Keyboard Shortcut Interface
 interface KeyboardShortcut {
   id: string
@@ -49,6 +76,20 @@ interface KeyboardShortcut {
   enabled: boolean
   category: 'navigation' | 'actions' | 'system' | 'productivity'
 }
+
+export type TimerMode = 'pomodoro' | 'shortBreak' | 'longBreak' | 'custom'
+export type FloatingTimerPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
+export type TimerAlarmSound =
+  | 'classic'
+  | 'digital'
+  | 'bell'
+  | 'chime'
+  | 'soft'
+  | 'focus'
+  | 'crystal'
+  | 'pulse'
+  | 'gong'
+  | 'beep'
 
 interface Store {
   // Theme
@@ -86,6 +127,19 @@ interface Store {
   // Privacy Settings
   privacySettings: PrivacySettings
   updatePrivacySettings: (settings: Partial<PrivacySettings>) => void
+
+  // Data deletion safety
+  allowHistoryDeletion: boolean
+  setAllowHistoryDeletion: (enabled: boolean) => void
+  
+  // Custom Review Questions
+  customReviewQuestions: CustomReviewQuestions
+  updateReviewQuestions: (type: 'daily' | 'weekly' | 'monthly', questions: ReviewQuestion[]) => void
+  addReviewQuestion: (type: 'daily' | 'weekly' | 'monthly', question: Omit<ReviewQuestion, 'id' | 'order'>) => void
+  removeReviewQuestion: (type: 'daily' | 'weekly' | 'monthly', questionId: string) => void
+  toggleReviewQuestion: (type: 'daily' | 'weekly' | 'monthly', questionId: string) => void
+  reorderReviewQuestions: (type: 'daily' | 'weekly' | 'monthly', startIndex: number, endIndex: number) => void
+  resetReviewQuestions: (type: 'daily' | 'weekly' | 'monthly') => void
   
   // Keyboard Shortcuts
   keyboardShortcuts: KeyboardShortcut[]
@@ -94,6 +148,23 @@ interface Store {
   updateKeyboardShortcut: (id: string, keys: string) => void
   toggleKeyboardShortcut: (id: string) => void
   resetKeyboardShortcuts: () => void
+
+  // Timer (shared across app)
+  timerMode: TimerMode | null
+  timerDurationMs: number
+  timerElapsedMs: number
+  timerStartedAt: number | null
+  timerRunning: boolean
+  customDurationMs: number
+  floatingTimerPosition: FloatingTimerPosition
+  timerAlarmSound: TimerAlarmSound
+
+  startTimer: (mode: TimerMode, durationMs: number) => void
+  stopTimer: () => void
+  resetTimer: (durationMs?: number) => void
+  setCustomDurationMs: (durationMs: number) => void
+  setFloatingTimerPosition: (position: FloatingTimerPosition) => void
+  setTimerAlarmSound: (sound: TimerAlarmSound) => void
   
   // Data
   tasks: Task[]
@@ -156,6 +227,9 @@ interface Store {
   
   // Settings reset
   resetAllSettings: () => void
+  
+  // Complete data reset
+  resetAllData: () => void
 }
 
 // Default keyboard shortcuts
@@ -196,10 +270,19 @@ const defaultNotificationSettings: NotificationSettings = {
   desktop: true,
   email: false,
   taskReminders: true,
+  taskReminderTime: '09:00',
   habitReminders: true,
+  habitReminderTime: '20:00',
   goalDeadlines: true,
+  goalDeadlineDaysAhead: 3,
+  goalReminderTime: '09:00',
+  reviewReminders: true,
+  reviewReminderTime: '19:00',
   dailySummary: false,
+  dailySummaryTime: '21:00',
   weeklyReport: true,
+  weeklyReportDay: 'sunday',
+  weeklyReportTime: '20:00',
 }
 
 const defaultPrivacySettings: PrivacySettings = {
@@ -209,6 +292,54 @@ const defaultPrivacySettings: PrivacySettings = {
   shareUsageData: false,
   localOnly: true,
 }
+
+// Default review questions for each type
+const defaultDailyQuestions: ReviewQuestion[] = [
+  { id: 'daily-1', key: 'completedToday', question: 'What did I complete today?', placeholder: 'List your accomplishments, no matter how small...', enabled: true, isCustom: false, order: 0 },
+  { id: 'daily-2', key: 'blockers', question: 'What blocked me or slowed me down?', placeholder: 'Identify obstacles, distractions, or challenges...', enabled: true, isCustom: false, order: 1 },
+  { id: 'daily-3', key: 'habitsImpact', question: 'Did my habits support or hinder me?', placeholder: 'Reflect on how your daily habits affected your productivity...', enabled: true, isCustom: false, order: 2 },
+  { id: 'daily-4', key: 'tomorrowFocus', question: 'What should I focus on tomorrow?', placeholder: 'Set your top 1-3 priorities for tomorrow...', enabled: true, isCustom: false, order: 3 },
+  { id: 'daily-5', key: 'additionalNotes', question: 'Any additional thoughts?', placeholder: 'Free space for reflections, ideas, or gratitude...', enabled: true, isCustom: false, order: 4 },
+]
+
+const defaultWeeklyQuestions: ReviewQuestion[] = [
+  { id: 'weekly-1', key: 'tasksThatMattered', question: 'Which tasks actually mattered this week?', placeholder: 'Identify high-impact work that moved the needle...', enabled: true, isCustom: false, order: 0 },
+  { id: 'weekly-2', key: 'tasksWasted', question: 'What tasks turned out to be low value?', placeholder: 'Recognize time spent on things that didn\'t matter...', enabled: true, isCustom: false, order: 1 },
+  { id: 'weekly-3', key: 'habitsSlipped', question: 'Which habits slipped or broke consistency?', placeholder: 'Be honest about which habits you struggled with...', enabled: true, isCustom: false, order: 2 },
+  { id: 'weekly-4', key: 'habitsMaintained', question: 'Which habits did you maintain well?', placeholder: 'Celebrate the habits you kept consistent...', enabled: true, isCustom: false, order: 3 },
+  { id: 'weekly-5', key: 'stopDoing', question: 'What should I STOP doing?', placeholder: 'Identify behaviors, tasks, or habits to eliminate...', enabled: true, isCustom: false, order: 4 },
+  { id: 'weekly-6', key: 'continueDoing', question: 'What should I CONTINUE doing?', placeholder: 'What\'s working well that you should keep doing...', enabled: true, isCustom: false, order: 5 },
+  { id: 'weekly-7', key: 'adjustments', question: 'What should I START or ADJUST?', placeholder: 'New approaches or modifications to try...', enabled: true, isCustom: false, order: 6 },
+  { id: 'weekly-8', key: 'weeklyWin', question: 'What was your biggest win this week?', placeholder: 'Celebrate your top achievement...', enabled: true, isCustom: false, order: 7 },
+  { id: 'weekly-9', key: 'biggestChallenge', question: 'What was your biggest challenge?', placeholder: 'Acknowledge difficulties you faced...', enabled: true, isCustom: false, order: 8 },
+  { id: 'weekly-10', key: 'nextWeekPriorities', question: 'What are the priorities for next week?', placeholder: 'Set your top 3-5 priorities...', enabled: true, isCustom: false, order: 9 },
+]
+
+const defaultMonthlyQuestions: ReviewQuestion[] = [
+  { id: 'monthly-1', key: 'progressAssessment', question: 'How do you assess your overall progress this month?', placeholder: 'Provide an honest evaluation of your month...', enabled: true, isCustom: false, order: 0 },
+  { id: 'monthly-2', key: 'highProgressReasons', question: 'If progress was high, why?', placeholder: 'Identify what contributed to your success...', enabled: true, isCustom: false, order: 1 },
+  { id: 'monthly-3', key: 'lowProgressReasons', question: 'If progress was low, why?', placeholder: 'Understand what held you back...', enabled: true, isCustom: false, order: 2 },
+  { id: 'monthly-4', key: 'goalsAlignment', question: 'Am I working on the right goals?', placeholder: 'Evaluate if your goals still align with your vision...', enabled: true, isCustom: false, order: 3 },
+  { id: 'monthly-5', key: 'goalsToAdjust', question: 'Which goals need adjustment?', placeholder: 'Identify goals that need changes to timeline, scope, or approach...', enabled: true, isCustom: false, order: 4 },
+  { id: 'monthly-6', key: 'goalsToAdd', question: 'What new goals should I consider?', placeholder: 'Think about areas you want to develop...', enabled: true, isCustom: false, order: 5 },
+  { id: 'monthly-7', key: 'goalsToRemove', question: 'What goals should I drop or defer?', placeholder: 'Be honest about what\'s not serving you...', enabled: true, isCustom: false, order: 6 },
+  { id: 'monthly-8', key: 'habitsIdentityAlignment', question: 'Are my habits aligned with who I want to become?', placeholder: 'Reflect on identity-level behavior change...', enabled: true, isCustom: false, order: 7 },
+  { id: 'monthly-9', key: 'keyLearnings', question: 'What are the key learnings from this month?', placeholder: 'Capture insights that will help you grow...', enabled: true, isCustom: false, order: 8 },
+  { id: 'monthly-10', key: 'nextMonthChanges', question: 'What must change next month?', placeholder: 'Identify critical changes to make...', enabled: true, isCustom: false, order: 9 },
+  { id: 'monthly-11', key: 'nextMonthGoals', question: 'What are your top goals for next month?', placeholder: 'Set clear intentions for the coming month...', enabled: true, isCustom: false, order: 10 },
+  { id: 'monthly-12', key: 'monthlyHighlight', question: 'What was the highlight of this month?', placeholder: 'Capture your best moment or achievement...', enabled: true, isCustom: false, order: 11 },
+]
+
+const defaultCustomReviewQuestions: CustomReviewQuestions = {
+  daily: defaultDailyQuestions,
+  weekly: defaultWeeklyQuestions,
+  monthly: defaultMonthlyQuestions,
+}
+
+export const DEFAULT_POMODORO_DURATION_MS = 25 * 60 * 1000
+export const DEFAULT_SHORT_BREAK_DURATION_MS = 5 * 60 * 1000
+export const DEFAULT_LONG_BREAK_DURATION_MS = 15 * 60 * 1000
+export const DEFAULT_CUSTOM_DURATION_MS = DEFAULT_POMODORO_DURATION_MS
 
 export const useStore = create<Store>()(
   persist(
@@ -258,6 +389,74 @@ export const useStore = create<Store>()(
         set((state) => ({
           privacySettings: { ...state.privacySettings, ...settings }
         })),
+
+      // Data deletion safety
+      allowHistoryDeletion: false,
+      setAllowHistoryDeletion: (allowHistoryDeletion) => set({ allowHistoryDeletion }),
+      
+      // Custom Review Questions
+      customReviewQuestions: defaultCustomReviewQuestions,
+      updateReviewQuestions: (type, questions) =>
+        set((state) => ({
+          customReviewQuestions: {
+            ...state.customReviewQuestions,
+            [type]: questions.map((q, i) => ({ ...q, order: i }))
+          }
+        })),
+      addReviewQuestion: (type, question) =>
+        set((state) => {
+          const existingQuestions = state.customReviewQuestions[type]
+          const newQuestion: ReviewQuestion = {
+            ...question,
+            id: `${type}-custom-${Date.now()}`,
+            order: existingQuestions.length,
+          }
+          return {
+            customReviewQuestions: {
+              ...state.customReviewQuestions,
+              [type]: [...existingQuestions, newQuestion]
+            }
+          }
+        }),
+      removeReviewQuestion: (type, questionId) =>
+        set((state) => ({
+          customReviewQuestions: {
+            ...state.customReviewQuestions,
+            [type]: state.customReviewQuestions[type]
+              .filter(q => q.id !== questionId)
+              .map((q, i) => ({ ...q, order: i }))
+          }
+        })),
+      toggleReviewQuestion: (type, questionId) =>
+        set((state) => ({
+          customReviewQuestions: {
+            ...state.customReviewQuestions,
+            [type]: state.customReviewQuestions[type].map(q =>
+              q.id === questionId ? { ...q, enabled: !q.enabled } : q
+            )
+          }
+        })),
+      reorderReviewQuestions: (type, startIndex, endIndex) =>
+        set((state) => {
+          const questions = [...state.customReviewQuestions[type]]
+          const [removed] = questions.splice(startIndex, 1)
+          questions.splice(endIndex, 0, removed)
+          return {
+            customReviewQuestions: {
+              ...state.customReviewQuestions,
+              [type]: questions.map((q, i) => ({ ...q, order: i }))
+            }
+          }
+        }),
+      resetReviewQuestions: (type) =>
+        set((state) => ({
+          customReviewQuestions: {
+            ...state.customReviewQuestions,
+            [type]: type === 'daily' ? defaultDailyQuestions 
+                  : type === 'weekly' ? defaultWeeklyQuestions 
+                  : defaultMonthlyQuestions
+          }
+        })),
       
       // Keyboard Shortcuts
       keyboardShortcuts: defaultKeyboardShortcuts,
@@ -276,6 +475,63 @@ export const useStore = create<Store>()(
           )
         })),
       resetKeyboardShortcuts: () => set({ keyboardShortcuts: defaultKeyboardShortcuts }),
+
+      // Timer (shared across app)
+      timerMode: null,
+      timerDurationMs: DEFAULT_POMODORO_DURATION_MS,
+      timerElapsedMs: 0,
+      timerStartedAt: null,
+      timerRunning: false,
+      customDurationMs: DEFAULT_CUSTOM_DURATION_MS,
+      floatingTimerPosition: 'bottom-right',
+      timerAlarmSound: 'classic',
+
+      startTimer: (mode, durationMs) =>
+        set(() => ({
+          timerMode: mode,
+          timerDurationMs: durationMs,
+          timerElapsedMs: 0,
+          timerStartedAt: Date.now(),
+          timerRunning: true,
+        })),
+      stopTimer: () =>
+        set((state) => {
+          if (!state.timerRunning) {
+            return { timerRunning: false, timerStartedAt: null }
+          }
+
+          const elapsedSinceStart = state.timerStartedAt
+            ? Date.now() - state.timerStartedAt
+            : 0
+
+          const updatedElapsed = Math.min(
+            state.timerElapsedMs + elapsedSinceStart,
+            state.timerDurationMs
+          )
+
+          return {
+            timerRunning: false,
+            timerStartedAt: null,
+            timerElapsedMs: updatedElapsed,
+          }
+        }),
+      resetTimer: (durationMs) =>
+        set((state) => ({
+          timerDurationMs: durationMs ?? state.timerDurationMs,
+          timerElapsedMs: 0,
+          timerStartedAt: null,
+          timerRunning: false,
+        })),
+      setCustomDurationMs: (durationMs) =>
+        set((state) => ({
+          customDurationMs: durationMs,
+          // Only update the scheduled duration when the custom timer is inactive
+          ...(state.timerMode === 'custom' && !state.timerRunning
+            ? { timerDurationMs: durationMs, timerElapsedMs: 0 }
+            : {}),
+        })),
+      setFloatingTimerPosition: (position) => set({ floatingTimerPosition: position }),
+      setTimerAlarmSound: (timerAlarmSound) => set({ timerAlarmSound }),
       
       // Data
       tasks: [],
@@ -290,12 +546,24 @@ export const useStore = create<Store>()(
         tasks: state.tasks.map((t) => (t.id === task.id ? task : t)),
       })),
       deleteTask: (taskId) => set((state) => ({
-        tasks: state.tasks.filter((t) => t.id !== taskId),
+        tasks: state.tasks.map((t) =>
+          t.id === taskId
+            ? { ...t, deleted_at: new Date().toISOString() }
+            : t
+        ),
       })),
       archiveTask: (taskId) => set((state) => ({
-        tasks: state.tasks.filter((t) => t.id !== taskId),
+        tasks: state.tasks.map((t) =>
+          t.id === taskId
+            ? { ...t, deleted_at: new Date().toISOString() }
+            : t
+        ),
       })),
-      restoreTask: (task) => set((state) => ({ tasks: [...state.tasks, task] })),
+      restoreTask: (task) => set((state) => ({
+        tasks: state.tasks.some((t) => t.id === task.id)
+          ? state.tasks.map((t) => (t.id === task.id ? { ...task, deleted_at: null } : t))
+          : [...state.tasks, { ...task, deleted_at: null }],
+      })),
 
       // Habit Actions
       addHabit: (habit) => set((state) => ({ habits: [...state.habits, habit] })),
@@ -387,12 +655,77 @@ export const useStore = create<Store>()(
         reduceMotion: false,
         notificationSettings: defaultNotificationSettings,
         privacySettings: defaultPrivacySettings,
+        allowHistoryDeletion: false,
         keyboardShortcuts: defaultKeyboardShortcuts,
         keyboardShortcutsEnabled: true,
         syncEnabled: false,
         syncProvider: 'local',
         syncInterval: 5,
         autoSync: true,
+      }),
+      
+      // Complete data reset - clears everything
+      resetAllData: () => set({
+        // Reset theme and UI
+        theme: 'light',
+        sidebarOpen: true,
+        commandPaletteOpen: false,
+        focusMode: false,
+        
+        // Reset user profile
+        userProfile: defaultUserProfile,
+        
+        // Reset preferences
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        weekStart: 'monday',
+        language: 'en',
+        compactMode: false,
+        animationsEnabled: true,
+        soundEnabled: true,
+        highContrastMode: false,
+        reduceMotion: false,
+        
+        // Reset notification settings
+        notificationSettings: defaultNotificationSettings,
+        
+        // Reset privacy settings
+        privacySettings: defaultPrivacySettings,
+
+        // Reset data deletion safety
+        allowHistoryDeletion: false,
+        
+        // Reset custom review questions
+        customReviewQuestions: defaultCustomReviewQuestions,
+        
+        // Reset keyboard shortcuts
+        keyboardShortcuts: defaultKeyboardShortcuts,
+        keyboardShortcutsEnabled: true,
+        
+        // Reset timer
+        timerMode: null,
+        timerDurationMs: DEFAULT_POMODORO_DURATION_MS,
+        timerElapsedMs: 0,
+        timerStartedAt: null,
+        timerRunning: false,
+        customDurationMs: DEFAULT_CUSTOM_DURATION_MS,
+        floatingTimerPosition: 'bottom-right',
+        timerAlarmSound: 'classic',
+        
+        // Clear all data
+        tasks: [],
+        habits: [],
+        goals: [],
+        
+        // Clear notifications
+        notifications: [],
+        
+        // Reset sync state
+        syncEnabled: false,
+        syncProvider: 'local',
+        syncInterval: 5,
+        autoSync: true,
+        lastSync: null,
+        syncStatus: 'idle',
       }),
     }),
     {
@@ -410,12 +743,24 @@ export const useStore = create<Store>()(
         reduceMotion: state.reduceMotion,
         notificationSettings: state.notificationSettings,
         privacySettings: state.privacySettings,
+        allowHistoryDeletion: state.allowHistoryDeletion,
+        customReviewQuestions: state.customReviewQuestions,
         keyboardShortcuts: state.keyboardShortcuts,
         keyboardShortcutsEnabled: state.keyboardShortcutsEnabled,
         syncEnabled: state.syncEnabled,
         syncProvider: state.syncProvider,
         syncInterval: state.syncInterval,
         autoSync: state.autoSync,
+        lastSync: state.lastSync,
+        syncStatus: state.syncStatus,
+        timerMode: state.timerMode,
+        timerDurationMs: state.timerDurationMs,
+        timerElapsedMs: state.timerElapsedMs,
+        timerStartedAt: state.timerStartedAt,
+        timerRunning: state.timerRunning,
+        customDurationMs: state.customDurationMs,
+        floatingTimerPosition: state.floatingTimerPosition,
+        timerAlarmSound: state.timerAlarmSound,
       }),
     }
   )

@@ -11,9 +11,14 @@ interface ElectronAPI {
   invoke: (channel: string, ...args: any[]) => Promise<any>
   
   // Backup operations
-  createBackup: () => Promise<string>
-  restoreBackup: (backupId: string) => Promise<boolean>
-  listBackups: () => Promise<any[]>
+  createBackup: () => Promise<any>
+  restoreBackup: (backupId: string) => Promise<any>
+  listBackups: () => Promise<any>
+  deleteBackup: (backupId: string) => Promise<any>
+  verifyBackup: (backupId: string) => Promise<any>
+  getBackupStats: () => Promise<any>
+  exportBackup: (backupId: string) => Promise<any>
+  importBackup: () => Promise<any>
   
   // File operations
   selectFile: (options: any) => Promise<string | null>
@@ -22,11 +27,13 @@ interface ElectronAPI {
   // System operations
   getAppPath: (name: string) => Promise<string>
   getPlatform: () => string
+  resetAllData: () => Promise<any>
   
   // Sync operations
   syncStart: () => Promise<void>
   syncStop: () => Promise<void>
   getSyncStatus: () => Promise<any>
+  setSyncConfig: (config: any) => Promise<any>
   
   // Undo/Redo
   undo: () => Promise<boolean>
@@ -137,18 +144,57 @@ export const useElectron = () => {
     },
     createBackup: async () => {
       return safeElectronCall(async () => {
-        return window.electronAPI.createBackup()
-      }, '')
+        const res = await window.electronAPI.createBackup()
+        if (res && !res.success) throw new Error(res.error || 'Backup failed')
+        return res?.data || res
+      })
     },
     restoreBackup: async (backupId: string) => {
       return safeElectronCall(async () => {
-        return window.electronAPI.restoreBackup(backupId)
+        const res = await window.electronAPI.restoreBackup(backupId)
+        if (res && !res.success) throw new Error(res.error || 'Restore failed')
+        return true
       }, false)
     },
     listBackups: async () => {
       return safeElectronCall(async () => {
-        return window.electronAPI.listBackups()
+        const res = await window.electronAPI.listBackups()
+        if (res && !res.success) throw new Error(res.error || 'List failed')
+        return res?.data || []
       }, [])
+    },
+    deleteBackup: async (backupId: string) => {
+      return safeElectronCall(async () => {
+        const res = await window.electronAPI.deleteBackup(backupId)
+        if (res && !res.success) throw new Error(res.error || 'Delete failed')
+        return true
+      }, false)
+    },
+    verifyBackup: async (backupId: string) => {
+      return safeElectronCall(async () => {
+        const res = await window.electronAPI.verifyBackup(backupId)
+        if (res && !res.success) throw new Error(res.error || 'Verify failed')
+        return res?.data || { valid: false }
+      }, { valid: false })
+    },
+    getBackupStats: async () => {
+      return safeElectronCall(async () => {
+        const res = await window.electronAPI.getBackupStats()
+        if (res && !res.success) throw new Error(res.error || 'Stats failed')
+        return res?.data || null
+      }, null)
+    },
+    exportBackup: async (backupId: string) => {
+      return safeElectronCall(async () => {
+        const res = await window.electronAPI.exportBackup(backupId)
+        return res
+      }, { success: false })
+    },
+    importBackup: async () => {
+      return safeElectronCall(async () => {
+        const res = await window.electronAPI.importBackup()
+        return res
+      }, { success: false })
     },
     selectFile: async (options: any) => {
       return safeElectronCall(async () => {
@@ -173,19 +219,43 @@ export const useElectron = () => {
         return 'unknown'
       }
     },
+    resetAllData: async () => {
+      return safeElectronCall(async () => {
+        const res = await window.electronAPI.resetAllData()
+        if (res && typeof res === 'object' && 'success' in res && !res.success) {
+          throw new Error(res.error || 'Reset failed')
+        }
+        return res
+      }, { success: false })
+    },
     syncStart: async () => {
       return safeElectronCall(async () => {
-        return window.electronAPI.syncStart()
+        const res: any = await window.electronAPI.syncStart()
+        if (res && typeof res === 'object' && 'success' in res && !res.success) {
+          throw new Error(res.error || 'Sync start failed')
+        }
+        return res
       })
     },
     syncStop: async () => {
       return safeElectronCall(async () => {
-        return window.electronAPI.syncStop()
+        const res: any = await window.electronAPI.syncStop()
+        if (res && typeof res === 'object' && 'success' in res && !res.success) {
+          throw new Error(res.error || 'Sync stop failed')
+        }
+        return res
       })
     },
     getSyncStatus: async () => {
       return safeElectronCall(async () => {
-        return window.electronAPI.getSyncStatus()
+        const res = await window.electronAPI.getSyncStatus()
+        if (res && typeof res === 'object' && 'success' in res) {
+          if (!res.success) {
+            throw new Error(res.error || 'Sync status failed')
+          }
+          return res.status ?? res.data ?? { status: 'idle' }
+        }
+        return res
       }, { status: 'idle' })
     },
     undo: async () => {
@@ -512,6 +582,13 @@ export const db = {
             FROM time_blocks 
             WHERE start_time BETWEEN ? AND ?
             AND deleted_at IS NULL
+            AND (
+              notes IS NULL
+              OR (
+                notes NOT LIKE 'shortBreak session%'
+                AND notes NOT LIKE 'longBreak session%'
+              )
+            )
           `,
           params: [startOfDay, endOfDay]
         }
@@ -561,7 +638,6 @@ export const db = {
     return safeElectronCall(async () => {
       const today = new Date()
       const todayDate = today.toISOString().split('T')[0]
-      const dayOfWeek = today.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase()
       
       return window.electronAPI.executeQuery(`
         SELECT h.*, 
@@ -569,12 +645,8 @@ export const db = {
                 WHERE habit_id = h.id AND date = ?) as today_completed
         FROM habits h
         WHERE h.deleted_at IS NULL
-        AND (
-          h.frequency = 'daily' OR
-          (h.frequency = 'weekly' AND ? IN (SELECT value FROM json_each(h.schedule))) OR
-          (h.frequency = 'monthly' AND ? = CAST(SUBSTR(h.schedule, 2, LENGTH(h.schedule)-2) AS INTEGER))
-        )
-      `, [todayDate, dayOfWeek, today.getDate()])
+        AND h.frequency IN ('daily', 'weekly', 'monthly')
+      `, [todayDate])
     }, [])
   },
   

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   Card, 
@@ -7,81 +8,95 @@ import {
   CardTitle, 
   CardDescription 
 } from '@/components/ui/card'
-import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { 
   CheckCircle, 
   TrendingUp, 
   Target, 
   AlertCircle,
-  Zap,
   CalendarDays,
   ArrowUpRight,
   Flame,
   Award,
-  Trophy,
   Lightbulb,
-  Activity,
   AlertTriangle,
   Calendar,
   BarChart3,
   ListTodo,
+  Plus,
+  BookOpen,
+  X,
+  CheckSquare,
 } from 'lucide-react'
-import { format, startOfDay, endOfDay, subDays, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear, parseISO, eachDayOfInterval } from 'date-fns'
+import { format, startOfDay, endOfDay, subDays, startOfWeek, endOfWeek, startOfMonth, endOfMonth, parseISO } from 'date-fns'
 import { useElectron } from '@/hooks/use-electron'
 import { useToaster } from '@/hooks/use-toaster'
 import { useStore } from '@/store'
 import { HabitTracker } from '@/components/habit-tracker'
 import { TaskList } from '@/components/task-list'
-import { PomodoroTimer } from '@/components/pomodoro-timer'
 import { QuickActions } from '@/components/quick-actions'
 import { ReviewBanner, ReviewReminder } from '@/components/review-reminder'
 import { cn } from '@/lib/utils'
-import { Task, Goal, Habit } from '@/types'
-import { database } from '@/lib/database'
-import { 
-  calculateDashboardSummary,
-  calculateGoalProgress,
-  calculateHabitAnalytics,
+import { Task, Goal, Habit, HabitCompletion, TaskDurationType, Priority } from '@/types'
+import { database, CreateTaskDTO, getLocalDateString, TaskTabStatsSnapshot } from '@/lib/database'
+import {
   calculateTaskAnalytics,
+  calculateHabitAnalytics,
+  calculateHabitDueMetricsForDay,
+  calculateHabitDueSeries,
   calculateProductivityScore,
-  getDateRange
+  calculateTrendData,
+  calculateGoalProgress
 } from '@/lib/progress'
+import { getTodaysTasks, isTaskPausedOnDate } from '@/lib/daily-reset'
+import { 
+  isWeeklyHabitCompletedThisWeekPersistent,
+  isMonthlyHabitCompletedThisMonthPersistent
+} from '@/lib/habit-logic'
 import {
   AreaChart,
   Area,
   BarChart,
   Bar,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
-  CartesianGrid,
   Tooltip,
   ResponsiveContainer,
   Legend,
 } from 'recharts'
 
 // Types
-type TimeRange = 'day' | 'week' | 'month' | 'year'
-
-interface DashboardStats {
-  completed_today: number;
-  completed_week: number;
-  completed_month: number;
-  completed_year: number;
-  avg_goal_progress: number;
-  avg_consistency: number;
-  overdue_tasks: number;
-  total_tasks_today: number;
-  total_tasks_week: number;
-  total_tasks_month: number;
-  total_tasks_year: number;
-  // Activity streaks calculated from habit_completions and task completions
-  activity_streak: number;
-  longest_activity_streak: number;
-}
-
 interface Achievement {
   type: 'goal_completed' | 'streak_achieved';
   title: string;
@@ -95,10 +110,10 @@ interface HabitWithCompletion extends Habit {
 interface DashboardData {
   tasks: Task[];
   goals: Goal[];
+  completedGoals: Goal[];
   habits: HabitWithCompletion[];
-  stats: DashboardStats;
   achievements: Achievement[];
-  weeklyActivity: any[];
+  habitCompletions: HabitCompletion[];
 }
 
 // Custom Tooltip for Charts
@@ -125,272 +140,144 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   return null
 }
 
+// Task form data interface
+interface TaskFormData {
+  title: string
+  description: string
+  due_date: string
+  priority: Priority
+  estimated_time: string
+  goal_id: string
+  duration_type: TaskDurationType
+  tags: string[]
+}
+
+const getInitialFormData = (): TaskFormData => ({
+  title: '',
+  description: '',
+  due_date: format(new Date(), 'yyyy-MM-dd'),
+  priority: 'medium',
+  estimated_time: '',
+  goal_id: '',
+  duration_type: 'today',
+  tags: [],
+})
+
+const safeParseISO = (value?: string | null): Date | null => {
+  if (!value) return null
+  try {
+    return parseISO(value)
+  } catch {
+    return null
+  }
+}
+
+const isDateInRange = (date: Date | null, start: Date, end: Date) => {
+  if (!date) return false
+  return date >= start && date <= end
+}
+
+const toDayKey = (value?: string | null): string => {
+  if (!value) return getLocalDateString(new Date())
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  const parsed = safeParseISO(value)
+  return parsed ? getLocalDateString(parsed) : getLocalDateString(new Date(value))
+}
+
+const isSkippedOrEmptyEntry = (entry: { progress?: number | null; status?: string | null }): boolean => {
+  const status = entry.status || 'pending'
+  const progress = entry.progress ?? 0
+  return status === 'skipped' || (progress <= 0 && status !== 'completed')
+}
+
+const isTaskSkippedOrOverdueForDay = (task: Task, dayKey: string, todayKey: string): boolean => {
+  if (dayKey >= todayKey) return false
+
+  const createdKey = toDayKey(task.created_at)
+  if (createdKey > dayKey) return false
+  if ((task.duration_type || 'today') !== 'continuous' && createdKey !== dayKey) return false
+
+  if (isTaskPausedOnDate(task, parseISO(`${dayKey}T00:00:00`))) return false
+
+  const dayState = task.daily_progress?.[dayKey]
+  const status = dayState?.status ?? (dayKey === todayKey ? task.status : 'pending')
+  const progress = dayState?.progress ?? (dayKey === todayKey ? (task.progress || 0) : 0)
+
+  return isSkippedOrEmptyEntry({ status, progress })
+}
+
+const calculateHabitRangeMetrics = (
+  habits: Habit[],
+  completions: HabitCompletion[],
+  range: { start: Date; end: Date }
+) => {
+  const analytics = calculateHabitAnalytics(habits, range, completions)
+
+  return {
+    activeHabits: analytics.total,
+    expectedPeriods: analytics.expectedPeriods,
+    completedPeriods: analytics.completedPeriods,
+    consistency: analytics.avgConsistency,
+    completedHabitsCount: analytics.completedHabitsCount,
+  }
+}
+
 export default function Dashboard() {
+  const navigate = useNavigate()
   const electron = useElectron()
   const queryClient = useQueryClient()
   const { error: toastError, success: toastSuccess } = useToaster()
-  const { tasks, habits, goals, updateTask } = useStore()
+  const { tasks, habits, goals, updateTask, addTask, archiveTask } = useStore()
   const today = new Date()
   
-  const [timeRange, setTimeRange] = useState<TimeRange>('day')
-  const [chartTab, setChartTab] = useState<'tasks' | 'habits' | 'productivity'>('tasks')
+  const [chartTab, setChartTab] = useState<'tasks' | 'habits' | 'productivity' | 'goals'>('productivity')
+  const [analyticsWeekOffset, setAnalyticsWeekOffset] = useState(0) // 0 = this week, -1 = last week, -2 = 2 weeks ago, etc.
   const [timeOfDay, setTimeOfDay] = useState('')
   const [greeting, setGreeting] = useState('')
+  
+  // Task creation dialog state
+  const [isTaskDialogOpen, setIsTaskDialogOpen] = useState(false)
+  const [taskFormData, setTaskFormData] = useState<TaskFormData>(getInitialFormData())
+  const [isEditing, setIsEditing] = useState<string | null>(null)
+  const [taskToArchive, setTaskToArchive] = useState<string | null>(null)
+  const [newTag, setNewTag] = useState('')
+  
+  // Use local date string consistently to avoid timezone issues
+  const todayStr = getLocalDateString(today)
 
-  // Calculate dashboard summary using centralized utilities
-  const dashboardSummary = useMemo(() => {
-    return calculateDashboardSummary(tasks, habits, goals, [])
-  }, [tasks, habits, goals])
-
-  // Get ALL today's tasks (including completed) for Dashboard display
-  // Completed tasks should remain visible with different styling
+  // Get TODAY's tasks using daily reset logic
+  // - Shows today-only tasks created today
+  // - Shows continuous tasks (they reset daily)
+  // - Excludes yesterday and older tasks completely
+  // - Maintains task history in daily_progress for analytics
   const allTodaysTasks = useMemo(() => {
-    const todayStart = startOfDay(new Date())
-    const todayEnd = endOfDay(new Date())
+    const todaysTasksList = getTodaysTasks(tasks)
     
-    return tasks
-      .filter(t => {
-        if (t.deleted_at) return false
-        if (!t.due_date) return false
-        try {
-          const dueDate = parseISO(t.due_date)
-          return dueDate >= todayStart && dueDate <= todayEnd
-        } catch {
-          return false
-        }
-      })
-      .sort((a, b) => {
-        // Completed tasks go to the bottom
-        if (a.status === 'completed' && b.status !== 'completed') return 1
-        if (a.status !== 'completed' && b.status === 'completed') return -1
-        // Then sort by priority
-        const priorityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 }
-        return (priorityOrder[a.priority] ?? 3) - (priorityOrder[b.priority] ?? 3)
-      })
+    // Filter out paused tasks
+    const activeTasksList = todaysTasksList.filter(task => !isTaskPausedOnDate(task, startOfDay(today)))
+    
+    // Sort: incomplete first (by priority), then completed at bottom
+    return activeTasksList.sort((a, b) => {
+      // Completed tasks go to the bottom
+      const aCompleted = (a.progress || 0) === 100
+      const bCompleted = (b.progress || 0) === 100
+      if (aCompleted && !bCompleted) return 1
+      if (!aCompleted && bCompleted) return -1
+      // Then sort by priority
+      const priorityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 }
+      return (priorityOrder[a.priority] ?? 3) - (priorityOrder[b.priority] ?? 3)
+    })
   }, [tasks])
 
-  // ============================================
-  // STAT 1: TASK PROGRESS (Weighted by Priority)
-  // Uses PRIORITY_WEIGHTS from progress.ts
-  // ============================================
-  const taskProgressStats = useMemo(() => {
-    const dateRange = getDateRange(timeRange as any)
-    const taskAnalytics = calculateTaskAnalytics(tasks, dateRange)
-    
-    return {
-      completed: taskAnalytics.completed,
-      total: taskAnalytics.total,
-      simpleProgress: taskAnalytics.simpleCompletionRate,
-      weightedProgress: taskAnalytics.weightedCompletionRate,
-      totalWeight: taskAnalytics.totalWeight,
-      completedWeight: taskAnalytics.completedWeight
-    }
-  }, [tasks, timeRange])
-
-  // ============================================
-  // STAT 2: HABIT CONSISTENCY
-  // From habit completion history (persisted in DB)
-  // ============================================
-  const habitConsistencyStats = useMemo(() => {
-    const habitAnalytics = calculateHabitAnalytics(habits)
-    return {
-      avgConsistency: habitAnalytics.avgConsistency,
-      totalCurrentStreak: habitAnalytics.totalCurrentStreak,
-      totalLongestStreak: habitAnalytics.totalLongestStreak,
-      activeHabits: habitAnalytics.total
-    }
-  }, [habits])
-
-  // ============================================
-  // STAT 3: ACTIVITY STREAKS
-  // Consecutive days with at least one completed task OR habit
-  // Single source of truth: calculated from REAL completion data only
-  // ============================================
-  const activityStreakStats = useMemo(() => {
-    // Get the last 365 days for proper streak calculation
-    const last365Days = eachDayOfInterval({
-      start: subDays(new Date(), 365),
-      end: new Date()
-    })
-    
-    // Get the last 30 days for active days count
-    const last30DaysInterval = eachDayOfInterval({
-      start: subDays(new Date(), 30),
-      end: new Date()
-    })
-    
-    // Get all dates with completed tasks (from REAL completion data)
-    const taskCompletionDates = new Set(
-      tasks
-        .filter(t => !t.deleted_at && t.status === 'completed' && t.completed_at)
-        .map(t => {
-          try {
-            return format(parseISO(t.completed_at!), 'yyyy-MM-dd')
-          } catch {
-            return null
-          }
-        })
-        .filter(Boolean) as string[]
-    )
-    
-    // Get dates with habit completions (habits with current streak indicate today's activity)
-    // Also check if any habit has been completed today based on streak_current > 0
-    const todayStr = format(new Date(), 'yyyy-MM-dd')
-    const hasHabitActivityToday = habits.some(h => !h.deleted_at && h.streak_current > 0)
-    
-    // Build a set of all active dates (tasks + habits)
-    const activeDates = new Set(taskCompletionDates)
-    if (hasHabitActivityToday) {
-      activeDates.add(todayStr)
-    }
-    
-    // Calculate current activity streak (consecutive days from today backwards)
-    let currentStreak = 0
-    let cursor = new Date()
-    
-    // Check if there's activity today or yesterday to start the streak
-    const cursorStr = format(cursor, 'yyyy-MM-dd')
-    if (activeDates.has(cursorStr)) {
-      currentStreak = 1
-      cursor = subDays(cursor, 1)
-      
-      // Count consecutive days backwards
-      for (let i = 0; i < 365; i++) {
-        const dateStr = format(cursor, 'yyyy-MM-dd')
-        if (activeDates.has(dateStr)) {
-          currentStreak++
-          cursor = subDays(cursor, 1)
-        } else {
-          break
-        }
-      }
-    } else {
-      // No activity today, check if yesterday had activity
-      cursor = subDays(cursor, 1)
-      const yesterdayStr = format(cursor, 'yyyy-MM-dd')
-      if (activeDates.has(yesterdayStr)) {
-        currentStreak = 1
-        cursor = subDays(cursor, 1)
-        
-        // Count consecutive days backwards from yesterday
-        for (let i = 0; i < 365; i++) {
-          const dateStr = format(cursor, 'yyyy-MM-dd')
-          if (activeDates.has(dateStr)) {
-            currentStreak++
-            cursor = subDays(cursor, 1)
-          } else {
-            break
-          }
-        }
-      }
-    }
-    
-    // Calculate longest streak from ALL historical data
-    let longestStreak = currentStreak
-    let tempStreak = 0
-    
-    // Go through all days and find the longest consecutive streak
-    for (let i = last365Days.length - 1; i >= 0; i--) {
-      const dayStr = format(last365Days[i], 'yyyy-MM-dd')
-      if (activeDates.has(dayStr)) {
-        tempStreak++
-        longestStreak = Math.max(longestStreak, tempStreak)
-      } else {
-        tempStreak = 0
-      }
-    }
-    
-    // Also consider habit longest streaks from database
-    const habitLongestStreak = habits.reduce((max, h) => 
-      Math.max(max, h.streak_longest || 0), 0
-    )
-    longestStreak = Math.max(longestStreak, habitLongestStreak)
-    
-    // Count days with activity in the last 30 days
-    const daysActiveIn30Days = last30DaysInterval.filter(day => {
-      const dayStr = format(day, 'yyyy-MM-dd')
-      return activeDates.has(dayStr)
-    }).length
-    
-    return {
-      currentStreak,
-      longestStreak,
-      daysActive: daysActiveIn30Days
-    }
-  }, [tasks, habits])
-
-  // ============================================
-  // STAT 4: OVERALL PROGRESS SCORE
-  // Uses Analytics formula: 60% Tasks + 40% Habits
-  // Single source of truth from progress.ts
-  // ============================================
-  const overallProgressScore = useMemo(() => {
-    const taskAnalytics = calculateTaskAnalytics(tasks)
-    const habitAnalytics = calculateHabitAnalytics(habits)
-    const productivityScore = calculateProductivityScore(taskAnalytics, habitAnalytics)
-    
-    return {
-      overall: productivityScore.overall,
-      taskComponent: productivityScore.taskComponent,
-      habitComponent: productivityScore.habitComponent,
-      breakdown: productivityScore.breakdown
-    }
-  }, [tasks, habits])
-
-  // Calculate goals with progress using centralized function
-  const goalsWithProgress = useMemo(() => {
-    return goals
-      .filter(g => g.status === 'active' && !g.deleted_at)
-      .map(goal => calculateGoalProgress(goal, tasks, habits))
-      .sort((a, b) => {
-        // Sort by priority first
-        const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 }
-        const priorityDiff = priorityOrder[a.priority] - priorityOrder[b.priority]
-        if (priorityDiff !== 0) return priorityDiff
-        // Then by target date
-        if (a.target_date && b.target_date) {
-          return new Date(a.target_date).getTime() - new Date(b.target_date).getTime()
-        }
-        return 0
-      })
-  }, [goals, tasks, habits])
-
-  // Set greeting based on time of day
-  useEffect(() => {
-    const hour = new Date().getHours()
-    if (hour < 12) {
-      setGreeting('Good morning')
-      setTimeOfDay('morning')
-    } else if (hour < 18) {
-      setGreeting('Good afternoon')
-      setTimeOfDay('afternoon')
-    } else {
-      setGreeting('Good evening')
-      setTimeOfDay('evening')
-    }
-  }, [])
-
   // Fetch dashboard data from database with real habits completion status
+  // Query key includes tasks/habits/goals so it updates when store changes
   const { data: dashboardData, error, refetch } = useQuery<DashboardData>({
-    queryKey: ['dashboard', format(today, 'yyyy-MM-dd')],
+    queryKey: ['dashboard', todayStr, tasks.length, habits.length, goals.length],
     queryFn: async () => {
       try {
-        // Fetch today's tasks directly from database
-        const tasksResult = await electron.executeQuery<Task[]>(`
-          SELECT * FROM tasks 
-          WHERE due_date BETWEEN ? AND ?
-          AND status != 'completed'
-          AND deleted_at IS NULL
-          ORDER BY 
-            CASE priority
-              WHEN 'critical' THEN 1
-              WHEN 'high' THEN 2
-              WHEN 'medium' THEN 3
-              WHEN 'low' THEN 4
-            END,
-            due_date ASC
-          LIMIT 10
-        `, [startOfDay(today).toISOString(), endOfDay(today).toISOString()])
+        // Use global store tasks instead of fetching separately
+        // This ensures Dashboard and Tasks tab are in sync
+        const tasksResult = tasks
 
         // Fetch active goals
         const goalsResult = await electron.executeQuery<Goal[]>(`
@@ -408,20 +295,28 @@ export default function Dashboard() {
           LIMIT 5
         `)
 
+        // Fetch completed goals for analytics graphs (full history, real DB values)
+        const completedGoalsResult = await electron.executeQuery<Goal[]>(`
+          SELECT * FROM goals
+          WHERE status = 'completed'
+          AND completed_at IS NOT NULL
+          AND deleted_at IS NULL
+          ORDER BY completed_at DESC
+        `)
+
         // IMPORTANT: Fetch today's habits with their completion status from habit_completions table
         // This ensures checked habits persist after page refresh
+        // Uses local date string to avoid timezone issues
+        // Include: daily, weekly, and monthly habits (weekly/monthly are visible until done)
         const rawHabits = await electron.executeQuery<any[]>(`
           SELECT h.*, 
                  (SELECT completed FROM habit_completions 
                   WHERE habit_id = h.id AND date = ?) as today_completed
           FROM habits h
           WHERE h.deleted_at IS NULL
-          AND (
-            h.frequency = 'daily' OR
-            (h.frequency = 'weekly' AND ? IN (SELECT value FROM json_each(h.schedule)))
-          )
+          AND h.frequency IN ('daily', 'weekly', 'monthly')
           ORDER BY h.consistency_score DESC
-        `, [format(today, 'yyyy-MM-dd'), format(today, 'EEEE').toLowerCase()])
+        `, [todayStr])
 
         const habitsResult = (Array.isArray(rawHabits) ? rawHabits : []).map((h: any) => ({
           ...h,
@@ -429,73 +324,20 @@ export default function Dashboard() {
           schedule: typeof h.schedule === 'string' ? JSON.parse(h.schedule) : h.schedule
         }))
 
-        // Fetch comprehensive statistics
-        const stats = await electron.executeQuery<DashboardStats[]>(`
-          SELECT 
-            -- Today's completed
-            (SELECT COUNT(*) FROM tasks 
-             WHERE status = 'completed' 
-             AND completed_at BETWEEN ? AND ?) as completed_today,
-            
-            -- Today's total
-            (SELECT COUNT(*) FROM tasks 
-             WHERE due_date BETWEEN ? AND ?
-             AND deleted_at IS NULL) as total_tasks_today,
-            
-            -- Week's completed
-            (SELECT COUNT(*) FROM tasks 
-             WHERE status = 'completed' 
-             AND completed_at BETWEEN ? AND ?) as completed_week,
-            
-            -- Week's total
-            (SELECT COUNT(*) FROM tasks 
-             WHERE due_date BETWEEN ? AND ?
-             AND deleted_at IS NULL) as total_tasks_week,
-            
-            -- Month's completed
-            (SELECT COUNT(*) FROM tasks 
-             WHERE status = 'completed' 
-             AND completed_at BETWEEN ? AND ?) as completed_month,
-            
-            -- Month's total
-            (SELECT COUNT(*) FROM tasks 
-             WHERE due_date BETWEEN ? AND ?
-             AND deleted_at IS NULL) as total_tasks_month,
-            
-            -- Year's completed
-            (SELECT COUNT(*) FROM tasks 
-             WHERE status = 'completed' 
-             AND completed_at BETWEEN ? AND ?) as completed_year,
-            
-            -- Year's total
-            (SELECT COUNT(*) FROM tasks 
-             WHERE due_date BETWEEN ? AND ?
-             AND deleted_at IS NULL) as total_tasks_year,
-            
-            -- Goal progress
-            (SELECT AVG(progress) FROM goals 
-             WHERE status = 'active') as avg_goal_progress,
-            
-            -- Habit consistency
-            (SELECT AVG(consistency_score) FROM habits 
-             WHERE deleted_at IS NULL) as avg_consistency,
-            
-            -- Overdue tasks
-            (SELECT COUNT(*) FROM tasks 
-             WHERE due_date < ? 
-             AND status != 'completed'
-             AND deleted_at IS NULL) as overdue_tasks
-        `, [
-          startOfDay(today).toISOString(), endOfDay(today).toISOString(),
-          startOfDay(today).toISOString(), endOfDay(today).toISOString(),
-          startOfWeek(today, { weekStartsOn: 1 }).toISOString(), endOfWeek(today, { weekStartsOn: 1 }).toISOString(),
-          startOfWeek(today, { weekStartsOn: 1 }).toISOString(), endOfWeek(today, { weekStartsOn: 1 }).toISOString(),
-          startOfMonth(today).toISOString(), endOfMonth(today).toISOString(),
-          startOfMonth(today).toISOString(), endOfMonth(today).toISOString(),
-          startOfYear(today).toISOString(), endOfYear(today).toISOString(),
-          startOfYear(today).toISOString(), endOfYear(today).toISOString(),
-          startOfDay(today).toISOString()
-        ])
+        // Fetch full completion history from the same database API used by Habits tab
+        const earliestHabitDate = habitsResult.length > 0
+          ? habitsResult
+              .map((habit) => {
+                try {
+                  return getLocalDateString(parseISO(habit.created_at))
+                } catch {
+                  return todayStr
+                }
+              })
+              .sort()[0]
+          : todayStr
+
+        const habitCompletions = await database.getHabitCompletions(earliestHabitDate, todayStr)
 
         // Fetch recent achievements
         const achievements = await electron.executeQuery<Achievement[]>(`
@@ -519,31 +361,13 @@ export default function Dashboard() {
           LIMIT 3
         `)
 
-        // Fetch weekly activity for chart
-        const weeklyActivity = await electron.executeQuery(`
-          WITH RECURSIVE dates(date) AS (
-            VALUES(?)
-            UNION ALL
-            SELECT date(date, '+1 day')
-            FROM dates
-            WHERE date < ?
-          )
-          SELECT 
-            d.date,
-            (SELECT COUNT(*) FROM tasks WHERE date(due_date) = d.date AND deleted_at IS NULL) as total_tasks,
-            (SELECT COUNT(*) FROM tasks WHERE date(completed_at) = d.date AND status = 'completed' AND deleted_at IS NULL) as completed_tasks,
-            (SELECT COUNT(*) FROM habit_completions WHERE date = d.date AND completed = 1) as completed_habits,
-            (SELECT COUNT(DISTINCT habit_id) FROM habit_completions WHERE date = d.date) as total_habit_entries
-          FROM dates d
-        `, [format(subDays(today, 6), 'yyyy-MM-dd'), format(today, 'yyyy-MM-dd')])
-
         return { 
           tasks: Array.isArray(tasksResult) ? tasksResult : [], 
           goals: Array.isArray(goalsResult) ? goalsResult : [], 
+          completedGoals: Array.isArray(completedGoalsResult) ? completedGoalsResult : [],
           habits: habitsResult, 
-          stats: Array.isArray(stats) ? stats[0] || {} : {}, 
           achievements: Array.isArray(achievements) ? achievements : [],
-          weeklyActivity: Array.isArray(weeklyActivity) ? weeklyActivity : []
+          habitCompletions: Array.isArray(habitCompletions) ? habitCompletions : []
         }
       } catch (error) {
         console.error('Failed to fetch dashboard data:', error)
@@ -556,11 +380,443 @@ export default function Dashboard() {
     staleTime: 30 * 1000, // 30 seconds - more frequent updates
   })
 
+  // Fetch TaskTabStats - same as Task Tab uses for consistent data
+  const { data: statsSnapshot } = useQuery<TaskTabStatsSnapshot>({
+    queryKey: ['task-stats', todayStr],
+    queryFn: () => database.getTaskTabStats(),
+    staleTime: 30 * 1000,
+    enabled: electron.isReady,
+  })
+
+  const weeklyReviewPeriod = useMemo(() => {
+    const start = startOfWeek(today, { weekStartsOn: 1 })
+    const end = endOfWeek(today, { weekStartsOn: 1 })
+    return { start: start.toISOString(), end: end.toISOString() }
+  }, [today])
+
+  const monthlyReviewPeriod = useMemo(() => {
+    const start = startOfMonth(today)
+    const end = endOfMonth(today)
+    return { start: start.toISOString(), end: end.toISOString() }
+  }, [today])
+
+  const { data: weeklyReviewDueCheck } = useQuery({
+    queryKey: ['review-check', 'weekly-dashboard-alert', weeklyReviewPeriod.start, weeklyReviewPeriod.end],
+    queryFn: () => database.getReviewForPeriod('weekly', weeklyReviewPeriod.start, weeklyReviewPeriod.end),
+    staleTime: 60_000,
+    enabled: electron.isReady,
+  })
+
+  const { data: monthlyReviewDueCheck } = useQuery({
+    queryKey: ['review-check', 'monthly-dashboard-alert', monthlyReviewPeriod.start, monthlyReviewPeriod.end],
+    queryFn: () => database.getReviewForPeriod('monthly', monthlyReviewPeriod.start, monthlyReviewPeriod.end),
+    staleTime: 60_000,
+    enabled: electron.isReady,
+  })
+
+  const habitCompletions = useMemo(
+    () => (dashboardData as DashboardData | undefined)?.habitCompletions || [],
+    [dashboardData]
+  )
+
+  const completedGoalsFromDashboard = useMemo(
+    () => (dashboardData as DashboardData | undefined)?.completedGoals || [],
+    [dashboardData]
+  )
+
+  const allHabitsForDashboard = useMemo(() => {
+    return ((dashboardData as DashboardData | undefined)?.habits || habits).filter((habit) => !habit.deleted_at)
+  }, [dashboardData, habits])
+
+  const pendingHabitsForDashboardCard = useMemo(() => {
+    const todayDate = new Date()
+    const todayStart = startOfDay(todayDate)
+    const todayEnd = endOfDay(todayDate)
+
+    return allHabitsForDashboard.filter((habit) => {
+      if (habit.frequency === 'daily') {
+        const completedToday = habitCompletions.some((completion) =>
+          completion.habit_id === habit.id &&
+          completion.completed &&
+          isDateInRange(safeParseISO(completion.date), todayStart, todayEnd)
+        )
+        return !completedToday
+      }
+
+      if (habit.frequency === 'weekly') {
+        return !isWeeklyHabitCompletedThisWeekPersistent(habit.id, habitCompletions)
+      }
+
+      if (habit.frequency === 'monthly') {
+        return !isMonthlyHabitCompletedThisMonthPersistent(habit.id, habitCompletions)
+      }
+
+      return false
+    })
+  }, [allHabitsForDashboard, habitCompletions])
+
+  // TASK PROGRESS: Fetch from TODAY's section in TASK TAB
+  const taskProgressStats = useMemo(() => {
+    if (!statsSnapshot) {
+      return {
+        completed: 0,
+        total: 0,
+        completionRate: 0,
+        weightedProgress: 0,
+        totalWeight: 0,
+        completedWeight: 0,
+      }
+    }
+
+    // Use TODAY's stats from Task Tab snapshot
+    return {
+      completed: statsSnapshot.today.completed,
+      total: statsSnapshot.today.total,
+      completionRate: statsSnapshot.today.total > 0 
+        ? Math.round((statsSnapshot.today.completed / statsSnapshot.today.total) * 100)
+        : 0,
+      weightedProgress: Math.round(statsSnapshot.today.weightedProgress),
+      totalWeight: statsSnapshot.today.plannedWeight,
+      completedWeight: statsSnapshot.today.earnedWeight,
+    }
+  }, [statsSnapshot])
+
+  // DAILY OVERALL PROGRESS: Use TODAY's task stats + due-today habits only
+  const dailyOverallProgress = useMemo(() => {
+    const taskPlannedWeight = taskProgressStats.totalWeight
+    const taskEarnedWeight = taskProgressStats.completedWeight
+
+    const habitDueToday = calculateHabitDueMetricsForDay(allHabitsForDashboard, habitCompletions, today, 'short')
+    const habitPlannedWeight = habitDueToday.dueHabits
+    const habitEarnedWeight = habitDueToday.completedDueHabits
+    const plannedWeight = taskPlannedWeight + habitPlannedWeight
+    const earnedWeight = taskEarnedWeight + habitEarnedWeight
+
+    return {
+      plannedWeight,
+      earnedWeight,
+      progress: plannedWeight > 0 ? Math.round((earnedWeight / plannedWeight) * 100) : 0,
+      tasks: {
+        completed: taskProgressStats.completed,
+        total: taskProgressStats.total,
+      },
+      habits: {
+        completed: habitEarnedWeight,
+        total: habitPlannedWeight,
+      },
+    }
+  }, [taskProgressStats, allHabitsForDashboard, habitCompletions, today])
+
+  // HABIT CONSISTENCY: Count only due habits for each day
+  const habitConsistencyStats = useMemo(() => {
+    const todayMetrics = calculateHabitDueMetricsForDay(allHabitsForDashboard, habitCompletions, today, 'short')
+
+    const calculateDueHabitWindow = (start: Date, end: Date) => {
+      const series = calculateHabitDueSeries(allHabitsForDashboard, habitCompletions, {
+        start: startOfDay(start),
+        end: endOfDay(end),
+      }, 'short')
+
+      const expected = series.reduce((sum, day) => sum + day.dueHabits, 0)
+      const completed = series.reduce((sum, day) => sum + day.completedDueHabits, 0)
+      const consistency = expected > 0 ? Math.round((completed / expected) * 100) : 0
+      return { expected, completed, consistency }
+    }
+
+    const weekRange = { start: startOfWeek(today, { weekStartsOn: 1 }), end: endOfDay(today) }
+    const monthRange = { start: startOfMonth(today), end: endOfDay(today) }
+    const weekMetrics = calculateDueHabitWindow(weekRange.start, weekRange.end)
+    const monthMetrics = calculateDueHabitWindow(monthRange.start, monthRange.end)
+
+    return {
+      todayConsistency: todayMetrics.consistency,
+      weekConsistency: weekMetrics.consistency,
+      monthConsistency: monthMetrics.consistency,
+      completedToday: todayMetrics.completedDueHabits,
+      expectedToday: todayMetrics.dueHabits,
+      earlyCompletedToday: todayMetrics.earlyCompletedHabits,
+      activeHabits: allHabitsForDashboard.length,
+    }
+  }, [allHabitsForDashboard, habitCompletions, today])
+
+  // OVERALL PROGRESS (30 Days): Use Task Tab stats + Habit metrics for 30-day range
+  const overallProgressScore = useMemo(() => {
+    if (!statsSnapshot) {
+      return {
+        overall: 0,
+        taskComponent: 0,
+        habitComponent: 0,
+        breakdown: {},
+        completedTasks: 0,
+        completedHabits: 0,
+        totalTasks: 0,
+        totalHabitPeriods: 0,
+        totalPlannedWeight: 0,
+        totalEarnedWeight: 0,
+      }
+    }
+
+    // Use MONTH + PREVIOUS MONTH data from Task Tab to get ~30-day range
+    const monthTaskStats = statsSnapshot.monthly
+    const monthTaskWeight = monthTaskStats.plannedWeight
+    const monthTaskEarned = monthTaskStats.earnedWeight
+
+    // Get habit metrics for 30-day range
+    const range = {
+      start: startOfDay(subDays(today, 29)),
+      end: endOfDay(today),
+    }
+    const habitMetrics = calculateHabitRangeMetrics(allHabitsForDashboard, habitCompletions, range)
+
+    const totalPlannedWeight = monthTaskWeight + habitMetrics.expectedPeriods
+    const totalEarnedWeight = monthTaskEarned + habitMetrics.completedPeriods
+    const overall = totalPlannedWeight > 0
+      ? Math.round((totalEarnedWeight / totalPlannedWeight) * 100)
+      : 0
+
+    return {
+      overall,
+      taskComponent: monthTaskStats.weightedProgress,
+      habitComponent: habitMetrics.consistency,
+      breakdown: {},
+      completedTasks: monthTaskStats.completed,
+      completedHabits: habitMetrics.completedPeriods,
+      totalTasks: monthTaskStats.total,
+      totalHabitPeriods: habitMetrics.expectedPeriods,
+      totalPlannedWeight,
+      totalEarnedWeight,
+    }
+  }, [statsSnapshot, allHabitsForDashboard, habitCompletions, today])
+
+  // MONTH HEALTH: Use Task Tab monthly stats + habit consistency
+  const monthHealthStats = useMemo(() => {
+    if (!statsSnapshot) {
+      return {
+        plannedWeight: 0,
+        earnedWeight: 0,
+        progress: 0,
+        habitConsistency: 0,
+        daysRemaining: 0,
+      }
+    }
+
+    const monthTaskStats = statsSnapshot.monthly
+    // Use TASK weight only (don't add habit periods - they're different units)
+    // This matches the Task Tab display exactly
+    const plannedWeight = monthTaskStats.plannedWeight
+    const earnedWeight = monthTaskStats.earnedWeight
+    const monthProgress = monthTaskStats.weightedProgress
+    const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate()
+
+    return {
+      plannedWeight,
+      earnedWeight,
+      progress: monthProgress,
+      habitConsistency: habitConsistencyStats.monthConsistency,
+      daysRemaining: Math.max(0, daysInMonth - today.getDate()),
+    }
+  }, [statsSnapshot, habitConsistencyStats.monthConsistency, today])
+
+  const goalActivityStats = useMemo(() => {
+    const monthRange = { start: startOfMonth(today), end: endOfDay(today) }
+    const activeGoals = goals.filter((goal) => !goal.deleted_at && goal.status === 'active')
+    const completedGoals = completedGoalsFromDashboard.filter((goal) => !goal.deleted_at && goal.status === 'completed')
+
+    const goalsWithActivity = activeGoals.filter((goal) => {
+      const taskActivity = tasks.some((task) => {
+        if (task.deleted_at || task.goal_id !== goal.id || isTaskPausedOnDate(task, monthRange.end)) return false
+        if (task.completed_at && isDateInRange(safeParseISO(task.completed_at), monthRange.start, monthRange.end)) {
+          return true
+        }
+        if (task.daily_progress) {
+          return Object.keys(task.daily_progress).some((dateKey) => {
+            const day = safeParseISO(dateKey)
+            const state = task.daily_progress?.[dateKey]
+            return !!state && state.progress > 0 && isDateInRange(day, monthRange.start, monthRange.end)
+          })
+        }
+        return false
+      })
+
+      const habitActivity = allHabitsForDashboard
+        .filter((habit) => !habit.deleted_at && habit.goal_id === goal.id)
+        .some((habit) => {
+          const completionsForHabit = habitCompletions.filter((completion) => completion.completed && completion.habit_id === habit.id)
+          return completionsForHabit.some((completion) => isDateInRange(safeParseISO(completion.date), monthRange.start, monthRange.end))
+        })
+
+      return taskActivity || habitActivity
+    }).length
+
+    const completedGoalsThisMonth = completedGoals.filter((goal) => {
+      if (!goal.completed_at) return false
+      const completedDate = safeParseISO(goal.completed_at)
+      if (!completedDate) return false
+      const completedKey = getLocalDateString(completedDate)
+      return completedKey >= getLocalDateString(monthRange.start) && completedKey <= getLocalDateString(monthRange.end)
+    }).length
+
+    return {
+      activeGoals: activeGoals.length,
+      completedGoals: completedGoals.length,
+      completedGoalsThisMonth,
+      goalsWithActivity,
+    }
+  }, [goals, tasks, allHabitsForDashboard, habitCompletions, today, completedGoalsFromDashboard])
+
+  const atRiskStats = useMemo(() => {
+    const todayStart = startOfDay(today)
+    const thirtyDayStart = startOfDay(subDays(today, 29))
+    const todayKey = getLocalDateString(todayStart)
+    const thirtyDayStartKey = getLocalDateString(thirtyDayStart)
+    const overdueTasks = tasks.filter((task) => {
+      if (task.deleted_at || isTaskPausedOnDate(task, todayStart) || !task.due_date) return false
+      const dueKey = toDayKey(task.due_date)
+      if (dueKey < thirtyDayStartKey || dueKey >= todayKey) return false
+      return isTaskSkippedOrOverdueForDay(task, dueKey, todayKey)
+    }).length
+
+    const overdueGoals = goals.filter((goal) => {
+      if (goal.deleted_at || goal.status === 'completed' || !goal.target_date) return false
+      const targetDate = safeParseISO(goal.target_date)
+      return !!targetDate && targetDate < todayStart
+    }).length
+
+    const habitAnalytics30d = calculateHabitAnalytics(
+      allHabitsForDashboard,
+      { start: thirtyDayStart, end: endOfDay(today) },
+      habitCompletions
+    )
+    const overdueHabits = habitAnalytics30d.strugglingHabits.length
+
+    return {
+      overdueTasks,
+      overdueHabits,
+      overdueGoals,
+      total: overdueTasks + overdueHabits + overdueGoals,
+    }
+  }, [tasks, goals, habitCompletions, allHabitsForDashboard, today])
+
+  const reviewDayAlerts = useMemo(() => {
+    const items: Array<{ type: 'weekly' | 'monthly'; title: string; message: string }> = []
+    const isWeeklyDay = today.getDay() === 0
+    const isMonthlyDay = today.getDate() === endOfMonth(today).getDate()
+
+    if (isWeeklyDay && (!weeklyReviewDueCheck || weeklyReviewDueCheck.status !== 'completed')) {
+      items.push({
+        type: 'weekly',
+        title: 'Weekly Review Due Today',
+        message: 'Sunday review is ready. Capture wins, blockers, and priorities for next week.',
+      })
+    }
+
+    if (isMonthlyDay && (!monthlyReviewDueCheck || monthlyReviewDueCheck.status !== 'completed')) {
+      items.push({
+        type: 'monthly',
+        title: 'Monthly Review Due Today',
+        message: 'It’s the last day of the month. Complete your monthly review to close the cycle clearly.',
+      })
+    }
+
+    return items
+  }, [today, weeklyReviewDueCheck, monthlyReviewDueCheck])
+
+  // Calculate goals with progress using centralized function
+  const goalsWithProgress = useMemo(() => {
+    return goals
+      .filter(g => g.status === 'active' && !g.deleted_at)
+      .map(goal => calculateGoalProgress(goal, tasks, habits))
+      .sort((a, b) => {
+        // Sort by priority first
+        const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 }
+        const priorityDiff = priorityOrder[a.priority] - priorityOrder[b.priority]
+        if (priorityDiff !== 0) return priorityDiff
+        // Then by target date
+        if (a.target_date && b.target_date) {
+          return new Date(a.target_date).getTime() - new Date(b.target_date).getTime()
+        }
+        return 0
+      })
+  }, [goals, tasks, habits])
+
+  const quickInsightMetrics = useMemo(() => {
+    const yesterdayStart = startOfDay(subDays(today, 1))
+    const todayKey = getLocalDateString(today)
+    const yesterdayKey = getLocalDateString(yesterdayStart)
+    
+    const yesterdayOverdueTasks = tasks.filter((task) => {
+      if (task.deleted_at || isTaskPausedOnDate(task, yesterdayStart) || !task.due_date) return false
+      const dueKey = toDayKey(task.due_date)
+      if (dueKey !== yesterdayKey) return false
+      return isTaskSkippedOrOverdueForDay(task, dueKey, todayKey)
+    }).length
+
+    return [
+      {
+        key: 'task-progress',
+        title: 'Today Task Progress',
+        value: `${taskProgressStats.weightedProgress}%`,
+        subtitle: `${taskProgressStats.completed}/${taskProgressStats.total} completed`,
+      },
+      {
+        key: 'overdue-tasks',
+        title: 'Yesterday Overdue',
+        value: `${yesterdayOverdueTasks}`,
+        subtitle: 'Tasks missed yesterday',
+      },
+      {
+        key: 'habit-checkins',
+        title: 'Habits Check-ins',
+        value: `${dailyOverallProgress.habits.completed}/${dailyOverallProgress.habits.total}`,
+        subtitle: `${habitConsistencyStats.todayConsistency}% daily consistency`,
+      },
+      {
+        key: 'daily-indicator',
+        title: 'Daily Indicator',
+        value: `${dailyOverallProgress.progress}%`,
+        subtitle: `${dailyOverallProgress.tasks.completed + dailyOverallProgress.habits.completed} checks completed today`,
+      },
+    ]
+  }, [
+    taskProgressStats,
+    tasks,
+    today,
+    dailyOverallProgress,
+    habitConsistencyStats.todayConsistency,
+  ])
+
+  const selectedAnalyticsRange = useMemo(() => {
+    const now = new Date()
+    const weekOffset = analyticsWeekOffset * 7
+    const end = subDays(now, -weekOffset)
+    const start = subDays(end, 6)
+    return { start, end }
+  }, [analyticsWeekOffset])
+
+  // Set greeting based on time of day
+  useEffect(() => {
+    const hour = new Date().getHours()
+    if (hour < 12) {
+      setGreeting('Good morning')
+      setTimeOfDay('morning')
+    } else if (hour < 18) {
+      setGreeting('Good afternoon')
+      setTimeOfDay('afternoon')
+    } else {
+      setGreeting('Good evening')
+      setTimeOfDay('evening')
+    }
+  }, [])
+
   // Task progress mutation - updates Dashboard stats, Analytics, and Sidebar
+  // CRITICAL: BINARY COMPLETION RULE - Only 100% progress = completed
+  // No partial credit toward completion (tasks are either done or not)
   const updateTaskProgressMutation = useMutation({
     mutationFn: async ({ taskId, progress }: { taskId: string; progress: number }) => {
-      const status = progress === 100 ? 'completed' : 'in-progress'
-      const completed_at = progress === 100 ? new Date().toISOString() : null
+      // BINARY COMPLETION: only 100% = completed
+      const isCompleted = progress === 100
+      const status = isCompleted ? 'completed' : progress > 0 ? 'in-progress' : 'pending'
+      const completed_at = isCompleted ? new Date().toISOString() : null
       
       await database.updateTask(taskId, { 
         progress, 
@@ -587,7 +843,9 @@ export default function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['review-insights'] })
       queryClient.invalidateQueries({ queryKey: ['goals'] }) // Goals linked to tasks
+      // Task is completed only when progress is 100%
       if (data.progress === 100) {
         toastSuccess('Task completed!')
       }
@@ -602,115 +860,156 @@ export default function Dashboard() {
     updateTaskProgressMutation.mutate({ taskId, progress })
   }, [updateTaskProgressMutation])
 
-  // Chart data point type
-  interface ChartDataPoint {
-    date: string
-    fullDate: string
-    tasks: number
-    completed: number
-    habits: number
-    completedHabits: number
-    productivity: number
+  // Create task mutation - Same as Tasks page
+  const createTaskMutation = useMutation({
+    mutationFn: async (taskData: CreateTaskDTO & { duration_type?: TaskDurationType }) => {
+      const newTaskId = await database.createTask(taskData)
+      const newTask = await database.getTaskById(newTaskId)
+      return newTask
+    },
+    onSuccess: (newTask) => {
+      if (newTask) {
+        addTask(newTask)
+        toastSuccess('Task created successfully! 🎉')
+        setIsTaskDialogOpen(false)
+        setTaskFormData(getInitialFormData())
+        // Invalidate queries for consistency
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+        queryClient.invalidateQueries({ queryKey: ['tasks'] })
+        queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      }
+    },
+    onError: () => toastError('Failed to create task'),
+  })
+
+  const updateTaskMutation = useMutation({
+    mutationFn: async ({ id, updates }: { id: string; updates: Partial<Task> }) => {
+      await database.updateTask(id, updates)
+      const updatedTask = await database.getTaskById(id)
+      return updatedTask
+    },
+    onSuccess: (updatedTask) => {
+      if (updatedTask) {
+        updateTask(updatedTask)
+        toastSuccess('Task updated!')
+        setIsTaskDialogOpen(false)
+        setIsEditing(null)
+        setTaskFormData(getInitialFormData())
+        // Invalidate queries
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+        queryClient.invalidateQueries({ queryKey: ['tasks'] })
+        queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      }
+    },
+    onError: () => toastError('Failed to update task'),
+  })
+
+  const deleteTaskMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await database.archiveTask(id)
+      return id
+    },
+    onSuccess: (id) => {
+      archiveTask(id)
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['archive'] })
+      toastSuccess('Task archived')
+      setTaskToArchive(null)
+    },
+    onError: () => toastError('Failed to archive task'),
+  })
+
+  // Handle task creation
+  const handleSaveTask = useCallback(() => {
+    if (!taskFormData.title.trim()) {
+      toastError('Please enter a task title')
+      return
+    }
+
+    const taskData: any = {
+      title: taskFormData.title,
+      description: taskFormData.description || undefined,
+      priority: taskFormData.priority,
+      due_date: taskFormData.due_date || undefined,
+      estimated_time: taskFormData.estimated_time ? parseInt(taskFormData.estimated_time, 10) : undefined,
+      goal_id: taskFormData.goal_id || undefined,
+      tags: taskFormData.tags.length > 0 ? taskFormData.tags : undefined,
+      duration_type: taskFormData.duration_type,
+    }
+
+    if (isEditing) {
+      updateTaskMutation.mutate({ id: isEditing, updates: taskData })
+    } else {
+      createTaskMutation.mutate(taskData)
+    }
+  }, [taskFormData, isEditing, createTaskMutation, updateTaskMutation, toastError])
+
+  const handleEditTask = (task: Task) => {
+    setIsEditing(task.id)
+    setTaskFormData({
+      title: task.title,
+      description: task.description || '',
+      due_date: task.due_date ? format(parseISO(task.due_date), 'yyyy-MM-dd') : '',
+      priority: task.priority,
+      estimated_time: task.estimated_time?.toString() || '',
+      goal_id: task.goal_id || '',
+      duration_type: task.duration_type || 'today',
+      tags: task.tags || [],
+    })
+    setIsTaskDialogOpen(true)
   }
 
-  // Process chart data using real weekly activity from database
-  const chartData: ChartDataPoint[] = useMemo(() => {
-    const weeklyActivity = (dashboardData as DashboardData | undefined)?.weeklyActivity
-    if (!weeklyActivity) return []
-    
-    return weeklyActivity.map((day: any) => {
-      const date = new Date(day.date)
-      const dayName = format(date, 'EEE')
-      const totalTasks = day.total_tasks || 0
-      const completedTasks = day.completed_tasks || 0
-      const completedHabits = day.completed_habits || 0
-      const totalHabits = habits.filter(h => !h.deleted_at).length
-      
-      // Calculate productivity using SAME formula as Analytics (60% tasks + 40% habits)
-      const taskProgress = totalTasks > 0 ? (completedTasks / totalTasks) * 100 : 0
-      const habitProgress = totalHabits > 0 ? (completedHabits / totalHabits) * 100 : 0
-      const productivity = Math.round(taskProgress * 0.6 + habitProgress * 0.4)
+  // Tag management
+  const addTag = useCallback(() => {
+    if (newTag.trim() && !taskFormData.tags.includes(newTag.trim())) {
+      setTaskFormData(prev => ({ ...prev, tags: [...prev.tags, newTag.trim()] }))
+      setNewTag('')
+    }
+  }, [newTag, taskFormData.tags])
 
-      return {
-        date: dayName,
-        fullDate: day.date,
-        tasks: totalTasks,
-        completed: completedTasks,
-        habits: totalHabits,
-        completedHabits: completedHabits,
-        productivity: productivity
-      }
-    })
-  }, [dashboardData, habits])
+  const removeTag = useCallback((tagToRemove: string) => {
+    setTaskFormData(prev => ({ ...prev, tags: prev.tags.filter(tag => tag !== tagToRemove) }))
+  }, [])
 
-  // Generate insights
-  const insights = useMemo(() => {
-    const result: Array<{ type: 'success' | 'warning' | 'info'; icon: any; title: string; message: string }> = []
-    const data = dashboardData as DashboardData | undefined
-    const stats = data?.stats || {} as DashboardStats
+  // Process chart data using centralized calculation for consistency
+  // Supports viewing previous weeks with analyticsWeekOffset
+  const chartData = useMemo(() => {
+    const { start, end } = selectedAnalyticsRange
+    const completions = (dashboardData as DashboardData | undefined)?.habitCompletions || []
+    const completedGoals = (dashboardData as DashboardData | undefined)?.completedGoals || []
+    const data = calculateTrendData(tasks, allHabitsForDashboard, completions, { start, end }, 'short')
+    return data.map((d: any) => ({
+      ...d,
+      completedHabits: d.completedHabits ?? d.habitsCompleted ?? 0,
+      goalsCompleted: completedGoals.filter((goal) => {
+        if (goal.deleted_at || !goal.completed_at) return false
+        const completedDate = safeParseISO(goal.completed_at)
+        return !!completedDate && getLocalDateString(completedDate) === d.fullDate
+      }).length,
+    }))
+  }, [tasks, allHabitsForDashboard, dashboardData, selectedAnalyticsRange])
+
+  const habitChartData = useMemo(
+    () => chartData.map((point) => ({
+      date: point.date,
+      fullDate: point.fullDate,
+      habits: point.habits,
+      completedHabits: point.habitsCompleted,
+    })),
+    [chartData]
+  )
+
+  // Calculate productivity score for the selected chart period to match Analytics tab
+  const periodProductivityScore = useMemo(() => {
+    const range = selectedAnalyticsRange
     
-    // Overdue tasks warning
-    if ((stats.overdue_tasks || 0) > 0) {
-      result.push({
-        type: 'warning',
-        icon: AlertTriangle,
-        title: 'Overdue Tasks',
-        message: `You have ${stats.overdue_tasks} overdue task${stats.overdue_tasks > 1 ? 's' : ''} that need attention.`
-      })
-    }
+    const tAnalytics = calculateTaskAnalytics(tasks, range)
+    const hAnalytics = calculateHabitAnalytics(allHabitsForDashboard, range, habitCompletions)
     
-    // High consistency
-    if ((stats.avg_consistency || 0) >= 80) {
-      result.push({
-        type: 'success',
-        icon: TrendingUp,
-        title: 'High Consistency',
-        message: `Your habit consistency is ${Math.round(stats.avg_consistency)}%. Keep up the great work!`
-      })
-    }
-    
-    // Today's progress
-    if ((stats.completed_today || 0) > 0) {
-      result.push({
-        type: 'info',
-        icon: Zap,
-        title: 'Momentum',
-        message: `You've completed ${stats.completed_today} task${stats.completed_today > 1 ? 's' : ''} today. Stay focused!`
-      })
-    }
-    
-    // Weekly streak
-    if ((stats.completed_week || 0) >= 10) {
-      result.push({
-        type: 'success',
-        icon: Trophy,
-        title: 'Productive Week',
-        message: `You've completed ${stats.completed_week} tasks this week. Excellent progress!`
-      })
-    }
-    
-    // Goal progress
-    if ((stats.avg_goal_progress || 0) >= 50) {
-      result.push({
-        type: 'info',
-        icon: Target,
-        title: 'Goals On Track',
-        message: `Your goals are ${Math.round(stats.avg_goal_progress)}% complete on average.`
-      })
-    }
-    
-    // All caught up message
-    if ((stats.overdue_tasks || 0) === 0 && result.length === 0) {
-      result.push({
-        type: 'success',
-        icon: CheckCircle,
-        title: 'All Caught Up',
-        message: 'You have no overdue tasks. Great job staying on top of things!'
-      })
-    }
-    
-    return result.slice(0, 3) // Limit to 3 insights
-  }, [dashboardData?.stats])
+    return calculateProductivityScore(tAnalytics, hAnalytics)
+  }, [tasks, allHabitsForDashboard, selectedAnalyticsRange, habitCompletions])
 
   if (error) {
     return (
@@ -742,7 +1041,6 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex items-center space-x-2">
-          <PomodoroTimer />
           <QuickActions />
         </div>
       </div>
@@ -750,172 +1048,212 @@ export default function Dashboard() {
       {/* Review Reminder Banner */}
       <ReviewBanner />
 
-      {/* Time Range Filter for Task Progress */}
-      <Card>
-        <CardContent className="pt-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <Calendar className="h-5 w-5 text-muted-foreground" />
-              <span className="font-medium">Task Progress Period</span>
+      {/* Weekly/Monthly Review Day Alerts */}
+      {reviewDayAlerts.length > 0 && (
+        <div className="space-y-2">
+          {reviewDayAlerts.map((alert) => (
+            <div
+              key={alert.type}
+              className="flex items-center justify-between p-4 rounded-lg bg-gradient-to-r from-primary/10 to-violet-500/10 border border-primary/20"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-primary/20">
+                  <BookOpen className="h-5 w-5 text-primary" />
+                </div>
+                <div>
+                  <p className="font-medium">{alert.title}</p>
+                  <p className="text-sm text-muted-foreground">{alert.message}</p>
+                </div>
+              </div>
+              <Button size="sm" onClick={() => navigate(`/reviews?type=${alert.type}`)}>
+                Open Review
+              </Button>
             </div>
-            <Tabs value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)} className="w-auto">
-              <TabsList className="grid grid-cols-4 h-9">
-                <TabsTrigger value="day" className="px-3 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">Today</TabsTrigger>
-                <TabsTrigger value="week" className="px-3 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">Week</TabsTrigger>
-                <TabsTrigger value="month" className="px-3 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">Month</TabsTrigger>
-                <TabsTrigger value="year" className="px-3 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">Year</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          </div>
-        </CardContent>
-      </Card>
+          ))}
+        </div>
+      )}
 
-      {/* Stats Grid - EXACTLY 4 Stats (No More, No Less) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* STAT 1: Task Progress (Weighted by Priority) - Responds to time range */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Task Progress</CardTitle>
-            <CheckCircle className="h-4 w-4 text-status-completed" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {taskProgressStats.weightedProgress}%
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {taskProgressStats.completed} of {taskProgressStats.total} tasks • weighted by priority
-            </p>
-            <Progress 
-              value={taskProgressStats.weightedProgress} 
-              className="mt-2"
-            />
-            <p className="text-xs text-muted-foreground mt-1">
-              Weight: {taskProgressStats.completedWeight}/{taskProgressStats.totalWeight}
-            </p>
-          </CardContent>
-        </Card>
-        
-        {/* STAT 2: Habit Consistency (From Completion History) */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Habit Consistency</CardTitle>
-            <TrendingUp className="h-4 w-4 text-category-health" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {habitConsistencyStats.avgConsistency}%
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {habitConsistencyStats.totalCurrentStreak} streak days • {habitConsistencyStats.activeHabits} active habits
-            </p>
-            <Progress 
-              value={habitConsistencyStats.avgConsistency} 
-              variant="success"
-              className="mt-2"
-            />
-            <p className="text-xs text-muted-foreground mt-1">
-              Best: {habitConsistencyStats.totalLongestStreak} days
-            </p>
-          </CardContent>
-        </Card>
-        
-        {/* STAT 3: Activity Streaks (Consecutive Days with Activity) */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Activity Streaks</CardTitle>
-            <Flame className="h-4 w-4 text-amber-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold flex items-center gap-2">
-              {activityStreakStats.currentStreak}
-              <span className="text-sm font-normal text-muted-foreground">days</span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              consecutive days with task/habit activity
-            </p>
-            <div className="mt-2 flex items-center gap-2">
-              <Trophy className="h-3 w-3 text-amber-500" />
-              <span className="text-xs">Longest: {activityStreakStats.longestStreak} days</span>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {activityStreakStats.daysActive} active days (30d)
-            </p>
-          </CardContent>
-        </Card>
-        
-        {/* STAT 4: Overall Progress Score (60% Tasks + 40% Habits) */}
-        <Card className="bg-gradient-to-br from-primary/5 to-transparent">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Overall Progress</CardTitle>
-            <Activity className="h-4 w-4 text-primary" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-primary">
-              {overallProgressScore.overall}%
-            </div>
-            <p className="text-xs text-muted-foreground">
-              60% tasks + 40% habits formula
-            </p>
-            <Progress 
-              value={overallProgressScore.overall} 
-              className="mt-2"
-            />
-            <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-              <div className="flex items-center gap-1">
-                <CheckCircle className="h-3 w-3 text-blue-500" />
-                <span>Tasks: {overallProgressScore.breakdown.weightedTaskCompletion}%</span>
+      {/* Dashboard Stats */}
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Card className="bg-gradient-to-br from-sky-500/5 to-transparent">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 text-sky-600" />
+                Overall Progress (30 Days)
+              </CardTitle>
+              <CardDescription>Tasks + habits weighted by real completions</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-sky-600">{overallProgressScore.overall}%</div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                Tasks: {overallProgressScore.completedTasks}/{overallProgressScore.totalTasks} • Habit periods: {overallProgressScore.completedHabits}/{overallProgressScore.totalHabitPeriods}
               </div>
-              <div className="flex items-center gap-1">
-                <TrendingUp className="h-3 w-3 text-green-500" />
-                <span>Habits: {overallProgressScore.breakdown.habitConsistency}%</span>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-gradient-to-br from-violet-500/5 to-transparent">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <CheckSquare className="h-4 w-4 text-violet-600" />
+                Task Progress
+              </CardTitle>
+              <CardDescription>Today from Task Tab</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Completion Rate</span>
+                <span className="font-semibold text-violet-600">{taskProgressStats.completionRate}%</span>
               </div>
-            </div>
-          </CardContent>
-        </Card>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Weighted Progress</span>
+                <span className="font-semibold text-violet-600">{taskProgressStats.weightedProgress}%</span>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Completed {taskProgressStats.completed}/{taskProgressStats.total} tasks
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-gradient-to-br from-emerald-500/5 to-transparent">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Flame className="h-4 w-4 text-emerald-600" />
+                Daily Overall Progress
+              </CardTitle>
+              <CardDescription>Daily habits completed</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-emerald-600">{dailyOverallProgress.progress}%</div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                Tasks {dailyOverallProgress.tasks.completed}/{dailyOverallProgress.tasks.total} • Habits {dailyOverallProgress.habits.completed}/{dailyOverallProgress.habits.total}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          <Card className="bg-gradient-to-br from-amber-500/5 to-transparent">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Calendar className="h-4 w-4 text-amber-600" />
+                Month Health
+              </CardTitle>
+              <CardDescription>Tasks and habits for current month</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-amber-600">{monthHealthStats.progress}%</div>
+              <div className="text-xs text-muted-foreground mt-2">
+                Weight {Math.round(monthHealthStats.earnedWeight)}/{Math.round(monthHealthStats.plannedWeight)} • Habit consistency {monthHealthStats.habitConsistency}%
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-gradient-to-br from-blue-500/5 to-transparent">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Award className="h-4 w-4 text-blue-600" />
+                Habit Consistency
+              </CardTitle>
+              <CardDescription>Completed due habits only</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-blue-600">{habitConsistencyStats.todayConsistency}%</div>
+              <div className="text-xs text-muted-foreground mt-2">
+                Today {habitConsistencyStats.completedToday}/{habitConsistencyStats.expectedToday} due • Week {habitConsistencyStats.weekConsistency}% • Month {habitConsistencyStats.monthConsistency}%
+              </div>
+              {habitConsistencyStats.earlyCompletedToday > 0 && (
+                <div className="mt-2 text-xs text-muted-foreground">Completed Early ✓ {habitConsistencyStats.earlyCompletedToday}</div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="bg-gradient-to-br from-purple-500/5 to-transparent">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Target className="h-4 w-4 text-purple-600" />
+                Goal Activity
+              </CardTitle>
+              <CardDescription>Active, activity, and completed goals</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-purple-600">{goalActivityStats.goalsWithActivity}</div>
+              <div className="text-xs text-muted-foreground mt-2">
+                Active {goalActivityStats.activeGoals} • Completed {goalActivityStats.completedGoals} ({goalActivityStats.completedGoalsThisMonth} this month)
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-red-500/40 bg-gradient-to-br from-red-500/5 to-transparent">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-red-600" />
+                At-Risk Items
+              </CardTitle>
+              <CardDescription>Overdue tasks, habits, and goals</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-red-600">{atRiskStats.total}</div>
+              <div className="text-xs text-muted-foreground mt-2">
+                Tasks {atRiskStats.overdueTasks} • Habits {atRiskStats.overdueHabits} • Goals {atRiskStats.overdueGoals}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
       {/* Main Content */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column - 2/3 width */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Today's Tasks - Shows ALL tasks including completed ones */}
+          {/* All Tasks - Shows ALL tasks including completed ones */}
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle className="flex items-center space-x-2">
                   <ListTodo className="h-5 w-5" />
-                  <span>Today's Tasks</span>
+                  <span>All Tasks</span>
                 </CardTitle>
                 <div className="flex items-center gap-2">
-                  <Badge variant="secondary">
-                    {allTodaysTasks.filter(t => t.status === 'completed').length}/{allTodaysTasks.length} done
+                  <Badge variant="secondary" className="dark:bg-zinc-800 dark:text-zinc-100">
+                    {allTodaysTasks.filter(t => (t.progress || 0) === 100).length}/{allTodaysTasks.length} done
                   </Badge>
-                  {dashboardSummary.overdueTasks > 0 && (
-                    <Badge variant="destructive">
-                      {dashboardSummary.overdueTasks} overdue
-                    </Badge>
-                  )}
+                  <Button 
+                    size="sm" 
+                    onClick={() => setIsTaskDialogOpen(true)}
+                    className="h-8"
+                  >
+                    <Plus className="mr-1 h-4 w-4" />
+                    Add Task
+                  </Button>
                 </div>
               </div>
               <CardDescription>
-                Your tasks for {format(today, 'MMMM d')} • Completed tasks stay visible
+                All tasks from Tasks tab • Completed tasks stay visible
               </CardDescription>
             </CardHeader>
             <CardContent>
               {allTodaysTasks.length > 0 ? (
                 <TaskList 
-                  tasks={allTodaysTasks.slice(0, 8)} 
+                  tasks={allTodaysTasks} 
                   showPriority={true}
                   showActions={true}
                   compact={false}
                   onProgressChange={handleProgressChange}
+                  onEdit={handleEditTask}
+                  onArchive={setTaskToArchive}
                 />
               ) : (
                 <div className="text-center py-8 text-muted-foreground">
                   <CheckCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
                   <p>No tasks scheduled for today.</p>
-                  <Button variant="outline" size="sm" className="mt-4">
-                    <Zap className="mr-2 h-4 w-4" />
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="mt-4"
+                    onClick={() => setIsTaskDialogOpen(true)}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
                     Add Task
                   </Button>
                 </div>
@@ -926,7 +1264,7 @@ export default function Dashboard() {
           {/* Progress Analytics - Real Data */}
           <Card>
             <CardHeader>
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-4">
                 <div>
                   <CardTitle className="flex items-center space-x-2">
                     <BarChart3 className="h-5 w-5" />
@@ -935,12 +1273,43 @@ export default function Dashboard() {
                   <CardDescription>
                     Weekly performance overview
                   </CardDescription>
+                  {/* Week selector - Left/Right arrows with date in middle */}
+                  <div className="flex items-center justify-between w-full mt-3 gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setAnalyticsWeekOffset(analyticsWeekOffset - 1)}
+                      className="h-7 px-2"
+                    >
+                      ←
+                    </Button>
+                    <div className="text-sm text-muted-foreground text-center flex-1">
+                      {(() => {
+                        const today = new Date()
+                        const weekOffset = analyticsWeekOffset * 7
+                        const end = subDays(today, -weekOffset)
+                        const start = subDays(end, 6)
+                        return `${format(start, 'MMM d')} - ${format(end, 'MMM d, yyyy')}`
+                      })()}
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setAnalyticsWeekOffset(analyticsWeekOffset + 1)}
+                      disabled={analyticsWeekOffset === 0}
+                      className="h-7 px-2"
+                    >
+                      →
+                    </Button>
+                  </div>
                 </div>
+                {/* Chart type selector - stays in top right */}
                 <Tabs value={chartTab} onValueChange={(v) => setChartTab(v as any)} className="w-auto">
-                  <TabsList className="h-8">
-                    <TabsTrigger value="tasks" className="px-3 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">Tasks</TabsTrigger>
-                    <TabsTrigger value="habits" className="px-3 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">Habits</TabsTrigger>
-                    <TabsTrigger value="productivity" className="px-3 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">Productivity</TabsTrigger>
+                  <TabsList className="h-8 bg-secondary/30 dark:bg-secondary/20 p-1 border-transparent">
+                    <TabsTrigger value="productivity" className="px-3 text-xs">Productivity</TabsTrigger>
+                    <TabsTrigger value="tasks" className="px-3 text-xs">Tasks</TabsTrigger>
+                    <TabsTrigger value="habits" className="px-3 text-xs">Habits</TabsTrigger>
+                    <TabsTrigger value="goals" className="px-3 text-xs">Goals</TabsTrigger>
                   </TabsList>
                 </Tabs>
               </div>
@@ -948,35 +1317,32 @@ export default function Dashboard() {
             <CardContent>
               {/* Stats Summary */}
               <div className="mb-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="rounded-lg border border-primary/10 bg-primary/5 p-3">
-                  <div className="text-xs font-medium text-muted-foreground">Task Completion</div>
+                <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">Productivity Score</div>
                   <div className="text-lg font-bold mt-1">
-                    {chartData.length > 0 
-                      ? Math.round(chartData.reduce((sum, d) => sum + (d.tasks > 0 ? (d.completed / d.tasks) * 100 : 0), 0) / chartData.length)
-                      : 0}%
+                    {periodProductivityScore.overall}%
                   </div>
                 </div>
                 
-                <div className="rounded-lg border border-primary/10 bg-primary/5 p-3">
-                  <div className="text-xs font-medium text-muted-foreground">Avg. Productivity</div>
+                <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">Tasks</div>
                   <div className="text-lg font-bold mt-1">
-                    {chartData.length > 0 
-                      ? Math.round(chartData.reduce((sum, d) => sum + d.productivity, 0) / chartData.length)
-                      : 0}%
+                    {chartData.reduce((sum, d) => sum + d.tasks, 0)}
                   </div>
                 </div>
                 
-                <div className="rounded-lg border border-primary/10 bg-primary/5 p-3">
-                  <div className="text-xs font-medium text-muted-foreground">Weekly Tasks</div>
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">Completed Due Habits</div>
                   <div className="text-lg font-bold mt-1">
-                    {chartData.reduce((sum, d) => sum + d.completed, 0)}
+                    {habitChartData.reduce((sum, d) => sum + d.completedHabits, 0)}
                   </div>
+                 
                 </div>
-                
-                <div className="rounded-lg border border-primary/10 bg-primary/5 p-3">
-                  <div className="text-xs font-medium text-muted-foreground">Habit Entries</div>
+
+                <div className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-3">
+                  <div className="text-xs font-medium text-muted-foreground">Goals</div>
                   <div className="text-lg font-bold mt-1">
-                    {chartData.reduce((sum, d) => sum + d.completedHabits, 0)}
+                    {chartData.reduce((sum, d) => sum + d.goalsCompleted, 0)}
                   </div>
                 </div>
               </div>
@@ -995,43 +1361,41 @@ export default function Dashboard() {
                 {chartData.length > 0 && chartTab === 'tasks' && (
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={chartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                       <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
                       <Tooltip content={<CustomTooltip />} />
                       <Legend />
-                      <Bar dataKey="tasks" name="Total Tasks" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="tasks" name="Total Tasks" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                       <Bar dataKey="completed" name="Completed" fill="hsl(var(--status-completed))" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 )}
                 {chartData.length > 0 && chartTab === 'habits' && (
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={chartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <LineChart data={habitChartData}>
                       <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} domain={[0, 'dataMax + 1']} />
                       <Tooltip content={<CustomTooltip />} />
                       <Legend />
-                      <Area
+                      <Line
                         type="monotone"
                         dataKey="habits"
-                        name="Total Habits"
-                        stroke="hsl(var(--category-health))"
-                        fill="hsl(var(--category-health))"
-                        fillOpacity={0.2}
-                        strokeWidth={2}
+                        name="Due Habits"
+                        stroke="#8b5cf6"
+                        strokeWidth={3}
+                        dot={{ r: 2 }}
+                        connectNulls
                       />
-                      <Area
+                      <Line
                         type="monotone"
                         dataKey="completedHabits"
-                        name="Completed"
-                        stroke="hsl(var(--category-learning))"
-                        fill="hsl(var(--category-learning))"
-                        fillOpacity={0.2}
-                        strokeWidth={2}
+                        name="Completed Due"
+                        stroke="#22c55e"
+                        strokeWidth={3}
+                        dot={{ r: 2 }}
+                        connectNulls
                       />
-                    </AreaChart>
+                    </LineChart>
                   </ResponsiveContainer>
                 )}
                 {chartData.length > 0 && chartTab === 'productivity' && (
@@ -1043,9 +1407,9 @@ export default function Dashboard() {
                           <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
                         </linearGradient>
                       </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                       <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
                       <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} domain={[0, 100]} />
+                      <YAxis yAxisId="goals" orientation="right" stroke="hsl(var(--muted-foreground))" fontSize={12} allowDecimals={false} />
                       <Tooltip content={<CustomTooltip />} />
                       <Legend />
                       <Area
@@ -1056,95 +1420,67 @@ export default function Dashboard() {
                         fill="url(#productivityGradient)"
                         strokeWidth={2}
                       />
+                      <Line
+                        yAxisId="goals"
+                        type="monotone"
+                        dataKey="goalsCompleted"
+                        name="Goal Completions"
+                        stroke="hsl(var(--destructive))"
+                        strokeWidth={2}
+                        dot={{ r: 2 }}
+                      />
                     </AreaChart>
+                  </ResponsiveContainer>
+                )}
+                {chartData.length > 0 && chartTab === 'goals' && (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartData}>
+                      <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Legend />
+                      <Bar dataKey="goalsCompleted" name="Goal Completions" fill="hsl(var(--destructive))" radius={[4, 4, 0, 0]} />
+                    </BarChart>
                   </ResponsiveContainer>
                 )}
               </div>
             </CardContent>
           </Card>
 
-          {/* Recent Achievements */}
-          {((dashboardData as DashboardData | undefined)?.achievements?.length || 0) > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center space-x-2">
-                  <Award className="h-5 w-5" />
-                  <span>Recent Achievements</span>
-                </CardTitle>
-                <CardDescription>
-                  Celebrate your recent successes
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {(dashboardData as DashboardData).achievements.map((achievement: Achievement, index: number) => (
-                    <div 
-                      key={index}
-                      className="flex items-center justify-between p-3 rounded-lg bg-gradient-to-r from-primary/5 to-transparent border"
-                    >
-                      <div className="flex items-center space-x-3">
-                        <div className={cn(
-                          "h-10 w-10 rounded-full flex items-center justify-center",
-                          achievement.type === 'goal_completed' 
-                            ? "bg-status-completed/10 text-status-completed"
-                            : "bg-category-learning/10 text-category-learning"
-                        )}>
-                          {achievement.type === 'goal_completed' ? (
-                            <Target className="h-5 w-5" />
-                          ) : (
-                            <Flame className="h-5 w-5" />
-                          )}
-                        </div>
-                        <div>
-                          <p className="font-medium">{achievement.title}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {format(new Date(achievement.timestamp), 'MMM d, h:mm a')}
-                          </p>
-                        </div>
-                      </div>
-                      <ArrowUpRight className="h-4 w-4 text-muted-foreground" />
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          )}
         </div>
 
         {/* Right Column - 1/3 width */}
         <div className="space-y-6">
-          {/* Today's Habits - Using data from database query (fixes persistence) */}
+          {/* Habits - Shows ONLY INCOMPLETE daily, weekly, and monthly habits */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center space-x-2">
                 <Flame className="h-5 w-5" />
-                <span>Today's Habits</span>
+                <span>Habits</span>
               </CardTitle>
               <CardDescription>
-                Build consistency day by day
+                {pendingHabitsForDashboardCard.length > 0
+                  ? `${pendingHabitsForDashboardCard.length} pending habit${pendingHabitsForDashboardCard.length !== 1 ? 's' : ''}`
+                  : 'All habits completed'}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {((dashboardData as DashboardData | undefined)?.habits?.length || 0) > 0 ? (
+              {pendingHabitsForDashboardCard.length > 0 ? (
                 <HabitTracker 
-                  habits={(dashboardData as DashboardData).habits}
-                  compact={true}
-                />
-              ) : dashboardSummary.todaysHabits.length > 0 ? (
-                <HabitTracker 
-                  habits={dashboardSummary.todaysHabits}
+                  habits={pendingHabitsForDashboardCard}
+                  habitCompletions={habitCompletions}
                   compact={true}
                 />
               ) : (
                 <div className="text-center py-8 text-muted-foreground">
                   <CalendarDays className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No habits scheduled for today.</p>
+                  <p>No pending habits remaining. Keep up the great work!</p>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Active Goals */}
+          {/* Active Goals - Enhanced representation */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center space-x-2">
@@ -1152,31 +1488,76 @@ export default function Dashboard() {
                 <span>Active Goals</span>
               </CardTitle>
               <CardDescription>
-                Your current focus areas
+                Focus areas and momentum
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               {goalsWithProgress.length > 0 ? (
-                goalsWithProgress.slice(0, 3).map((goal) => (
-                  <div key={goal.id} className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium truncate">{goal.title}</span>
-                      <span className="text-sm font-bold">{goal.calculatedProgress}%</span>
+                goalsWithProgress.slice(0, 3).map((goal) => {
+                  // Calculate momentum and status
+                  const daysRemaining = goal.target_date 
+                    ? Math.ceil((new Date(goal.target_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+                    : null
+                  const isOnTrack = goal.calculatedProgress >= 50 || (daysRemaining !== null && daysRemaining > 14)
+                  const isUrgent = daysRemaining !== null && daysRemaining <= 7 && goal.calculatedProgress < 80
+                  const momentum = goal.linkedTasksCount > 0 
+                    ? goal.completedTasksCount > 0 ? 'Active' : 'Stalled'
+                    : 'No tasks linked'
+                  
+                  return (
+                    <div 
+                      key={goal.id} 
+                      onClick={() => navigate('/goals')}
+                      className={cn(
+                      "p-3 rounded-lg border transition-colors cursor-pointer",
+                      isUrgent && "border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10",
+                      !isUrgent && isOnTrack && "border-green-500/20 bg-green-500/5 hover:bg-green-500/10",
+                      !isUrgent && !isOnTrack && "bg-muted/30 hover:bg-muted/50"
+                    )}>
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div className="flex-1 min-w-0">
+                          <h4 className="font-medium text-sm truncate">{goal.title}</h4>
+                          <div className="flex items-center gap-2 mt-1">
+                            <Badge variant={goal.category as any} size="sm" className="text-[10px]">
+                              {goal.category}
+                            </Badge>
+                            <Badge 
+                              variant="outline" 
+                              size="sm"
+                              className={cn(
+                                "text-[10px]",
+                                momentum === 'Active' && "text-green-600 border-green-500/30",
+                                momentum === 'Stalled' && "text-amber-600 border-amber-500/30"
+                              )}
+                            >
+                              {momentum}
+                            </Badge>
+                          </div>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          {daysRemaining !== null && (
+                            <p className={cn(
+                              "text-[10px]",
+                              daysRemaining <= 0 && "text-destructive",
+                              daysRemaining > 0 && daysRemaining <= 7 && "text-amber-600",
+                              daysRemaining > 7 && "text-muted-foreground"
+                            )}>
+                              {daysRemaining <= 0 ? 'Overdue!' : `${daysRemaining}d left`}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {/* Stats row */}
+                      <div className="flex items-center gap-3 mt-2 text-[10px] text-muted-foreground">
+                        <span>{goal.completedTasksCount}/{goal.linkedTasksCount} tasks</span>
+                        {goal.linkedHabitsCount > 0 && (
+                          <span>{goal.avgHabitConsistency}% habit consistency</span>
+                        )}
+                      </div>
                     </div>
-                    <Progress value={goal.calculatedProgress} />
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <Badge variant={goal.category as any} size="sm">
-                        {goal.category}
-                      </Badge>
-                      <span>
-                        {goal.target_date ? 
-                          `${format(new Date(goal.target_date), 'MMM d')}` : 
-                          'No date'
-                        }
-                      </span>
-                    </div>
-                  </div>
-                ))
+                  )
+                })
               ) : (
                 <div className="text-center py-8 text-muted-foreground">
                   <Target className="h-12 w-12 mx-auto mb-4 opacity-50" />
@@ -1184,7 +1565,12 @@ export default function Dashboard() {
                 </div>
               )}
               {goalsWithProgress.length > 3 && (
-                <Button variant="ghost" size="sm" className="w-full bg-primary/5 text-primary border border-primary/10 hover:bg-primary/10">
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  className="w-full bg-primary/5 text-primary border border-primary/10 hover:bg-primary/10"
+                  onClick={() => navigate('/goals')}
+                >
                   View all goals ({goalsWithProgress.length})
                 </Button>
               )}
@@ -1193,45 +1579,6 @@ export default function Dashboard() {
 
           {/* Review Reminder Widget */}
           <ReviewReminder showAll={false} />
-
-          {/* Summary Stats - Uses same data sources as the 4 main stats */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center space-x-2">
-                <Activity className="h-5 w-5" />
-                <span>Summary</span>
-              </CardTitle>
-              <CardDescription>
-                Quick overview
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Tasks Completed</span>
-                  <span className="font-semibold">{taskProgressStats.completed}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Weighted Progress</span>
-                  <span className="font-semibold">{taskProgressStats.weightedProgress}%</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Active Habits</span>
-                  <span className="font-semibold">{habitConsistencyStats.activeHabits}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Activity Streak</span>
-                  <span className="font-semibold">{activityStreakStats.currentStreak} days</span>
-                </div>
-                <div className="flex items-center justify-between pt-2 border-t">
-                  <span className="text-sm font-medium">Overall Score</span>
-                  <span className="font-bold text-primary">
-                    {overallProgressScore.overall}%
-                  </span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
 
           {/* Quick Insights */}
           <Card>
@@ -1242,51 +1589,67 @@ export default function Dashboard() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {insights.map((insight, index) => (
-                <div 
-                  key={index}
-                  className={cn(
-                    "p-3 rounded-lg border",
-                    insight.type === 'success' && "bg-green-500/10 border-green-500/20",
-                    insight.type === 'warning' && "bg-destructive/10 border-destructive/20",
-                    insight.type === 'info' && "bg-primary/5 border-primary/10"
-                  )}
-                >
-                  <div className="flex items-center space-x-2 mb-1">
-                    <insight.icon className={cn(
-                      "h-4 w-4",
-                      insight.type === 'success' && "text-green-500",
-                      insight.type === 'warning' && "text-destructive",
-                      insight.type === 'info' && "text-primary"
-                    )} />
-                    <span className={cn(
-                      "text-sm font-medium",
-                      insight.type === 'success' && "text-green-600",
-                      insight.type === 'warning' && "text-destructive",
-                      insight.type === 'info' && "text-foreground"
-                    )}>
-                      {insight.title}
-                    </span>
+              {quickInsightMetrics.map((metric) => (
+                <div key={metric.key} className="p-3 rounded-lg border bg-primary/5 border-primary/15">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">{metric.title}</span>
+                    <span className="text-sm font-semibold text-primary">{metric.value}</span>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    {insight.message}
-                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">{metric.subtitle}</p>
                 </div>
               ))}
-              
-              {insights.length === 0 && (
-                <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
-                  <div className="flex items-center space-x-2 mb-1">
-                    <CheckCircle className="h-4 w-4 text-primary" />
-                    <span className="text-sm font-medium">All Good</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Keep up the great work! You're on track.
-                  </p>
-                </div>
-              )}
             </CardContent>
           </Card>
+
+          {/* Recent Achievements */}
+          {((dashboardData as DashboardData | undefined)?.achievements?.length || 0) > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center space-x-2 text-base">
+                  <Award className="h-4 w-4" />
+                  <span>Recent Achievements</span>
+                </CardTitle>
+                <CardDescription>
+                  Celebrate your recent successes
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2.5">
+                {(dashboardData as DashboardData).achievements.map((achievement: Achievement, index: number) => (
+                  <div
+                    key={index}
+                    className={cn(
+                      "flex items-center justify-between p-3 rounded-lg border transition-colors",
+                      achievement.type === 'goal_completed'
+                        ? "bg-emerald-500/5 border-emerald-500/20 hover:bg-emerald-500/10"
+                        : "bg-orange-500/5 border-orange-500/20 hover:bg-orange-500/10"
+                    )}
+                  >
+                    <div className="flex items-center space-x-3">
+                      <div className={cn(
+                        "h-9 w-9 rounded-full flex items-center justify-center shadow-sm",
+                        achievement.type === 'goal_completed'
+                          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                          : "bg-orange-500/10 text-orange-600 dark:text-orange-400"
+                      )}>
+                        {achievement.type === 'goal_completed' ? (
+                          <Target className="h-4 w-4" />
+                        ) : (
+                          <Flame className="h-4 w-4" />
+                        )}
+                      </div>
+                      <div>
+                        <p className="font-medium text-sm text-foreground">{achievement.title}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {format(new Date(achievement.timestamp), 'MMM d, h:mm a')}
+                        </p>
+                      </div>
+                    </div>
+                    <ArrowUpRight className="h-4 w-4 text-muted-foreground/50" />
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
 
@@ -1294,6 +1657,219 @@ export default function Dashboard() {
       <div className="text-center text-sm text-muted-foreground">
         Have a productive {timeOfDay}! Remember to take breaks and stay hydrated.
       </div>
+
+      {/* Add Task Dialog - Same form as Tasks page */}
+      <Dialog open={isTaskDialogOpen} onOpenChange={setIsTaskDialogOpen}>
+        <DialogContent className="max-w-2xl bg-card max-h-[90vh] flex flex-col">
+          <DialogHeader className="flex-shrink-0">
+            <DialogTitle>{isEditing ? 'Edit Task' : 'Create New Task'}</DialogTitle>
+            <DialogDescription>
+              {isEditing ? 'Update task details.' : 'Add a new task for today. Set priority and duration.'}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="flex-1 overflow-y-auto pr-2 -mr-2">
+            <div className="space-y-4 py-4">
+              {/* Task Title */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Task Title *</label>
+                <Input
+                  placeholder="What needs to be done?"
+                  value={taskFormData.title}
+                  onChange={(e) => setTaskFormData(prev => ({ ...prev, title: e.target.value }))}
+                  className="bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15"
+                />
+              </div>
+              
+              {/* Description */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Description</label>
+                <Textarea
+                  placeholder="Add details or notes..."
+                  value={taskFormData.description}
+                  onChange={(e) => setTaskFormData(prev => ({ ...prev, description: e.target.value }))}
+                  rows={2}
+                  className="bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15"
+                />
+              </div>
+              
+              {/* Priority & Duration Type - 3 PRIORITIES ONLY */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Priority</label>
+                  <Select
+                    value={taskFormData.priority}
+                    onValueChange={(value: Priority) => setTaskFormData(prev => ({ ...prev, priority: value }))}
+                  >
+                    <SelectTrigger className="bg-secondary/50 border-green-500/20 focus:ring-green-500/50 dark:border-green-500/15">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="high">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-red-500" />
+                          High (Weight: 3)
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="medium">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-amber-500" />
+                          Medium (Weight: 2)
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="low">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-blue-500" />
+                          Low (Weight: 1)
+                        </div>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Duration Type *</label>
+                  <Select
+                    value={taskFormData.duration_type}
+                    onValueChange={(value: TaskDurationType) => {
+                      // Clear due_date when switching to "today" type
+                      if (value === 'today') {
+                        setTaskFormData(prev => ({ ...prev, duration_type: value, due_date: '' }))
+                      } else {
+                        setTaskFormData(prev => ({ ...prev, duration_type: value }))
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="bg-secondary/50 border-green-500/20 focus:ring-green-500/50 dark:border-green-500/15">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="today">Today Only</SelectItem>
+                      <SelectItem value="continuous">Multi-day / Continuous</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              
+              {/* Due Date & Estimated Time */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className={cn("text-sm font-medium", taskFormData.duration_type === 'today' && "text-muted-foreground")}>Due Date</label>
+                  <Input
+                    type="date"
+                    disabled={taskFormData.duration_type === 'today'}
+                    value={taskFormData.due_date}
+                    onChange={(e) => setTaskFormData(prev => ({ ...prev, due_date: e.target.value }))}
+                    className={cn("bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15", taskFormData.duration_type === 'today' && "opacity-50 cursor-not-allowed")}
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Estimated Time (min)</label>
+                  <Input
+                    type="number"
+                    placeholder="e.g., 30"
+                    value={taskFormData.estimated_time}
+                    onChange={(e) => setTaskFormData(prev => ({ ...prev, estimated_time: e.target.value }))}
+                    className="bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15"
+                  />
+                </div>
+              </div>
+              
+              {/* Related Goal */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Related Goal</label>
+                <Select
+                  value={taskFormData.goal_id || "none"}
+                  onValueChange={(value) => setTaskFormData(prev => ({ ...prev, goal_id: value === "none" ? "" : value }))}
+                >
+                  <SelectTrigger className="bg-secondary/50 border-green-500/20 focus:ring-green-500/50 dark:border-green-500/15">
+                    <SelectValue placeholder="Select a goal..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No Goal</SelectItem>
+                    {goals?.filter(g => g.status === 'active').map((goal) => (
+                      <SelectItem key={goal.id} value={goal.id}>
+                        {goal.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              {/* Tags */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Tags</label>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Add a tag..."
+                    value={newTag}
+                    onChange={(e) => setNewTag(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addTag())}
+                    className="bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15"
+                  />
+                  <Button type="button" onClick={addTag} variant="secondary" size="sm">
+                    Add
+                  </Button>
+                </div>
+                {taskFormData.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {taskFormData.tags.map(tag => (
+                      <Badge key={tag} variant="secondary" className="gap-1">
+                        {tag}
+                        <button type="button" onClick={() => removeTag(tag)} className="ml-1 hover:text-destructive">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          
+          <DialogFooter className="flex-shrink-0 border-t pt-4">
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                setIsTaskDialogOpen(false)
+                setTaskFormData(getInitialFormData())
+                setNewTag('')
+              }}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleSaveTask}
+              disabled={createTaskMutation.isPending || updateTaskMutation.isPending || !taskFormData.title.trim()}
+            >
+              {createTaskMutation.isPending || updateTaskMutation.isPending ? 'Saving...' : (isEditing ? 'Update Task' : 'Create Task')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Archive Confirmation Dialog */}
+      <AlertDialog open={!!taskToArchive} onOpenChange={(open) => !open && setTaskToArchive(null)}>
+        
+        <AlertDialogContent className="bg-white text-black border border-border shadow-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive Task</AlertDialogTitle>
+            <AlertDialogDescription>
+              This task will be moved to the Archive. You can restore it later from the Archive section.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={() => taskToArchive && deleteTaskMutation.mutate(taskToArchive)}
+              className="bg-orange-500 text-white hover:bg-orange-600"
+            >
+              Archive
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

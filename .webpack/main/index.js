@@ -21,300 +21,434 @@ const electron_1 = __webpack_require__(/*! electron */ "electron");
 const path_1 = __importDefault(__webpack_require__(/*! path */ "path"));
 const fs_extra_1 = __importDefault(__webpack_require__(/*! fs-extra */ "./node_modules/fs-extra/lib/index.js"));
 const crypto_1 = __importDefault(__webpack_require__(/*! crypto */ "crypto"));
+const zlib_1 = __importDefault(__webpack_require__(/*! zlib */ "zlib"));
+const util_1 = __webpack_require__(/*! util */ "util");
 const database_1 = __webpack_require__(/*! ../database */ "./main/src/database/index.ts");
-const constants_1 = __webpack_require__(/*! ../../../shared/constants */ "./shared/constants.ts");
+const gzip = (0, util_1.promisify)(zlib_1.default.gzip);
+const gunzip = (0, util_1.promisify)(zlib_1.default.gunzip);
+// All tables that hold user data (order matters for FK constraints on restore)
+const BACKUP_TABLES = [
+    'goals',
+    'projects',
+    'tasks',
+    'checklist_items',
+    'habits',
+    'habit_completions',
+    'notes',
+    'time_blocks',
+    'reviews',
+    'audit_log',
+    'sync_state',
+];
+const REQUIRED_TABLES = [
+    'goals',
+    'projects',
+    'tasks',
+    'checklist_items',
+    'habits',
+    'habit_completions',
+    'notes',
+    'time_blocks',
+    'reviews',
+];
+const BACKUP_EXTENSION = '.backup';
+function sha256Hex(input) {
+    return crypto_1.default.createHash('sha256').update(input).digest('hex');
+}
+function isRecord(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+function stableStringify(value) {
+    if (value === null || value === undefined)
+        return JSON.stringify(value);
+    if (typeof value !== 'object')
+        return JSON.stringify(value);
+    if (Array.isArray(value))
+        return `[${value.map(stableStringify).join(',')}]`;
+    const obj = value;
+    const keys = Object.keys(obj).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
+}
 class BackupManager {
     backupDir;
     maxBackups;
     constructor() {
         this.backupDir = path_1.default.join(electron_1.app.getPath('userData'), 'backups');
-        this.maxBackups = 30; // Keep last 30 backups
+        this.maxBackups = 50;
         this.ensureBackupDir();
     }
     ensureBackupDir() {
-        if (!fs_extra_1.default.existsSync(this.backupDir)) {
-            fs_extra_1.default.mkdirSync(this.backupDir, { recursive: true });
-        }
+        fs_extra_1.default.ensureDirSync(this.backupDir);
     }
-    async createIncrementalBackup() {
+    backupPathForId(backupId) {
+        return path_1.default.join(this.backupDir, `${backupId}${BACKUP_EXTENSION}`);
+    }
+    async readAndParseBackupFile(backupPath) {
+        const raw = await fs_extra_1.default.readFile(backupPath);
+        // Decompress (or fallback to legacy uncompressed)
+        let payload;
         try {
-            const db = (0, database_1.getDatabase)();
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const backupId = crypto_1.default.randomUUID();
-            const backupPath = path_1.default.join(this.backupDir, `${backupId}.backup`);
-            // Export current state
-            const backupData = {
-                metadata: {
-                    id: backupId,
-                    timestamp: new Date().toISOString(),
-                    version: 1,
-                    appVersion: electron_1.app.getVersion(),
-                },
-                data: {
-                    goals: await this.exportTable('goals'),
-                    projects: await this.exportTable('projects'),
-                    tasks: await this.exportTable('tasks'),
-                    habits: await this.exportTable('habits'),
-                    notes: await this.exportTable('notes'),
-                    checklist_items: await this.exportTable('checklist_items'),
-                    habit_completions: await this.exportTable('habit_completions'),
-                    time_blocks: await this.exportTable('time_blocks'),
-                },
-            };
-            // Compress and encrypt backup
-            const jsonData = JSON.stringify(backupData);
-            const compressed = await this.compressData(jsonData);
-            const encrypted = this.encryptData(compressed);
-            // Write backup file
-            await fs_extra_1.default.writeFile(backupPath, encrypted);
-            // Verify backup
-            const verified = await this.verifyBackup(backupPath);
-            if (!verified) {
-                throw new Error('Backup verification failed');
-            }
-            // Record backup in database
-            const stats = await fs_extra_1.default.stat(backupPath);
-            const checksum = await this.calculateChecksum(backupPath);
-            db.executeQuery(`
-        INSERT INTO backups (id, path, timestamp, size, checksum, version)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `, [backupId, backupPath, new Date().toISOString(), stats.size, checksum, 1]);
-            // Cleanup old backups
-            await this.cleanupOldBackups();
-            console.log(`Backup created: ${backupId}`);
-            return backupId;
+            const decompressed = await gunzip(raw);
+            payload = decompressed.toString('utf-8');
         }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Backup creation failed:', error.message);
-            }
-            else {
-                console.error('Backup creation failed:', error);
-            }
-            throw error;
+        catch {
+            payload = raw.toString('utf-8');
         }
+        const parsed = JSON.parse(payload);
+        if (!isRecord(parsed) || !isRecord(parsed.metadata) || !isRecord(parsed.data)) {
+            throw new Error('Invalid backup structure');
+        }
+        const metadata = parsed.metadata;
+        const data = parsed.data;
+        if (!metadata.id || !metadata.timestamp || !metadata.version) {
+            throw new Error('Invalid backup metadata');
+        }
+        return { metadata, data, raw };
     }
-    async exportTable(table) {
+    computePayloadChecksum(metadata, data) {
+        return sha256Hex(stableStringify({ metadata, data }));
+    }
+    async resolveBackupPath(backupId) {
+        const direct = this.backupPathForId(backupId);
+        if (await fs_extra_1.default.pathExists(direct))
+            return direct;
+        // Fallback: scan directory (handles rare cases like imported files with mismatched names)
+        const entries = await fs_extra_1.default.readdir(this.backupDir);
+        for (const name of entries) {
+            if (!name.endsWith(BACKUP_EXTENSION))
+                continue;
+            const candidate = path_1.default.join(this.backupDir, name);
+            try {
+                const { metadata } = await this.readAndParseBackupFile(candidate);
+                if (metadata.id === backupId)
+                    return candidate;
+            }
+            catch {
+                // ignore broken file
+            }
+        }
+        throw new Error('Backup file not found');
+    }
+    // ────────────────────── CREATE ──────────────────────
+    async createBackup() {
         const db = (0, database_1.getDatabase)();
-        return db.executeQuery(`SELECT * FROM ${table} WHERE deleted_at IS NULL`);
-    }
-    async compressData(data) {
-        // Simple compression (in production, use zlib or similar)
-        return Buffer.from(data);
-    }
-    encryptData(data) {
-        // Simple encryption (in production, use proper encryption)
-        return data;
-    }
-    async verifyBackup(backupPath) {
-        try {
-            const stats = await fs_extra_1.default.stat(backupPath);
-            if (stats.size === 0) {
-                return false;
+        const backupId = crypto_1.default.randomUUID();
+        const backupPath = this.backupPathForId(backupId);
+        // Gather every table's data (including soft-deleted rows so restore is complete)
+        const tableCounts = {};
+        const data = {};
+        for (const table of BACKUP_TABLES) {
+            try {
+                const rows = db.executeQuery(`SELECT * FROM ${table}`);
+                data[table] = rows;
+                tableCounts[table] = rows.length;
             }
-            const checksum = await this.calculateChecksum(backupPath);
-            return checksum.length === 64; // SHA-256 hash length
-        }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Backup verification failed:', error.message);
-            }
-            else {
-                console.error('Backup verification failed:', error);
-            }
-            return false;
-        }
-    }
-    async calculateChecksum(filePath) {
-        const fileBuffer = await fs_extra_1.default.readFile(filePath);
-        return crypto_1.default.createHash('sha256').update(fileBuffer).digest('hex');
-    }
-    async cleanupOldBackups() {
-        try {
-            const db = (0, database_1.getDatabase)();
-            const backups = db.executeQuery(`
-        SELECT id, path FROM backups
-        ORDER BY timestamp DESC
-      `);
-            if (backups.length > this.maxBackups) {
-                const backupsToDelete = backups.slice(this.maxBackups);
-                for (const backup of backupsToDelete) {
-                    try {
-                        await fs_extra_1.default.unlink(backup.path);
-                        db.executeQuery('DELETE FROM backups WHERE id = ?', [backup.id]);
-                        console.log(`Deleted old backup: ${backup.id}`);
-                    }
-                    catch (error) {
-                        if (error instanceof Error) {
-                            console.error(`Failed to delete backup ${backup.id}:`, error.message);
-                        }
-                        else {
-                            console.error(`Failed to delete backup ${backup.id}:`, error);
-                        }
-                    }
-                }
+            catch {
+                // Table might not exist yet (e.g. reviews before migration)
+                data[table] = [];
+                tableCounts[table] = 0;
             }
         }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Backup cleanup failed:', error.message);
-            }
-            else {
-                console.error('Backup cleanup failed:', error);
-            }
+        const metadataWithoutChecksum = {
+            id: backupId,
+            timestamp: new Date().toISOString(),
+            version: 3,
+            appVersion: electron_1.app.getVersion(),
+            compressed: true,
+            tables: tableCounts,
+        };
+        const checksum = this.computePayloadChecksum(metadataWithoutChecksum, data);
+        const metadata = {
+            ...metadataWithoutChecksum,
+            checksum,
+        };
+        const payload = stableStringify({ metadata, data });
+        // Compress with gzip
+        const compressed = await gzip(Buffer.from(payload, 'utf-8'));
+        // Write to disk
+        await fs_extra_1.default.writeFile(backupPath, compressed);
+        // Verify the file was written properly
+        const stats = await fs_extra_1.default.stat(backupPath);
+        if (stats.size === 0) {
+            await fs_extra_1.default.remove(backupPath);
+            throw new Error('Backup file is empty after write');
         }
+        await this.cleanupOldBackups();
+        console.log(`Backup created: ${backupId} (${this.formatFileSize(stats.size)}, ${Object.values(tableCounts).reduce((a, b) => a + b, 0)} rows)`);
+        return {
+            id: backupId,
+            path: backupPath,
+            timestamp: metadata.timestamp,
+            size: stats.size,
+            checksum,
+            version: metadata.version,
+            exists: true,
+            sizeFormatted: this.formatFileSize(stats.size),
+            dateFormatted: new Date(metadata.timestamp).toLocaleString(),
+            metadata,
+        };
     }
-    async getBackupList() {
-        try {
-            const db = (0, database_1.getDatabase)();
-            const backups = db.executeQuery(`
-        SELECT * FROM backups
-        ORDER BY timestamp DESC
-      `);
-            // Add file existence check
-            const backupsWithStatus = await Promise.all(backups.map(async (backup) => {
-                const exists = await fs_extra_1.default.pathExists(backup.path);
-                return {
-                    ...backup,
-                    exists,
-                    sizeFormatted: this.formatFileSize(backup.size),
-                    dateFormatted: new Date(backup.timestamp).toLocaleString(),
-                };
-            }));
-            return backupsWithStatus;
-        }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Failed to list backups:', error.message);
-            }
-            else {
-                console.error('Failed to list backups:', error);
-            }
-            return [];
-        }
-    }
-    formatFileSize(bytes) {
-        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-        if (bytes === 0)
-            return '0 Bytes';
-        const i = Math.floor(Math.log(bytes) / Math.log(1024));
-        return Math.round(bytes / Math.pow(1024, i)) + ' ' + sizes[i];
-    }
+    // ────────────────────── RESTORE ──────────────────────
     async restoreFromBackup(backupId) {
-        try {
-            const db = (0, database_1.getDatabase)();
-            const backup = db.executeQuery('SELECT * FROM backups WHERE id = ?', [backupId])[0];
-            if (!backup) {
-                throw new Error('Backup not found');
-            }
-            if (!fs_extra_1.default.existsSync(backup.path)) {
-                throw new Error('Backup file not found');
-            }
-            // Verify backup integrity
-            const checksum = await this.calculateChecksum(backup.path);
-            if (checksum !== backup.checksum) {
-                throw new Error('Backup integrity check failed');
-            }
-            // Read and decrypt backup
-            const encrypted = await fs_extra_1.default.readFile(backup.path);
-            const decrypted = this.decryptData(encrypted);
-            const backupData = JSON.parse(decrypted.toString());
-            // Restore data
-            await this.restoreData(backupData.data);
-            console.log(`Backup restored: ${backupId}`);
-            return true;
-        }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Backup restore failed:', error.message);
-            }
-            else {
-                console.error('Backup restore failed:', error);
-            }
-            throw error;
-        }
-    }
-    decryptData(data) {
-        // Simple decryption
-        return data;
-    }
-    async restoreData(data) {
         const db = (0, database_1.getDatabase)();
-        // Start transaction
-        db.executeTransaction([
-            // Clear existing data (soft delete)
-            { query: 'UPDATE goals SET deleted_at = ?', params: [new Date().toISOString()] },
-            { query: 'UPDATE projects SET deleted_at = ?', params: [new Date().toISOString()] },
-            { query: 'UPDATE tasks SET deleted_at = ?', params: [new Date().toISOString()] },
-            { query: 'UPDATE habits SET deleted_at = ?', params: [new Date().toISOString()] },
-            { query: 'UPDATE notes SET deleted_at = ?', params: [new Date().toISOString()] },
-            { query: 'UPDATE checklist_items SET deleted_at = ?', params: [new Date().toISOString()] },
-            { query: 'DELETE FROM habit_completions', params: [] },
-            { query: 'UPDATE time_blocks SET deleted_at = ?', params: [new Date().toISOString()] },
-        ]);
-        // Restore data
-        for (const [table, rows] of Object.entries(data)) {
-            if (Array.isArray(rows)) {
+        const backupPath = await this.resolveBackupPath(backupId);
+        const { metadata, data } = await this.readAndParseBackupFile(backupPath);
+        // Validate integrity (deterministic payload checksum)
+        const { checksum, ...metadataCore } = metadata;
+        const expected = String(checksum || '');
+        const actual = this.computePayloadChecksum(metadataCore, data);
+        // Backward compatibility: older backups may not have a checksum field.
+        if (expected) {
+            if (expected !== actual) {
+                throw new Error('Backup integrity check failed (checksum mismatch)');
+            }
+        }
+        // Validate required tables present (unless not part of this app build)
+        for (const t of REQUIRED_TABLES) {
+            if (!(t in data)) {
+                throw new Error(`Backup is missing required table: ${t}`);
+            }
+        }
+        // Determine which of the known tables exist in the DB
+        const existingTables = new Set(db.executeQuery("SELECT name FROM sqlite_master WHERE type = 'table'").map((r) => r.name));
+        // All-or-nothing restore
+        const restoreTables = BACKUP_TABLES.filter((t) => existingTables.has(t));
+        if (restoreTables.length === 0) {
+            throw new Error('No restoreable tables exist in the current database');
+        }
+        db.runAtomic(() => {
+            // Clear (reverse order to respect FK constraints)
+            for (const table of [...restoreTables].reverse()) {
+                db.executeQuery(`DELETE FROM ${table}`);
+            }
+            // Insert (forward order)
+            for (const table of restoreTables) {
+                const rows = data[table];
+                if (!Array.isArray(rows) || rows.length === 0)
+                    continue;
+                const first = rows[0];
+                if (!isRecord(first)) {
+                    throw new Error(`Invalid row format in table ${table}`);
+                }
+                const columns = Object.keys(first);
+                if (columns.length === 0)
+                    continue;
+                const placeholders = columns.map(() => '?').join(', ');
+                const insertSql = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`;
                 for (const row of rows) {
-                    // Remove id and timestamps to let database generate new ones
-                    const { id, created_at, updated_at, ...rest } = row;
-                    await db.insertData(table, rest);
+                    if (!isRecord(row)) {
+                        throw new Error(`Invalid row format in table ${table}`);
+                    }
+                    const values = columns.map((col) => row[col]);
+                    db.executeQuery(insertSql, values);
+                }
+                // Post-verify counts match exactly
+                const expectedCount = metadata.tables?.[table] ?? rows.length;
+                const [{ count }] = db.executeQuery(`SELECT COUNT(*) as count FROM ${table}`);
+                if (Number(count) !== Number(expectedCount)) {
+                    throw new Error(`Restore verification failed for ${table}: expected ${expectedCount}, got ${count}`);
                 }
             }
+        });
+        console.log(`Backup restored: ${backupId}`);
+        return true;
+    }
+    // ────────────────────── VERIFY ──────────────────────
+    async verifyBackup(backupId) {
+        try {
+            const backupPath = await this.resolveBackupPath(backupId);
+            if (!(await fs_extra_1.default.pathExists(backupPath)))
+                return { valid: false, error: 'Backup file missing' };
+            const { metadata, data } = await this.readAndParseBackupFile(backupPath);
+            const { checksum, ...metadataCore } = metadata;
+            const expected = String(checksum || '');
+            const actual = this.computePayloadChecksum(metadataCore, data);
+            // If checksum exists, enforce it. If missing (legacy), accept structure validation.
+            if (expected && expected !== actual)
+                return { valid: false, error: 'Checksum mismatch' };
+            if (!metadata.tables || typeof metadata.tables !== 'object') {
+                return { valid: false, error: 'Missing table counts' };
+            }
+            return { valid: true };
+        }
+        catch (err) {
+            return { valid: false, error: err?.message || String(err) };
         }
     }
+    // ────────────────────── LIST ──────────────────────
+    async getBackupList() {
+        const entries = await fs_extra_1.default.readdir(this.backupDir);
+        const backups = [];
+        for (const name of entries) {
+            if (!name.endsWith(BACKUP_EXTENSION))
+                continue;
+            const fullPath = path_1.default.join(this.backupDir, name);
+            const exists = await fs_extra_1.default.pathExists(fullPath);
+            if (!exists)
+                continue;
+            try {
+                const stats = await fs_extra_1.default.stat(fullPath);
+                const { metadata } = await this.readAndParseBackupFile(fullPath);
+                backups.push({
+                    id: metadata.id,
+                    path: fullPath,
+                    timestamp: metadata.timestamp,
+                    size: stats.size,
+                    checksum: metadata.checksum,
+                    version: metadata.version,
+                    exists: true,
+                    sizeFormatted: this.formatFileSize(stats.size),
+                    dateFormatted: new Date(metadata.timestamp).toLocaleString(),
+                    metadata,
+                });
+            }
+            catch {
+                // Broken file: still show as missing/invalid? keep minimal entry
+                const stats = await fs_extra_1.default.stat(fullPath);
+                const id = name.replace(BACKUP_EXTENSION, '');
+                backups.push({
+                    id,
+                    path: fullPath,
+                    timestamp: new Date(stats.mtimeMs).toISOString(),
+                    size: stats.size,
+                    checksum: '',
+                    version: 0,
+                    exists: true,
+                    sizeFormatted: this.formatFileSize(stats.size),
+                    dateFormatted: new Date(stats.mtimeMs).toLocaleString(),
+                });
+            }
+        }
+        backups.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+        return backups;
+    }
+    // ────────────────────── DELETE ──────────────────────
     async deleteBackup(backupId) {
-        try {
-            const db = (0, database_1.getDatabase)();
-            const backup = db.executeQuery('SELECT * FROM backups WHERE id = ?', [backupId])[0];
-            if (!backup) {
-                throw new Error('Backup not found');
-            }
-            // Delete file
-            if (fs_extra_1.default.existsSync(backup.path)) {
-                await fs_extra_1.default.unlink(backup.path);
-            }
-            // Delete record
-            db.executeQuery('DELETE FROM backups WHERE id = ?', [backupId]);
-            console.log(`Backup deleted: ${backupId}`);
-            return true;
+        const backupPath = await this.resolveBackupPath(backupId);
+        if (await fs_extra_1.default.pathExists(backupPath)) {
+            await fs_extra_1.default.remove(backupPath);
         }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Backup deletion failed:', error.message);
+        console.log(`Backup deleted: ${backupId}`);
+        return true;
+    }
+    // ────────────────────── STATS ──────────────────────
+    async getBackupStats() {
+        const backups = await this.getBackupList();
+        const totalSize = backups.reduce((s, b) => s + (b.size || 0), 0);
+        const healthy = backups.filter((b) => b.exists).length;
+        const missing = backups.filter((b) => !b.exists).length;
+        return {
+            totalBackups: backups.length,
+            totalSize,
+            totalSizeFormatted: this.formatFileSize(totalSize),
+            oldestBackup: backups.length > 0 ? backups[backups.length - 1].timestamp : null,
+            newestBackup: backups.length > 0 ? backups[0].timestamp : null,
+            healthyBackups: healthy,
+            missingBackups: missing,
+        };
+    }
+    // ────────────────────── EXPORT TO FILE ──────────────────────
+    async exportBackupToFile(backupId, mainWindow) {
+        let backupPath;
+        try {
+            backupPath = await this.resolveBackupPath(backupId);
+        }
+        catch {
+            return { success: false, error: 'Backup not found' };
+        }
+        if (!(await fs_extra_1.default.pathExists(backupPath)))
+            return { success: false, error: 'Backup file missing' };
+        const { metadata, data } = await this.readAndParseBackupFile(backupPath);
+        const ts = new Date(metadata.timestamp)
+            .toISOString()
+            .replace(/[:.]/g, '-')
+            .slice(0, 19);
+        const { filePath, canceled } = await electron_1.dialog.showSaveDialog(mainWindow, {
+            title: 'Export Backup',
+            defaultPath: `PersonalOS-Backup-${ts}.json`,
+            filters: [{ name: 'JSON Backup', extensions: ['json'] }],
+        });
+        if (canceled || !filePath)
+            return { success: false, error: 'Export cancelled' };
+        await fs_extra_1.default.writeFile(filePath, JSON.stringify({ metadata, data }, null, 2), 'utf-8');
+        console.log(`Backup exported: ${backupId} → ${filePath}`);
+        return { success: true, path: filePath };
+    }
+    // ────────────────────── IMPORT FROM FILE ──────────────────────
+    async importBackupFromFile(mainWindow) {
+        const { filePaths, canceled } = await electron_1.dialog.showOpenDialog(mainWindow, {
+            title: 'Import Backup',
+            filters: [{ name: 'JSON Backup', extensions: ['json'] }],
+            properties: ['openFile'],
+        });
+        if (canceled || filePaths.length === 0)
+            return { success: false, error: 'Import cancelled' };
+        const fileContent = await fs_extra_1.default.readFile(filePaths[0], 'utf-8');
+        let parsed;
+        try {
+            parsed = JSON.parse(fileContent);
+        }
+        catch {
+            return { success: false, error: 'Invalid JSON file' };
+        }
+        if (!parsed.metadata || !parsed.data) {
+            return { success: false, error: 'Not a valid PersonalOS backup file' };
+        }
+        if (!isRecord(parsed.metadata) || !isRecord(parsed.data)) {
+            return { success: false, error: 'Invalid backup structure' };
+        }
+        // Save as a regular backup (new id, recomputed checksum)
+        const backupId = crypto_1.default.randomUUID();
+        const backupPath = this.backupPathForId(backupId);
+        parsed.metadata.id = backupId;
+        const metadataInput = parsed.metadata;
+        const dataInput = parsed.data;
+        // Ensure metadata fields exist
+        const metadataWithoutChecksum = {
+            id: String(metadataInput.id || backupId),
+            timestamp: String(metadataInput.timestamp || new Date().toISOString()),
+            version: Number(metadataInput.version || 3),
+            appVersion: String(metadataInput.appVersion || electron_1.app.getVersion()),
+            compressed: true,
+            tables: isRecord(metadataInput.tables) ? metadataInput.tables : {},
+        };
+        const checksum = this.computePayloadChecksum(metadataWithoutChecksum, dataInput);
+        const metadata = { ...metadataWithoutChecksum, checksum };
+        const payloadStr = stableStringify({ metadata, data: dataInput });
+        const compressed = await gzip(Buffer.from(payloadStr, 'utf-8'));
+        await fs_extra_1.default.writeFile(backupPath, compressed);
+        await fs_extra_1.default.stat(backupPath);
+        console.log(`Backup imported: ${backupId} from ${filePaths[0]}`);
+        return { success: true, backupId };
+    }
+    // ────────────────────── CLEANUP ──────────────────────
+    async cleanupOldBackups() {
+        const backups = await this.getBackupList();
+        if (backups.length <= this.maxBackups)
+            return;
+        for (const backup of backups.slice(this.maxBackups)) {
+            try {
+                if (await fs_extra_1.default.pathExists(backup.path)) {
+                    await fs_extra_1.default.remove(backup.path);
+                }
+                console.log(`Cleaned up old backup: ${backup.id}`);
             }
-            else {
-                console.error('Backup deletion failed:', error);
+            catch (err) {
+                console.error(`Failed to clean up backup ${backup.id}:`, err);
             }
-            throw error;
         }
     }
-    async getBackupStats() {
-        try {
-            const backups = await this.getBackupList();
-            const totalSize = backups.reduce((sum, backup) => sum + backup.size, 0);
-            const oldestBackup = backups[backups.length - 1];
-            const newestBackup = backups[0];
-            return {
-                totalBackups: backups.length,
-                totalSize: this.formatFileSize(totalSize),
-                oldestBackup: oldestBackup?.dateFormatted || 'None',
-                newestBackup: newestBackup?.dateFormatted || 'None',
-                healthyBackups: backups.filter(b => b.exists).length,
-            };
-        }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Failed to get backup stats:', error.message);
-            }
-            else {
-                console.error('Failed to get backup stats:', error);
-            }
-            return null;
-        }
+    // ────────────────────── UTILITIES ──────────────────────
+    formatFileSize(bytes) {
+        if (bytes === 0)
+            return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
     }
 }
 exports.BackupManager = BackupManager;
+// ────────────────────── SINGLETON ──────────────────────
 let backupManager = null;
 function getBackupManager() {
     if (!backupManager) {
@@ -322,136 +456,132 @@ function getBackupManager() {
     }
     return backupManager;
 }
+// ────────────────────── AUTO-BACKUP SCHEDULER ──────────────────────
 async function setupBackupSystem() {
     const manager = getBackupManager();
     // Create initial backup if none exists
+    // NOTE: Do not auto-restore. Backups are created automatically, but restoring is always explicit.
     const backups = await manager.getBackupList();
     if (backups.length === 0) {
         try {
-            await manager.createIncrementalBackup();
+            await manager.createBackup();
             console.log('Initial backup created');
         }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Initial backup failed:', error.message);
-            }
-            else {
-                console.error('Initial backup failed:', error);
-            }
+        catch (err) {
+            console.error('Initial backup failed:', err);
         }
     }
-    // Schedule regular backups (every 6 hours)
+    // Schedule automatic backups every 6 hours
     setInterval(async () => {
         try {
-            await manager.createIncrementalBackup();
+            await manager.createBackup();
             console.log('Scheduled backup completed');
         }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Scheduled backup failed:', error.message);
-            }
-            else {
-                console.error('Scheduled backup failed:', error);
-            }
+        catch (err) {
+            console.error('Scheduled backup failed:', err);
         }
     }, 6 * 60 * 60 * 1000);
-    // Also backup on app close
-    process.on('beforeExit', async () => {
-        try {
-            await manager.createIncrementalBackup();
-        }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Exit backup failed:', error.message);
-            }
-            else {
-                console.error('Exit backup failed:', error);
-            }
-        }
-    });
 }
+// ────────────────────── IPC REGISTRATION ──────────────────────
 function initializeBackupManager(mainWindow) {
     const manager = getBackupManager();
-    electron_1.ipcMain.handle(constants_1.IPC_CHANNEL_KEYS.BACKUP_DATA, async () => {
+    // Create backup
+    electron_1.ipcMain.handle('backup:create', async () => {
         try {
-            const backupId = await manager.createIncrementalBackup();
-            mainWindow.webContents.send(constants_1.IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: true, message: `Backup ${backupId} successful!` });
-            return { success: true, message: 'Backup successful!' };
+            const record = await manager.createBackup();
+            mainWindow.webContents.send('backup:created', record);
+            return { success: true, data: record };
         }
         catch (error) {
-            if (error instanceof Error) {
-                console.error('Backup failed:', error.message);
-                mainWindow.webContents.send(constants_1.IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: false, message: `Backup failed: ${error.message}` });
-                return { success: false, message: `Backup failed: ${error.message}` };
-            }
-            else {
-                console.error('Backup failed:', error);
-                mainWindow.webContents.send(constants_1.IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: false, message: `Backup failed: ${String(error)}` });
-                return { success: false, message: `Backup failed: ${String(error)}` };
-            }
+            console.error('backup:create failed:', error);
+            return { success: false, error: error.message || String(error) };
         }
     });
-    electron_1.ipcMain.handle(constants_1.IPC_CHANNEL_KEYS.RESTORE_DATA, async (event, backupId) => {
+    // Restore backup
+    electron_1.ipcMain.handle('backup:restore', async (_event, backupId) => {
         try {
             await manager.restoreFromBackup(backupId);
-            mainWindow.webContents.send(constants_1.IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: true, message: 'Restore successful!' });
-            return { success: true, message: 'Restore successful!' };
+            return { success: true };
         }
         catch (error) {
-            if (error instanceof Error) {
-                console.error('Restore failed:', error.message);
-                mainWindow.webContents.send(constants_1.IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: false, message: `Restore failed: ${error.message}` });
-                return { success: false, message: `Restore failed: ${error.message}` };
-            }
-            else {
-                console.error('Restore failed:', error);
-                mainWindow.webContents.send(constants_1.IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: false, message: `Restore failed: ${String(error)}` });
-                return { success: false, message: `Restore failed: ${String(error)}` };
-            }
+            console.error('backup:restore failed:', error);
+            return { success: false, error: error.message || String(error) };
         }
     });
-    electron_1.ipcMain.handle(constants_1.IPC_CHANNEL_KEYS.GET_BACKUPS, async () => {
+    // List backups
+    electron_1.ipcMain.handle('backup:list', async () => {
         try {
-            return await manager.getBackupList();
+            const backups = await manager.getBackupList();
+            return { success: true, data: backups };
         }
         catch (error) {
-            if (error instanceof Error) {
-                console.error('Failed to get backups:', error.message);
-            }
-            else {
-                console.error('Failed to get backups:', error);
-            }
-            return [];
+            console.error('backup:list failed:', error);
+            return { success: false, error: error.message || String(error) };
         }
     });
-    electron_1.ipcMain.handle(constants_1.IPC_CHANNEL_KEYS.DELETE_BACKUP, async (event, backupId) => {
+    // Delete backup
+    electron_1.ipcMain.handle('backup:delete', async (_event, backupId) => {
         try {
-            return await manager.deleteBackup(backupId);
+            await manager.deleteBackup(backupId);
+            return { success: true };
         }
         catch (error) {
-            if (error instanceof Error) {
-                console.error('Failed to delete backup:', error.message);
-            }
-            else {
-                console.error('Failed to delete backup:', error);
-            }
-            return false;
+            console.error('backup:delete failed:', error);
+            return { success: false, error: error.message || String(error) };
         }
     });
-    electron_1.ipcMain.handle(constants_1.IPC_CHANNEL_KEYS.GET_BACKUP_STATS, async () => {
+    // Verify backup
+    electron_1.ipcMain.handle('backup:verify', async (_event, backupId) => {
         try {
-            return await manager.getBackupStats();
+            const result = await manager.verifyBackup(backupId);
+            return { success: true, data: result };
         }
         catch (error) {
-            if (error instanceof Error) {
-                console.error('Failed to get backup stats:', error.message);
-            }
-            else {
-                console.error('Failed to get backup stats:', error);
-            }
-            return null;
+            console.error('backup:verify failed:', error);
+            return { success: false, error: error.message || String(error) };
         }
     });
+    // Get stats
+    electron_1.ipcMain.handle('backup:stats', async () => {
+        try {
+            const stats = await manager.getBackupStats();
+            return { success: true, data: stats };
+        }
+        catch (error) {
+            console.error('backup:stats failed:', error);
+            return { success: false, error: error.message || String(error) };
+        }
+    });
+    // Export backup to user-chosen file
+    electron_1.ipcMain.handle('backup:export', async (_event, backupId) => {
+        try {
+            const result = await manager.exportBackupToFile(backupId, mainWindow);
+            return result;
+        }
+        catch (error) {
+            console.error('backup:export failed:', error);
+            return { success: false, error: error.message || String(error) };
+        }
+    });
+    // Import backup from user-chosen file
+    electron_1.ipcMain.handle('backup:import', async () => {
+        try {
+            const result = await manager.importBackupFromFile(mainWindow);
+            if (result.success) {
+                const backups = await manager.getBackupList();
+                const imported = backups.find((b) => b.id === result.backupId);
+                if (imported)
+                    mainWindow.webContents.send('backup:created', imported);
+            }
+            return result;
+        }
+        catch (error) {
+            console.error('backup:import failed:', error);
+            return { success: false, error: error.message || String(error) };
+        }
+    });
+    // Setup auto-backup schedule
+    setupBackupSystem().catch(console.error);
 }
 
 
@@ -553,10 +683,14 @@ class ProgressDatabase {
         console.log('ProgressDatabase: Pragmas set.');
         // Run migrations
         await this.runMigrations();
-        // Initialize demo data if database is empty
-        await this.initializeDemoData();
-        // Setup backup schedule
-        this.setupBackupSchedule();
+        // IMPORTANT:
+        // - Do NOT auto-seed demo data in production or after a user-initiated wipe.
+        // - Do NOT run a second hidden backup system here.
+        // Backups are handled by main/src/backup and restore must be explicit.
+        const enableDemoData = process.env.PERSONALOS_ENABLE_DEMO_DATA === 'true';
+        if (enableDemoData) {
+            await this.initializeDemoData();
+        }
         // Setup change tracking
         this.setupChangeTracking();
         this.isInitialized = true;
@@ -784,7 +918,7 @@ class ProgressDatabase {
           SELECT 
             g.*,
             COUNT(DISTINCT t.id) as task_count,
-            COUNT(DISTINCT CASE WHEN t.status = 'completed' THEN t.id END) as completed_tasks,
+            COUNT(DISTINCT CASE WHEN (t.status = 'completed' OR t.progress IN (25, 50, 75, 100)) THEN t.id END) as completed_tasks,
             COUNT(DISTINCT p.id) as project_count
           FROM goals g
           LEFT JOIN projects p ON g.id = p.goal_id AND p.deleted_at IS NULL
@@ -801,7 +935,7 @@ class ProgressDatabase {
           FROM tasks t
           LEFT JOIN goals g ON t.goal_id = g.id
           LEFT JOIN projects p ON t.project_id = p.id
-          WHERE t.status != 'completed'
+          WHERE NOT (t.status = 'completed' OR t.progress IN (25, 50, 75, 100))
             AND t.due_date IS NOT NULL
             AND date(t.due_date) <= date('now')
             AND t.deleted_at IS NULL
@@ -908,6 +1042,38 @@ class ProgressDatabase {
           CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON reviews(created_at);
         `,
             },
+            // Version 8: Add duration_type column to tasks and update status/priority constraints
+            {
+                version: 8,
+                up: `
+          -- Add duration_type column to tasks if missing
+          -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, handled programmatically
+        `,
+            },
+            // Version 9: Add completed_at column to goals table
+            {
+                version: 9,
+                up: `
+          -- Add completed_at column to goals if missing
+          -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, handled programmatically
+        `,
+            },
+            // Version 10: Add is_paused and paused_at columns to tasks for continuous task pause functionality
+            {
+                version: 10,
+                up: `
+          -- Add is_paused and paused_at columns to tasks if missing
+          -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, handled programmatically
+        `,
+            },
+            // Version 11: Add last_reset_date column to tasks for daily reset tracking
+            {
+                version: 11,
+                up: `
+          -- Add last_reset_date column to tasks if missing
+          -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, handled programmatically
+        `,
+            },
         ];
         // Run migrations
         for (const migration of migrations) {
@@ -951,6 +1117,87 @@ class ProgressDatabase {
                         throw error;
                     }
                 }
+                // Special handling for version 8 - add duration_type column to tasks
+                if (migration.version === 8) {
+                    try {
+                        const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all();
+                        const hasDurationType = tableInfo.some(col => col.name === 'duration_type');
+                        if (!hasDurationType) {
+                            console.log('Adding duration_type column to tasks table');
+                            this.db.exec("ALTER TABLE tasks ADD COLUMN duration_type TEXT NOT NULL DEFAULT 'today'");
+                        }
+                        // Update version
+                        this.db.exec(`PRAGMA user_version = ${migration.version}`);
+                        console.log(`Migration to version ${migration.version} completed successfully`);
+                        continue;
+                    }
+                    catch (error) {
+                        console.error('Failed to check/add duration_type column:', error);
+                        throw error;
+                    }
+                }
+                // Special handling for version 9 - add completed_at column to goals
+                if (migration.version === 9) {
+                    try {
+                        const tableInfo = this.db.prepare('PRAGMA table_info(goals)').all();
+                        const hasCompletedAt = tableInfo.some(col => col.name === 'completed_at');
+                        if (!hasCompletedAt) {
+                            console.log('Adding completed_at column to goals table');
+                            this.db.exec("ALTER TABLE goals ADD COLUMN completed_at TEXT");
+                        }
+                        // Update version
+                        this.db.exec(`PRAGMA user_version = ${migration.version}`);
+                        console.log(`Migration to version ${migration.version} completed successfully`);
+                        continue;
+                    }
+                    catch (error) {
+                        console.error('Failed to check/add completed_at column to goals:', error);
+                        throw error;
+                    }
+                }
+                // Special handling for version 10 - add is_paused and paused_at columns to tasks
+                if (migration.version === 10) {
+                    try {
+                        const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all();
+                        const hasIsPaused = tableInfo.some(col => col.name === 'is_paused');
+                        const hasPausedAt = tableInfo.some(col => col.name === 'paused_at');
+                        if (!hasIsPaused) {
+                            console.log('Adding is_paused column to tasks table');
+                            this.db.exec("ALTER TABLE tasks ADD COLUMN is_paused INTEGER NOT NULL DEFAULT 0");
+                        }
+                        if (!hasPausedAt) {
+                            console.log('Adding paused_at column to tasks table');
+                            this.db.exec("ALTER TABLE tasks ADD COLUMN paused_at TEXT");
+                        }
+                        // Update version
+                        this.db.exec(`PRAGMA user_version = ${migration.version}`);
+                        console.log(`Migration to version ${migration.version} completed successfully`);
+                        continue;
+                    }
+                    catch (error) {
+                        console.error('Failed to check/add is_paused/paused_at columns to tasks:', error);
+                        throw error;
+                    }
+                }
+                // Special handling for version 11 - add last_reset_date column to tasks
+                if (migration.version === 11) {
+                    try {
+                        const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all();
+                        const hasLastResetDate = tableInfo.some(col => col.name === 'last_reset_date');
+                        if (!hasLastResetDate) {
+                            console.log('Adding last_reset_date column to tasks table');
+                            this.db.exec("ALTER TABLE tasks ADD COLUMN last_reset_date TEXT");
+                        }
+                        // Update version
+                        this.db.exec(`PRAGMA user_version = ${migration.version}`);
+                        console.log(`Migration to version ${migration.version} completed successfully`);
+                        continue;
+                    }
+                    catch (error) {
+                        console.error('Failed to check/add last_reset_date column to tasks:', error);
+                        throw error;
+                    }
+                }
                 // Run migration in transaction
                 const transaction = this.db.transaction(() => {
                     try {
@@ -986,19 +1233,43 @@ class ProgressDatabase {
         // Also check completed_at column even if migrations are up to date (for older databases)
         try {
             const tableInfo = this.db.prepare('PRAGMA table_info(tasks)').all();
+            console.log('Post-migration check: tasks table columns:', tableInfo.map(c => c.name).join(', '));
             const hasCompletedAt = tableInfo.some(col => col.name === 'completed_at');
             const hasDailyProgress = tableInfo.some(col => col.name === 'daily_progress');
+            const hasDurationType = tableInfo.some(col => col.name === 'duration_type');
+            const hasIsPaused = tableInfo.some(col => col.name === 'is_paused');
+            const hasPausedAt = tableInfo.some(col => col.name === 'paused_at');
+            const hasLastResetDate = tableInfo.some(col => col.name === 'last_reset_date');
             if (!hasCompletedAt) {
                 console.log('Adding missing completed_at column to tasks table (post-migration check)');
                 this.db.exec('ALTER TABLE tasks ADD COLUMN completed_at TEXT');
+            }
+            else {
+                console.log('completed_at column already exists');
             }
             if (!hasDailyProgress) {
                 console.log('Adding missing daily_progress column to tasks table (post-migration check)');
                 this.db.exec("ALTER TABLE tasks ADD COLUMN daily_progress TEXT NOT NULL DEFAULT '{}'");
             }
+            if (!hasDurationType) {
+                console.log('Adding missing duration_type column to tasks table (post-migration check)');
+                this.db.exec("ALTER TABLE tasks ADD COLUMN duration_type TEXT NOT NULL DEFAULT 'today'");
+            }
+            if (!hasIsPaused) {
+                console.log('Adding missing is_paused column to tasks table (post-migration check)');
+                this.db.exec("ALTER TABLE tasks ADD COLUMN is_paused INTEGER NOT NULL DEFAULT 0");
+            }
+            if (!hasPausedAt) {
+                console.log('Adding missing paused_at column to tasks table (post-migration check)');
+                this.db.exec("ALTER TABLE tasks ADD COLUMN paused_at TEXT");
+            }
+            if (!hasLastResetDate) {
+                console.log('Adding missing last_reset_date column to tasks table (post-migration check)');
+                this.db.exec("ALTER TABLE tasks ADD COLUMN last_reset_date TEXT");
+            }
         }
         catch (error) {
-            console.error('Failed to check/add completed_at column (post-migration):', error);
+            console.error('Failed to check/add columns (post-migration):', error);
         }
     }
     setupBackupSchedule() {
@@ -1257,12 +1528,36 @@ class ProgressDatabase {
             return results;
         });
         try {
-            return transaction();
+            const result = transaction();
+            // Check if any operation was a DELETE or UPDATE deleted_at (indicating deletion)
+            const hasDeleteOps = operations.some(op => {
+                const query = op.query.trim().toUpperCase();
+                return query.startsWith('DELETE') || (query.includes('UPDATE') && query.includes('deleted_at'));
+            });
+            // Force WAL checkpoint after delete operations to ensure persistence
+            if (hasDeleteOps) {
+                try {
+                    this.db.pragma('wal_checkpoint(RESTART)');
+                    console.log('WAL checkpoint completed after delete operations');
+                }
+                catch (error) {
+                    console.error('WAL checkpoint failed:', error);
+                }
+            }
+            return result;
         }
         catch (error) {
             console.error('Transaction failed:', error);
             throw error;
         }
+    }
+    /**
+     * Run an arbitrary set of database operations atomically.
+     * If the callback throws, the transaction is rolled back.
+     */
+    runAtomic(fn) {
+        const transaction = this.db.transaction(fn);
+        return transaction();
     }
     getData(table, where) {
         let query = `SELECT * FROM ${table} WHERE deleted_at IS NULL`;
@@ -1320,6 +1615,14 @@ class ProgressDatabase {
             else {
                 const query = `DELETE FROM ${table} WHERE id = ?`;
                 this.executeQuery(query, [id]);
+            }
+            // Force WAL checkpoint to ensure deletion persists to disk
+            try {
+                this.db.pragma('wal_checkpoint(RESTART)');
+                console.log('WAL checkpoint completed after deleteData');
+            }
+            catch (error) {
+                console.error('WAL checkpoint failed:', error);
             }
             return true;
         }
@@ -1510,7 +1813,16 @@ class ProgressDatabase {
             clearInterval(this.backupInterval);
         }
         if (this.db) {
-            this.db.close();
+            try {
+                // Force final WAL checkpoint before closing
+                console.log('Performing final WAL checkpoint before close...');
+                this.db.pragma('wal_checkpoint(TRUNCATE)');
+                this.db.close();
+                console.log('Database closed successfully');
+            }
+            catch (error) {
+                console.error('Error closing database:', error);
+            }
         }
         this.isInitialized = false;
     }
@@ -1561,6 +1873,19 @@ class ProgressDatabase {
     updateHabitCompletion(habitId, date, completed) {
         const now = new Date().toISOString();
         const dateStr = date.slice(0, 10);
+        // Get the habit to check creation date
+        const habit = this.db.prepare(`
+      SELECT created_at FROM habits WHERE id = ?
+    `).get(habitId);
+        if (!habit) {
+            throw new Error(`Habit ${habitId} not found`);
+        }
+        const habitCreatedDate = habit.created_at.slice(0, 10); // YYYY-MM-DD format
+        // Validate: don't allow marking dates before habit creation
+        if (dateStr < habitCreatedDate) {
+            console.warn(`[HABIT] Cannot mark date before habit creation: ${dateStr} < ${habitCreatedDate}`);
+            return;
+        }
         if (completed) {
             this.db.prepare(`
         INSERT OR REPLACE INTO habit_completions (id, habit_id, date, completed, notes, updated_at)
@@ -1573,11 +1898,12 @@ class ProgressDatabase {
         WHERE habit_id = ? AND date = ?
       `).run(habitId, dateStr);
         }
+        // Get all completions from habit creation date onward (enforce creation date boundary)
         const completionRows = this.db.prepare(`
       SELECT date FROM habit_completions 
-      WHERE habit_id = ? AND completed = 1
+      WHERE habit_id = ? AND completed = 1 AND date >= ?
       ORDER BY date DESC
-    `).all(habitId);
+    `).all(habitId, habitCreatedDate);
         const completedDates = new Set(completionRows.map((row) => row.date?.slice(0, 10)));
         const toDateKey = (d) => d.toISOString().split('T')[0];
         let currentStreak = 0;
@@ -1599,14 +1925,24 @@ class ProgressDatabase {
                 cursor.setDate(cursor.getDate() - 1);
             }
         }
+        // Calculate consistency: count completions from creation date to 30 days ago (or creation date, whichever is later)
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+        // The calculation window starts from the later of: habit creation date or 30 days ago
+        const consistencyStartDate = habitCreatedDate > thirtyDaysAgoStr ? habitCreatedDate : thirtyDaysAgoStr;
         const consistencyCount = this.db.prepare(`
       SELECT COUNT(*) as count 
       FROM habit_completions 
       WHERE habit_id = ? 
       AND completed = 1 
-      AND date >= date('now', '-30 days')
-    `).get(habitId);
-        const consistencyScore = Math.min(100, Math.round(((consistencyCount?.count || 0) / 30) * 100));
+      AND date >= ? AND date <= date('now')
+    `).get(habitId, consistencyStartDate);
+        // Calculate expected days: days from consistency start date to today
+        const startDate = new Date(consistencyStartDate);
+        const today = new Date();
+        const expectedDays = Math.max(1, Math.floor((today.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+        const consistencyScore = Math.min(100, Math.round(((consistencyCount?.count || 0) / expectedDays) * 100));
         this.db.prepare(`
       UPDATE habits 
       SET streak_current = ?,
@@ -1619,8 +1955,8 @@ class ProgressDatabase {
     getProgressStats() {
         const stats = this.db.prepare(`
       SELECT 
-        (SELECT COUNT(*) FROM tasks WHERE status = 'completed' AND date(completed_at) = date('now')) as completed_today,
-        (SELECT COUNT(*) FROM tasks WHERE status = 'completed' AND date(completed_at) >= date('now', '-7 days')) as completed_week,
+        (SELECT COUNT(*) FROM tasks WHERE (status = 'completed' OR progress IN (25, 50, 75, 100)) AND date(completed_at) = date('now')) as completed_today,
+        (SELECT COUNT(*) FROM tasks WHERE (status = 'completed' OR progress IN (25, 50, 75, 100)) AND date(completed_at) >= date('now', '-7 days')) as completed_week,
         (SELECT AVG(progress) FROM goals WHERE status = 'active' AND deleted_at IS NULL) as avg_goal_progress,
         (SELECT AVG(consistency_score) FROM habits WHERE deleted_at IS NULL) as avg_habit_consistency,
         (SELECT COUNT(DISTINCT date) FROM time_blocks WHERE date(start_time) = date('now')) as focus_sessions_today,
@@ -1722,35 +2058,226 @@ class ProgressDatabase {
     getReviewInsights(periodStart, periodEnd) {
         const startDate = periodStart.split('T')[0];
         const endDate = periodEnd.split('T')[0];
-        // Task insights
-        const taskStats = this.db.prepare(`
-      SELECT 
-        COUNT(CASE WHEN status = 'completed' AND date(completed_at) BETWEEN ? AND ? THEN 1 END) as tasks_completed,
-        COUNT(CASE WHEN date(created_at) BETWEEN ? AND ? THEN 1 END) as tasks_created,
-        COUNT(CASE WHEN status != 'completed' AND due_date < ? AND deleted_at IS NULL THEN 1 END) as overdue_tasks,
-        COUNT(CASE WHEN status = 'blocked' AND deleted_at IS NULL THEN 1 END) as blocked_tasks
+        // ============ TASK INSIGHTS (Using weighted calculations like Task Tab) ============
+        const priorityWeight = (priority) => {
+            if (priority === 'high')
+                return 3;
+            if (priority === 'medium')
+                return 2;
+            if (priority === 'low')
+                return 1;
+            return 2; // default to medium
+        };
+        const completionFactor = (progress) => {
+            const value = Math.max(0, Math.min(progress ?? 0, 100));
+            if (value >= 100)
+                return 1;
+            if (value >= 75)
+                return 0.75;
+            if (value >= 50)
+                return 0.5;
+            if (value >= 25)
+                return 0.25;
+            return 0;
+        };
+        // Get all tasks with their progress data (INCLUDING due_date, estimated_time, actual_time)
+        const allTasks = this.db.prepare(`
+      SELECT id, title, priority, status, progress, created_at, completed_at, due_date, estimated_time, actual_time, deleted_at
       FROM tasks
-    `).get(startDate, endDate, startDate, endDate, endDate);
-        // Top completed tasks
-        const topCompletedTasks = this.db.prepare(`
-      SELECT id, title, completed_at
-      FROM tasks
-      WHERE status = 'completed' 
-        AND date(completed_at) BETWEEN ? AND ?
-        AND deleted_at IS NULL
-      ORDER BY completed_at DESC
-      LIMIT 10
-    `).all(startDate, endDate);
-        // Habit insights
-        const habitStats = this.db.prepare(`
-      SELECT 
-        COUNT(CASE WHEN completed = 1 THEN 1 END) as habits_completed,
-        COUNT(CASE WHEN completed = 0 OR completed IS NULL THEN 1 END) as habits_missed,
-        COUNT(*) as total_habit_entries
+      WHERE deleted_at IS NULL
+    `).all();
+        // Separate tasks for period analysis
+        const tasksInPeriod = allTasks.filter(task => {
+            const createdDay = new Date(task.created_at).toISOString().split('T')[0];
+            const completedDay = task.completed_at ? new Date(task.completed_at).toISOString().split('T')[0] : null;
+            // Include tasks created OR completed in this period
+            return (createdDay >= startDate && createdDay <= endDate) ||
+                (completedDay && completedDay >= startDate && completedDay <= endDate);
+        });
+        // Calculate weighted task stats for the period
+        let tasksCompleted = 0;
+        let tasksCreated = 0;
+        let blockedTasksCount = 0;
+        let plannedWeight = 0;
+        let earnedWeight = 0;
+        const completedTasksList = [];
+        const skippedTasksList = [];
+        let totalCompletionTime = 0;
+        let completionTimeCount = 0;
+        const dayCompletionCounts = {};
+        tasksInPeriod.forEach((task) => {
+            const createdDay = new Date(task.created_at).toISOString().split('T')[0];
+            // Count tasks created in period
+            if (createdDay >= startDate && createdDay <= endDate) {
+                tasksCreated++;
+            }
+            // Count blocked tasks
+            if (task.status === 'blocked') {
+                blockedTasksCount++;
+            }
+            const weight = priorityWeight(task.priority);
+            plannedWeight += weight;
+            const progress = task.progress ?? 0;
+            earnedWeight += weight * completionFactor(progress);
+            // Count completed (100% progress) in this period
+            if (progress >= 100 && task.completed_at) {
+                const completedDay = new Date(task.completed_at).toISOString().split('T')[0];
+                if (completedDay >= startDate && completedDay <= endDate) {
+                    tasksCompleted++;
+                    completedTasksList.push({
+                        id: task.id,
+                        title: task.title,
+                        completedAt: task.completed_at
+                    });
+                    // Track completion time
+                    if (task.actual_time) {
+                        totalCompletionTime += task.actual_time;
+                        completionTimeCount++;
+                    }
+                    // Track productivity by day (get day of week)
+                    const dayOfWeek = new Date(task.completed_at).toLocaleDateString('en-US', { weekday: 'long' });
+                    dayCompletionCounts[dayOfWeek] = (dayCompletionCounts[dayOfWeek] || 0) + 1;
+                }
+            }
+            // Track skipped/abandoned tasks
+            if ((task.status === 'skipped' || task.status === 'blocked') && task.completed_at) {
+                const completedDay = new Date(task.completed_at).toISOString().split('T')[0];
+                if (completedDay >= startDate && completedDay <= endDate) {
+                    skippedTasksList.push({
+                        id: task.id,
+                        title: task.title,
+                        reason: task.status === 'blocked' ? 'Blocked' : 'Skipped'
+                    });
+                }
+            }
+        });
+        // Task completion rate (weighted)
+        const taskCompletionRate = plannedWeight > 0
+            ? Math.round((earnedWeight / plannedWeight) * 100)
+            : 0;
+        // Binary task completion counts for combined completion-rate aggregation
+        const taskEligibleCount = tasksInPeriod.length;
+        // Top completed tasks for period
+        const topCompletedTasks = completedTasksList.slice(0, 10);
+        // Overdue tasks (due date passed, not completed)
+        const overdueTasksCount = allTasks.filter(t => {
+            if (!t.completed_at && t.due_date) {
+                return t.due_date < new Date().toISOString().split('T')[0] && t.progress < 100;
+            }
+            return false;
+        }).length;
+        // Average task completion time
+        const avgTaskCompletionTime = completionTimeCount > 0
+            ? Math.round(totalCompletionTime / completionTimeCount * 10) / 10
+            : 0;
+        // Most productive day
+        const mostProductiveDay = Object.entries(dayCompletionCounts).length > 0
+            ? Object.entries(dayCompletionCounts).sort((a, b) => b[1] - a[1])[0][0]
+            : undefined;
+        // ============ HABIT INSIGHTS (Using period-scoped consistency calculation) ============
+        // Get all habits with their streak data
+        const habits = this.db.prepare(`
+      SELECT id, title, frequency, deleted_at, created_at, streak_current, streak_longest
+      FROM habits
+      WHERE deleted_at IS NULL
+    `).all();
+        const habitCompletions = this.db.prepare(`
+      SELECT habit_id, date, completed
       FROM habit_completions
       WHERE date BETWEEN ? AND ?
-    `).get(startDate, endDate);
-        // Current streaks
+    `).all(startDate, endDate);
+        // Helper to get period key
+        const getHabitPeriodKey = (dateStr, frequency) => {
+            const date = new Date(dateStr);
+            if (frequency === 'daily') {
+                return dateStr;
+            }
+            else if (frequency === 'weekly') {
+                const weekStart = new Date(date);
+                weekStart.setDate(date.getDate() - date.getDay() + (date.getDay() === 0 ? -6 : 1)); // Monday start
+                return weekStart.toISOString().split('T')[0];
+            }
+            else if (frequency === 'monthly') {
+                return dateStr.substring(0, 7); // YYYY-MM
+            }
+            return dateStr;
+        };
+        // Calculate habit consistency and track individual counts
+        let expectedPeriods = 0;
+        let completedPeriods = 0;
+        let habitsCompleted = 0;
+        let habitsMissed = 0;
+        const brokenStreaks = [];
+        const prevHabitCompletions = this.db.prepare(`
+      SELECT habit_id, date, completed
+      FROM habit_completions
+      WHERE date < ?
+      ORDER BY date DESC
+      LIMIT ? 
+    `).all(startDate, habits.length * 30);
+        habits.forEach(habit => {
+            const createdDate = new Date(habit.created_at).toISOString().split('T')[0];
+            const effectiveStart = createdDate > startDate ? createdDate : startDate;
+            const effectiveEnd = endDate;
+            if (effectiveStart <= effectiveEnd) {
+                // Get all expected periods for this habit
+                const expectedKeys = new Set();
+                let cursor = new Date(effectiveStart);
+                const endDateObj = new Date(effectiveEnd);
+                while (cursor <= endDateObj) {
+                    expectedKeys.add(getHabitPeriodKey(cursor.toISOString().split('T')[0], habit.frequency));
+                    cursor.setDate(cursor.getDate() + 1);
+                }
+                expectedPeriods += expectedKeys.size;
+                // Get completed periods for this habit
+                const completedKeys = new Set();
+                habitCompletions
+                    .filter(c => c.habit_id === habit.id && c.completed === 1)
+                    .forEach(c => {
+                    completedKeys.add(getHabitPeriodKey(c.date, habit.frequency));
+                });
+                completedPeriods += completedKeys.size;
+                // Count individual completed/missed expectations
+                const periodCompletionRate = expectedKeys.size > 0
+                    ? Math.round((completedKeys.size / expectedKeys.size) * 100)
+                    : 0;
+                if (periodCompletionRate === 100) {
+                    habitsCompleted++;
+                }
+                else if (periodCompletionRate === 0) {
+                    habitsMissed++;
+                }
+                // Check for broken streaks (compare with previous period)
+                const prevStartDate = new Date(startDate);
+                const periodLength = Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24));
+                prevStartDate.setDate(prevStartDate.getDate() - periodLength);
+                const prevPeriodEnd = new Date(startDate);
+                prevPeriodEnd.setDate(prevPeriodEnd.getDate() - 1);
+                const prevPeriodEndStr = prevPeriodEnd.toISOString().split('T')[0];
+                // Get the last completion before this period
+                const lastCompletionBefore = prevHabitCompletions
+                    .filter(c => c.habit_id === habit.id && c.date <= prevPeriodEndStr && c.completed === 1)
+                    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+                // If there was a streak before and now it's broken
+                if (lastCompletionBefore && habit.streak_current === 0 && habit.streak_longest > 0) {
+                    brokenStreaks.push({
+                        id: habit.id,
+                        title: habit.title,
+                        previousStreak: habit.streak_longest
+                    });
+                }
+            }
+        });
+        const habitConsistencyRate = expectedPeriods > 0
+            ? Math.round((completedPeriods / expectedPeriods) * 100)
+            : 0;
+        // Combined completion rate uses strict count-based aggregation across tasks + habit periods
+        const combinedCompletionDenominator = taskEligibleCount + expectedPeriods;
+        const combinedCompletionNumerator = tasksCompleted + completedPeriods;
+        const combinedCompletionRate = combinedCompletionDenominator > 0
+            ? Math.round((combinedCompletionNumerator / combinedCompletionDenominator) * 100)
+            : 0;
+        // Current streaks (all active habits)
         const currentStreaks = this.db.prepare(`
       SELECT id, title, streak_current as streak
       FROM habits
@@ -1758,113 +2285,166 @@ class ProgressDatabase {
       ORDER BY streak_current DESC
       LIMIT 5
     `).all();
-        // Goal progress
-        const goalProgress = this.db.prepare(`
-      SELECT id, title, progress
-      FROM goals
-      WHERE status = 'active' AND deleted_at IS NULL
-      ORDER BY progress DESC
-    `).all();
-        // Goals at risk (low progress, approaching deadline)
+        // Habit trend (compare with previous period)
+        const prevHabitStartDate = new Date(startDate);
+        const prevHabitEndDate = new Date(startDate);
+        prevHabitEndDate.setDate(prevHabitEndDate.getDate() - 1);
+        const prevPeriodLength = Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24));
+        prevHabitStartDate.setDate(prevHabitStartDate.getDate() - prevPeriodLength);
+        const prevHabitStr = prevHabitStartDate.toISOString().split('T')[0];
+        const prevHabitEndStr = prevHabitEndDate.toISOString().split('T')[0];
+        const prevPeriodHabitCompletions = this.db.prepare(`
+      SELECT habit_id, date, completed
+      FROM habit_completions
+      WHERE date BETWEEN ? AND ?
+    `).all(prevHabitStr, prevHabitEndStr);
+        let prevExpectedHabitPeriods = 0;
+        let prevCompletedHabitPeriods = 0;
+        habits.forEach(habit => {
+            const createdDate = new Date(habit.created_at).toISOString().split('T')[0];
+            const effectiveStart = createdDate > prevHabitStr ? createdDate : prevHabitStr;
+            const effectiveEnd = prevHabitEndStr;
+            if (effectiveStart <= effectiveEnd) {
+                const expectedKeys = new Set();
+                let cursor = new Date(effectiveStart);
+                const endDateObj = new Date(effectiveEnd);
+                while (cursor <= endDateObj) {
+                    expectedKeys.add(getHabitPeriodKey(cursor.toISOString().split('T')[0], habit.frequency));
+                    cursor.setDate(cursor.getDate() + 1);
+                }
+                prevExpectedHabitPeriods += expectedKeys.size;
+                const completedKeys = new Set();
+                prevPeriodHabitCompletions
+                    .filter(c => c.habit_id === habit.id && c.completed === 1)
+                    .forEach(c => {
+                    completedKeys.add(getHabitPeriodKey(c.date, habit.frequency));
+                });
+                prevCompletedHabitPeriods += completedKeys.size;
+            }
+        });
+        const prevHabitRate = prevExpectedHabitPeriods > 0
+            ? prevCompletedHabitPeriods / prevExpectedHabitPeriods
+            : 0;
+        const currentHabitRate = expectedPeriods > 0
+            ? completedPeriods / expectedPeriods
+            : 0;
+        let habitTrend = 'stable';
+        if (prevExpectedHabitPeriods > 0) {
+            const habitPercentChange = ((currentHabitRate - prevHabitRate) / prevHabitRate) * 100;
+            if (habitPercentChange > 10)
+                habitTrend = 'improving';
+            else if (habitPercentChange < -10)
+                habitTrend = 'declining';
+        }
+        // ============ GOAL INSIGHTS ============
+        // Goals at risk (active goals with low progress or approaching deadline)
         const goalsAtRisk = this.db.prepare(`
       SELECT id, title, progress, target_date
       FROM goals
       WHERE status = 'active' 
         AND deleted_at IS NULL
         AND target_date IS NOT NULL
-        AND date(target_date) <= date('now', '+30 days')
         AND progress < 50
     `).all();
-        // Productivity by day of week
-        const productivityByDay = this.db.prepare(`
-      SELECT 
-        strftime('%w', completed_at) as day_of_week,
-        COUNT(*) as completed_count
-      FROM tasks
+        // Goals completed this period
+        const goalsCompletedThisPeriod = this.db.prepare(`
+      SELECT id, title, progress
+      FROM goals
       WHERE status = 'completed'
-        AND date(completed_at) BETWEEN ? AND ?
         AND deleted_at IS NULL
-      GROUP BY strftime('%w', completed_at)
-      ORDER BY completed_count DESC
+        AND updated_at BETWEEN datetime(?) AND datetime(?)
     `).all(startDate, endDate);
-        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-        const mostProductiveDay = productivityByDay.length > 0
-            ? dayNames[parseInt(productivityByDay[0].day_of_week)]
-            : undefined;
-        const leastProductiveDay = productivityByDay.length > 0
-            ? dayNames[parseInt(productivityByDay[productivityByDay.length - 1].day_of_week)]
-            : undefined;
-        // Average habit consistency
-        const avgConsistency = this.db.prepare(`
-      SELECT AVG(consistency_score) as avg_consistency
-      FROM habits
-      WHERE deleted_at IS NULL
-    `).get();
-        // Calculate completion rate
-        const taskCompletionRate = taskStats.tasks_created > 0
-            ? Math.round((taskStats.tasks_completed / taskStats.tasks_created) * 100)
-            : 0;
-        const habitConsistencyRate = habitStats.total_habit_entries > 0
-            ? Math.round((habitStats.habits_completed / habitStats.total_habit_entries) * 100)
-            : 0;
-        // Determine trends
+        // Active goals progress
+        const activeGoalsProgress = this.db.prepare(`
+      SELECT id, title, progress
+      FROM goals
+      WHERE status = 'active'
+        AND deleted_at IS NULL
+    `).all();
+        // Calculate progress change for active goals
+        const activeGoalsWithChange = activeGoalsProgress.map((goal) => {
+            // Get previous progress (7 days ago for daily, or 1 week for weekly, etc.)
+            const prevCheck = this.db.prepare(`
+        SELECT progress
+        FROM goals
+        WHERE id = ?
+        LIMIT 1
+      `).get(goal.id);
+            const change = prevCheck ? goal.progress - prevCheck.progress : 0;
+            return {
+                id: goal.id,
+                title: goal.title,
+                progress: goal.progress,
+                change
+            };
+        });
+        // Productivity trend (compare previous period based on task completion)
         const previousPeriodStart = new Date(startDate);
         const periodLength = Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24));
         previousPeriodStart.setDate(previousPeriodStart.getDate() - periodLength);
         const prevStartDate = previousPeriodStart.toISOString().split('T')[0];
-        const prevTaskStats = this.db.prepare(`
-      SELECT COUNT(CASE WHEN status = 'completed' THEN 1 END) as prev_completed
-      FROM tasks
-      WHERE date(completed_at) BETWEEN ? AND ?
-    `).get(prevStartDate, startDate);
+        let prevEarnedWeight = 0;
+        let prevPlannedWeight = 0;
+        allTasks.forEach((task) => {
+            const createdDay = new Date(task.created_at).toISOString().split('T')[0];
+            const completedDay = task.completed_at ? new Date(task.completed_at).toISOString().split('T')[0] : null;
+            // Include tasks from previous period by creation or completion
+            if ((createdDay >= prevStartDate && createdDay < startDate) ||
+                (completedDay && completedDay >= prevStartDate && completedDay < startDate)) {
+                const weight = priorityWeight(task.priority);
+                prevPlannedWeight += weight;
+                prevEarnedWeight += weight * completionFactor(task.progress ?? 0);
+            }
+        });
+        const prevRate = prevPlannedWeight > 0 ? (prevEarnedWeight / prevPlannedWeight) : 0;
+        const currentRate = plannedWeight > 0 ? (earnedWeight / plannedWeight) : 0;
         let productivityTrend = 'stable';
-        if (prevTaskStats.prev_completed > 0) {
-            const diff = taskStats.tasks_completed - prevTaskStats.prev_completed;
-            const percentChange = (diff / prevTaskStats.prev_completed) * 100;
+        if (prevPlannedWeight > 0) {
+            const percentChange = ((currentRate - prevRate) / prevRate) * 100;
             if (percentChange > 10)
                 productivityTrend = 'improving';
             else if (percentChange < -10)
                 productivityTrend = 'declining';
         }
+        // Consistency score (overall consistency across all areas)
+        const consistencyScore = Math.round((taskCompletionRate * 0.4 + habitConsistencyRate * 0.4 +
+            (activeGoalsWithChange.length > 0 ?
+                Math.round(activeGoalsWithChange.reduce((sum, g) => sum + g.progress, 0) / activeGoalsWithChange.length)
+                : 0) * 0.2));
         return {
-            tasksCompleted: taskStats.tasks_completed || 0,
-            tasksCreated: taskStats.tasks_created || 0,
+            tasksCompleted,
+            tasksCreated,
             taskCompletionRate,
-            overdueTasksCount: taskStats.overdue_tasks || 0,
-            blockedTasksCount: taskStats.blocked_tasks || 0,
-            avgTaskCompletionTime: 0,
-            topCompletedTasks: topCompletedTasks.map(t => ({
-                id: t.id,
-                title: t.title,
-                completedAt: t.completed_at
-            })),
-            skippedOrAbandonedTasks: [],
+            taskEligibleCount,
+            overdueTasksCount,
+            blockedTasksCount,
+            avgTaskCompletionTime,
+            topCompletedTasks,
+            skippedOrAbandonedTasks: skippedTasksList,
             habitConsistencyRate,
-            habitsCompleted: habitStats.habits_completed || 0,
-            habitsMissed: habitStats.habits_missed || 0,
+            habitsCompleted,
+            habitsMissed,
+            habitPeriodsCompleted: completedPeriods,
+            habitPeriodsExpected: expectedPeriods,
             currentStreaks: currentStreaks.map(h => ({
                 id: h.id,
                 title: h.title,
                 streak: h.streak
             })),
-            brokenStreaks: [],
-            habitTrend: productivityTrend,
-            activeGoalsProgress: goalProgress.map(g => ({
-                id: g.id,
-                title: g.title,
-                progress: g.progress,
-                change: 0
-            })),
-            goalsCompletedThisPeriod: 0,
+            brokenStreaks,
+            habitTrend,
+            activeGoalsProgress: activeGoalsWithChange,
+            goalsCompletedThisPeriod: goalsCompletedThisPeriod.length,
             goalsAtRisk: goalsAtRisk.map(g => ({
                 id: g.id,
                 title: g.title,
-                reason: `Only ${g.progress}% complete with deadline approaching`
+                progress: g.progress,
+                reason: `${g.progress}% complete`
             })),
             mostProductiveDay,
-            leastProductiveDay,
             productivityTrend,
-            consistencyScore: Math.round(avgConsistency?.avg_consistency || 0),
+            consistencyScore,
+            combinedCompletionRate,
             periodStart,
             periodEnd,
         };
@@ -1921,6 +2501,596 @@ function closeDatabase() {
 
 /***/ },
 
+/***/ "./main/src/feedback-service.ts"
+/*!**************************************!*\
+  !*** ./main/src/feedback-service.ts ***!
+  \**************************************/
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+/**
+ * Feedback Service — Main Process
+ *
+ * Sends user feedback via Nodemailer (SMTP) from the Electron main process.
+ * This bypasses EmailJS's "non-browser applications" restriction entirely.
+ *
+ * Supports:
+ *  - SMTP transport (Gmail, Outlook, SendGrid SMTP, etc.)
+ *  - Optional backend URL transport (for future SaaS)
+ *  - File-based offline queue with automatic retry
+ *  - Screenshot attachments and user metadata
+ *
+ * Configuration via environment variables (loaded from .env):
+ *  FEEDBACK_SMTP_HOST, FEEDBACK_SMTP_PORT, FEEDBACK_SMTP_SECURE,
+ *  FEEDBACK_SMTP_USER, FEEDBACK_SMTP_PASS,
+ *  FEEDBACK_TO_EMAIL, FEEDBACK_FROM_EMAIL, FEEDBACK_FROM_NAME
+ *  FEEDBACK_BACKEND_URL, FEEDBACK_BACKEND_API_KEY  (optional, for SaaS)
+ */
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.initFeedbackAutoRetry = exports.verifyFeedbackConfig = exports.getFeedbackQueueCount = exports.retryFailedFeedbackQueue = exports.submitFeedback = exports.normalizeFeedbackPayload = exports.writeFeedbackRetryQueue = exports.readFeedbackRetryQueue = void 0;
+const nodemailer_1 = __importDefault(__webpack_require__(/*! nodemailer */ "nodemailer"));
+const electron_1 = __webpack_require__(/*! electron */ "electron");
+const path_1 = __importDefault(__webpack_require__(/*! path */ "path"));
+const fs_extra_1 = __importDefault(__webpack_require__(/*! fs-extra */ "./node_modules/fs-extra/lib/index.js"));
+const crypto_1 = __webpack_require__(/*! crypto */ "crypto");
+const FEEDBACK_TYPES = [
+    'bug-report',
+    'suggestion',
+    'feature-request',
+    'general-feedback',
+];
+const getSmtpConfig = () => {
+    const host = process.env.FEEDBACK_SMTP_HOST?.trim();
+    const user = process.env.FEEDBACK_SMTP_USER?.trim();
+    const pass = process.env.FEEDBACK_SMTP_PASS?.trim();
+    if (!host || !user || !pass) {
+        return null;
+    }
+    return {
+        host,
+        port: parseInt(process.env.FEEDBACK_SMTP_PORT || '587', 10),
+        secure: process.env.FEEDBACK_SMTP_SECURE === 'true',
+        user,
+        pass,
+        toEmail: process.env.FEEDBACK_TO_EMAIL?.trim() || user,
+        fromEmail: process.env.FEEDBACK_FROM_EMAIL?.trim() || user,
+        fromName: process.env.FEEDBACK_FROM_NAME?.trim() || 'PersonalOS Feedback',
+    };
+};
+const getBackendConfig = () => {
+    const url = process.env.FEEDBACK_BACKEND_URL?.trim();
+    if (!url)
+        return null;
+    return {
+        url,
+        apiKey: process.env.FEEDBACK_BACKEND_API_KEY?.trim() || '',
+    };
+};
+// ─── Retry Queue (file-based) ───────────────────────────────────────────────────
+const FEEDBACK_RETRY_FILE = 'feedback-retry-queue.json';
+const MAX_RETRY_ITEMS = 50;
+const MAX_RETRY_COUNT = 10;
+const getFeedbackRetryFilePath = () => path_1.default.join(electron_1.app.getPath('userData'), FEEDBACK_RETRY_FILE);
+const readFeedbackRetryQueue = async () => {
+    try {
+        const queuePath = getFeedbackRetryFilePath();
+        if (!(await fs_extra_1.default.pathExists(queuePath)))
+            return [];
+        const raw = await fs_extra_1.default.readFile(queuePath, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed))
+            return [];
+        return parsed.filter((item) => item?.id && item?.payload && item.retryCount < MAX_RETRY_COUNT);
+    }
+    catch (error) {
+        console.warn('[Feedback] Failed to read retry queue:', error);
+        return [];
+    }
+};
+exports.readFeedbackRetryQueue = readFeedbackRetryQueue;
+const writeFeedbackRetryQueue = async (items) => {
+    const queuePath = getFeedbackRetryFilePath();
+    await fs_extra_1.default.outputJson(queuePath, items.slice(-MAX_RETRY_ITEMS), { spaces: 2 });
+};
+exports.writeFeedbackRetryQueue = writeFeedbackRetryQueue;
+const queueFailedFeedback = async (payload, errorMessage) => {
+    const queue = await (0, exports.readFeedbackRetryQueue)();
+    queue.push({
+        id: (0, crypto_1.randomUUID)(),
+        payload,
+        failedAtIso: new Date().toISOString(),
+        retryCount: 0,
+        lastError: errorMessage,
+    });
+    await (0, exports.writeFeedbackRetryQueue)(queue);
+};
+// ─── Payload normalization ──────────────────────────────────────────────────────
+const toSafe = (value, fallback = '') => typeof value === 'string' ? value : value == null ? fallback : String(value);
+const normalizeFeedbackPayload = (raw) => {
+    const feedbackType = FEEDBACK_TYPES.includes(raw?.feedbackType)
+        ? raw.feedbackType
+        : 'general-feedback';
+    return {
+        feedbackType,
+        message: toSafe(raw?.message).trim(),
+        userEmail: toSafe(raw?.userEmail).trim() || undefined,
+        screenshotName: raw?.screenshotName
+            ? toSafe(raw.screenshotName).slice(0, 255)
+            : undefined,
+        screenshotDataUrl: raw?.screenshotDataUrl
+            ? toSafe(raw.screenshotDataUrl)
+            : undefined,
+        metadata: {
+            appVersion: toSafe(raw?.metadata?.appVersion, electron_1.app.getVersion()),
+            operatingSystem: toSafe(raw?.metadata?.operatingSystem, process.platform),
+            submittedAtIso: toSafe(raw?.metadata?.submittedAtIso, new Date().toISOString()),
+            currentPage: toSafe(raw?.metadata?.currentPage, 'unknown').slice(0, 255),
+        },
+    };
+};
+exports.normalizeFeedbackPayload = normalizeFeedbackPayload;
+// ─── Transport: SMTP via Nodemailer ─────────────────────────────────────────────
+let smtpTransporter = null;
+const getOrCreateSmtpTransporter = (config) => {
+    if (smtpTransporter)
+        return smtpTransporter;
+    smtpTransporter = nodemailer_1.default.createTransport({
+        host: config.host,
+        port: config.port,
+        secure: config.secure,
+        auth: {
+            user: config.user,
+            pass: config.pass,
+        },
+        pool: true,
+        maxConnections: 3,
+        maxMessages: 100,
+        connectionTimeout: 15_000,
+        greetingTimeout: 15_000,
+        socketTimeout: 30_000,
+    });
+    return smtpTransporter;
+};
+const feedbackTypeLabel = (type) => {
+    const labels = {
+        'bug-report': 'Bug Report',
+        suggestion: 'Suggestion',
+        'feature-request': 'Feature Request',
+        'general-feedback': 'General Feedback',
+    };
+    return labels[type] || type;
+};
+const buildEmailHtml = (payload) => {
+    const { metadata } = payload;
+    return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 20px 24px; border-radius: 12px 12px 0 0;">
+        <h1 style="margin: 0; font-size: 20px;">PersonalOS Feedback</h1>
+        <p style="margin: 6px 0 0; opacity: 0.9; font-size: 14px;">${feedbackTypeLabel(payload.feedbackType)}</p>
+      </div>
+      <div style="background: #ffffff; border: 1px solid #e5e7eb; border-top: none; padding: 24px; border-radius: 0 0 12px 12px;">
+        <h2 style="font-size: 16px; color: #374151; margin: 0 0 12px;">Message</h2>
+        <div style="background: #f9fafb; border-radius: 8px; padding: 16px; margin-bottom: 20px; white-space: pre-wrap; line-height: 1.6; color: #1f2937;">
+${payload.message}
+        </div>
+
+        <h2 style="font-size: 16px; color: #374151; margin: 0 0 12px;">Details</h2>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <tr style="border-bottom: 1px solid #f3f4f6;">
+            <td style="padding: 8px 0; color: #6b7280; width: 140px;">User Email</td>
+            <td style="padding: 8px 0; color: #1f2937;">${payload.userEmail || 'Not provided'}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f3f4f6;">
+            <td style="padding: 8px 0; color: #6b7280;">App Version</td>
+            <td style="padding: 8px 0; color: #1f2937;">${metadata.appVersion}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f3f4f6;">
+            <td style="padding: 8px 0; color: #6b7280;">Operating System</td>
+            <td style="padding: 8px 0; color: #1f2937;">${metadata.operatingSystem}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f3f4f6;">
+            <td style="padding: 8px 0; color: #6b7280;">Submitted At</td>
+            <td style="padding: 8px 0; color: #1f2937;">${metadata.submittedAtIso}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: #6b7280;">Current Page</td>
+            <td style="padding: 8px 0; color: #1f2937;">${metadata.currentPage}</td>
+          </tr>
+        </table>
+
+        ${payload.screenshotName ? `
+        <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e5e7eb;">
+          <p style="font-size: 13px; color: #6b7280; margin: 0;">📎 Screenshot attached: ${payload.screenshotName}</p>
+        </div>
+        ` : ''}
+      </div>
+      <p style="text-align: center; font-size: 11px; color: #9ca3af; margin-top: 16px;">
+        Sent from PersonalOS Desktop App
+      </p>
+    </div>
+  `;
+};
+const sendViaSmtp = async (payload) => {
+    const config = getSmtpConfig();
+    if (!config) {
+        throw new Error('SMTP is not configured. Set FEEDBACK_SMTP_HOST, FEEDBACK_SMTP_USER, and FEEDBACK_SMTP_PASS in your .env file.');
+    }
+    const transporter = getOrCreateSmtpTransporter(config);
+    const typeLabel = feedbackTypeLabel(payload.feedbackType);
+    // Build attachments from data URL
+    const attachments = [];
+    if (payload.screenshotDataUrl && payload.screenshotName) {
+        const match = payload.screenshotDataUrl.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+        if (match) {
+            attachments.push({
+                filename: payload.screenshotName,
+                content: match[2],
+                encoding: 'base64',
+                contentType: match[1],
+            });
+        }
+    }
+    const subject = `[PersonalOS] ${typeLabel} — ${payload.metadata.submittedAtIso.slice(0, 10)}`;
+    await transporter.sendMail({
+        from: `"${config.fromName}" <${config.fromEmail}>`,
+        to: config.toEmail,
+        replyTo: payload.userEmail || undefined,
+        subject,
+        html: buildEmailHtml(payload),
+        text: [
+            `PersonalOS Feedback — ${typeLabel}`,
+            '',
+            `Message:`,
+            payload.message,
+            '',
+            `User Email: ${payload.userEmail || 'Not provided'}`,
+            `App Version: ${payload.metadata.appVersion}`,
+            `OS: ${payload.metadata.operatingSystem}`,
+            `Submitted: ${payload.metadata.submittedAtIso}`,
+            `Page: ${payload.metadata.currentPage}`,
+            payload.screenshotName ? `Screenshot: ${payload.screenshotName} (attached)` : '',
+        ]
+            .filter(Boolean)
+            .join('\n'),
+        attachments,
+    });
+};
+// ─── Transport: Backend URL (future SaaS) ───────────────────────────────────────
+const sendViaBackend = async (payload) => {
+    const config = getBackendConfig();
+    if (!config) {
+        throw new Error('Backend URL not configured. Set FEEDBACK_BACKEND_URL in .env.');
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+    try {
+        const headers = {
+            'Content-Type': 'application/json',
+        };
+        if (config.apiKey) {
+            headers['Authorization'] = `Bearer ${config.apiKey}`;
+        }
+        const response = await fetch(config.url, {
+            method: 'POST',
+            headers,
+            signal: controller.signal,
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const body = await response.text().catch(() => '');
+            throw new Error(`Backend returned ${response.status}: ${body}`);
+        }
+    }
+    catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+            throw new Error('Backend request timed out after 20 seconds.');
+        }
+        throw error;
+    }
+    finally {
+        clearTimeout(timeout);
+    }
+};
+// ─── Public API ─────────────────────────────────────────────────────────────────
+/**
+ * Send a feedback email. Tries backend URL first (if configured), then SMTP.
+ * On failure, queues for later retry.
+ */
+const submitFeedback = async (rawPayload) => {
+    const payload = (0, exports.normalizeFeedbackPayload)(rawPayload);
+    if (!payload.message) {
+        return { success: false, error: 'Message is required.' };
+    }
+    let transport = 'smtp';
+    try {
+        // Prefer backend URL if configured (for SaaS mode)
+        const backendConfig = getBackendConfig();
+        if (backendConfig) {
+            transport = 'backend';
+            await sendViaBackend(payload);
+        }
+        else {
+            transport = 'smtp';
+            await sendViaSmtp(payload);
+        }
+        // Try to send any previously queued items
+        const retryResult = await (0, exports.retryFailedFeedbackQueue)();
+        return {
+            success: true,
+            transport,
+            retried: retryResult.sent,
+        };
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[Feedback] Send failed (${transport}):`, message);
+        // Queue for retry
+        await queueFailedFeedback(payload, message);
+        return {
+            success: false,
+            error: message,
+            cachedForRetry: true,
+        };
+    }
+};
+exports.submitFeedback = submitFeedback;
+/**
+ * Retry all items in the failed feedback queue.
+ */
+const retryFailedFeedbackQueue = async () => {
+    const queue = await (0, exports.readFeedbackRetryQueue)();
+    if (!queue.length)
+        return { sent: 0, remaining: 0 };
+    const remaining = [];
+    let sent = 0;
+    for (const item of queue) {
+        try {
+            const backendConfig = getBackendConfig();
+            if (backendConfig) {
+                await sendViaBackend(item.payload);
+            }
+            else {
+                await sendViaSmtp(item.payload);
+            }
+            sent++;
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            remaining.push({
+                ...item,
+                retryCount: item.retryCount + 1,
+                lastError: message,
+            });
+        }
+    }
+    await (0, exports.writeFeedbackRetryQueue)(remaining);
+    return { sent, remaining: remaining.length };
+};
+exports.retryFailedFeedbackQueue = retryFailedFeedbackQueue;
+/**
+ * Get the number of items currently in the retry queue.
+ */
+const getFeedbackQueueCount = async () => {
+    const queue = await (0, exports.readFeedbackRetryQueue)();
+    return queue.length;
+};
+exports.getFeedbackQueueCount = getFeedbackQueueCount;
+/**
+ * Verify that feedback configuration is valid.
+ * Returns a diagnostic object.
+ */
+const verifyFeedbackConfig = async () => {
+    const backendConfig = getBackendConfig();
+    if (backendConfig) {
+        return {
+            configured: true,
+            transport: 'backend',
+            details: `Backend URL: ${backendConfig.url}`,
+        };
+    }
+    const smtpConfig = getSmtpConfig();
+    if (smtpConfig) {
+        try {
+            const transporter = getOrCreateSmtpTransporter(smtpConfig);
+            await transporter.verify();
+            return {
+                configured: true,
+                transport: 'smtp',
+                details: `SMTP: ${smtpConfig.host}:${smtpConfig.port} (verified)`,
+            };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+                configured: true,
+                transport: 'smtp',
+                details: `SMTP: ${smtpConfig.host}:${smtpConfig.port} (verification failed: ${message})`,
+            };
+        }
+    }
+    return {
+        configured: false,
+        transport: 'none',
+        details: 'No feedback transport configured. Set FEEDBACK_SMTP_* or FEEDBACK_BACKEND_URL in .env.',
+    };
+};
+exports.verifyFeedbackConfig = verifyFeedbackConfig;
+/**
+ * Initialize automatic retry (call once on app startup).
+ */
+const initFeedbackAutoRetry = () => {
+    // Retry queued items 5 seconds after startup
+    setTimeout(() => {
+        void (0, exports.retryFailedFeedbackQueue)().then((result) => {
+            if (result.sent > 0) {
+                console.log(`[Feedback] Auto-retry sent ${result.sent} queued item(s)`);
+            }
+        });
+    }, 5_000);
+    // Retry every 5 minutes
+    setInterval(() => {
+        void (0, exports.retryFailedFeedbackQueue)().catch(() => { });
+    }, 5 * 60 * 1000);
+};
+exports.initFeedbackAutoRetry = initFeedbackAutoRetry;
+
+
+/***/ },
+
+/***/ "./main/src/index.ts"
+/*!***************************!*\
+  !*** ./main/src/index.ts ***!
+  \***************************/
+(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const electron_1 = __webpack_require__(/*! electron */ "electron");
+const path_1 = __importDefault(__webpack_require__(/*! path */ "path"));
+const fs_1 = __importDefault(__webpack_require__(/*! fs */ "fs"));
+const ipc_1 = __webpack_require__(/*! ./ipc */ "./main/src/ipc.ts");
+const updater_1 = __webpack_require__(/*! ./updater */ "./main/src/updater.ts");
+const protocol_1 = __webpack_require__(/*! ./protocol */ "./main/src/protocol.ts");
+// IMPORTANT: move these into main/src or alias them in webpack
+const backup_1 = __webpack_require__(/*! ./backup */ "./main/src/backup/index.ts");
+const database_1 = __webpack_require__(/*! ./database */ "./main/src/database/index.ts");
+console.log('[MAIN] main/src/index.ts started');
+// Set app name for system notifications
+electron_1.app.setName('Progress OS');
+let mainWindow = null;
+function loadDotEnv() {
+    try {
+        const envPath = path_1.default.resolve(process.cwd(), '.env');
+        if (!fs_1.default.existsSync(envPath))
+            return;
+        const lines = fs_1.default.readFileSync(envPath, 'utf8').split(/\r?\n/);
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith('#'))
+                continue;
+            const separatorIndex = line.indexOf('=');
+            if (separatorIndex <= 0)
+                continue;
+            const key = line.slice(0, separatorIndex).trim();
+            if (!key || process.env[key])
+                continue;
+            let value = line.slice(separatorIndex + 1).trim();
+            if ((value.startsWith('"') && value.endsWith('"')) ||
+                (value.startsWith("'") && value.endsWith("'"))) {
+                value = value.slice(1, -1);
+            }
+            process.env[key] = value;
+        }
+    }
+    catch (error) {
+        console.warn('[MAIN] Failed to load .env file:', error);
+    }
+}
+loadDotEnv();
+function createWindow() {
+    const iconPath = path_1.default.join(__dirname, '..', '..', 'build', 'POS-ICON.ico');
+    mainWindow = new electron_1.BrowserWindow({
+        width: 1400,
+        height: 900,
+        minWidth: 800,
+        minHeight: 600,
+        backgroundColor: '#171717',
+        show: false,
+        icon: iconPath,
+        webPreferences: {
+            preload: 'D:\\WEB DEVELOPMENT\\PersonalOS\\.webpack\\renderer\\main_window\\preload.js',
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
+            webSecurity: false,
+        },
+    });
+    mainWindow.loadURL('http://localhost:3000/main_window/index.html');
+    // Set CSP for development
+    if (true) {
+        mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+            callback({
+                responseHeaders: {
+                    ...details.responseHeaders,
+                    'Content-Security-Policy': [
+                        "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: file: http://localhost:* https://localhost:* ws://localhost:* wss://localhost:*; connect-src 'self' http://localhost:* https://localhost:* ws://localhost:* wss://localhost:*"
+                    ]
+                }
+            });
+        });
+    }
+    mainWindow.once('ready-to-show', () => {
+        mainWindow?.show();
+        if (true) {
+            mainWindow?.webContents.openDevTools({ mode: 'detach' });
+        }
+    });
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (url.startsWith('http')) {
+            electron_1.shell.openExternal(url);
+            return { action: 'deny' };
+        }
+        return { action: 'allow' };
+    });
+    (0, ipc_1.initializeIpcMain)(mainWindow);
+    (0, updater_1.setupAutoUpdater)(mainWindow);
+    (0, protocol_1.setupProtocol)(mainWindow);
+    (0, backup_1.initializeBackupManager)(mainWindow);
+}
+electron_1.app.whenReady().then(async () => {
+    try {
+        await (0, database_1.initDatabase)();
+        createWindow();
+    }
+    catch (err) {
+        console.error('[MAIN] Failed to start app:', err);
+        electron_1.app.quit();
+    }
+});
+electron_1.app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+        // Close database with checkpoint before quitting
+        try {
+            const db = (0, database_1.getDatabase)();
+            if (db) {
+                db.close();
+            }
+        }
+        catch (error) {
+            console.error('Error closing database on app quit:', error);
+        }
+        electron_1.app.quit();
+    }
+});
+// Ensure database is checkpointed before quit  
+electron_1.app.on('before-quit', () => {
+    try {
+        const db = (0, database_1.getDatabase)();
+        if (db) {
+            db.close();
+        }
+    }
+    catch (error) {
+        console.error('Error closing database on before-quit:', error);
+    }
+});
+electron_1.app.on('activate', () => {
+    if (electron_1.BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+    }
+});
+
+
+/***/ },
+
 /***/ "./main/src/ipc.ts"
 /*!*************************!*\
   !*** ./main/src/ipc.ts ***!
@@ -1935,13 +3105,43 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.initializeIpcMain = initializeIpcMain;
 const electron_1 = __webpack_require__(/*! electron */ "electron");
+const path_1 = __importDefault(__webpack_require__(/*! path */ "path"));
 const fs_extra_1 = __importDefault(__webpack_require__(/*! fs-extra */ "./node_modules/fs-extra/lib/index.js"));
 const database_1 = __webpack_require__(/*! ./database */ "./main/src/database/index.ts");
-const backup_1 = __webpack_require__(/*! ./backup */ "./main/src/backup/index.ts");
 const sync_1 = __webpack_require__(/*! ../../sync */ "./sync/index.ts");
 const undo_1 = __webpack_require__(/*! ../../undo */ "./undo/index.ts");
-// import { mainWindow } from './index'; // Remove this line
+const feedback_service_1 = __webpack_require__(/*! ./feedback-service */ "./main/src/feedback-service.ts");
 function initializeIpcMain(mainWindow) {
+    const syncManager = (0, sync_1.getSyncManager)();
+    // Initialize feedback auto-retry (queued items from previous sessions)
+    (0, feedback_service_1.initFeedbackAutoRetry)();
+    const emitSyncUpdate = (payload) => {
+        if (!mainWindow?.isDestroyed()) {
+            mainWindow.webContents.send('sync:update', payload);
+        }
+    };
+    syncManager.on('statusChange', (status) => {
+        emitSyncUpdate({
+            status: status.error ? 'error' : status.isSyncing ? 'syncing' : 'idle',
+            error: status.error,
+            progress: status.progress || 0,
+            lastSync: status.lastSyncTime ? new Date(status.lastSyncTime).toISOString() : undefined,
+        });
+    });
+    syncManager.on('syncComplete', (details) => {
+        emitSyncUpdate({
+            status: 'success',
+            progress: 100,
+            lastSync: details?.timestamp ? new Date(details.timestamp).toISOString() : new Date().toISOString(),
+            stats: details?.stats || { uploaded: 0, downloaded: 0, conflicts: 0 },
+        });
+    });
+    syncManager.on('error', (err) => {
+        emitSyncUpdate({
+            status: 'error',
+            error: err instanceof Error ? err.message : String(err),
+        });
+    });
     // Database operations
     electron_1.ipcMain.handle('database:execute', async (event, query, params) => {
         try {
@@ -2045,75 +3245,6 @@ function initializeIpcMain(mainWindow) {
             }
         }
     });
-    // Backup operations
-    electron_1.ipcMain.handle('backup:create', async () => {
-        try {
-            const backupManager = (0, backup_1.getBackupManager)();
-            const backupId = await backupManager.createIncrementalBackup();
-            return { success: true, backupId };
-        }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Backup creation failed:', error.message);
-                return { success: false, error: error.message };
-            }
-            else {
-                console.error('Backup creation failed:', error);
-                return { success: false, error: String(error) };
-            }
-        }
-    });
-    electron_1.ipcMain.handle('backup:restore', async (event, backupId) => {
-        try {
-            const backupManager = (0, backup_1.getBackupManager)();
-            const success = await backupManager.restoreFromBackup(backupId);
-            return { success };
-        }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Backup restore failed:', error.message);
-                return { success: false, error: error.message };
-            }
-            else {
-                console.error('Backup restore failed:', error);
-                return { success: false, error: String(error) };
-            }
-        }
-    });
-    electron_1.ipcMain.handle('backup:list', async () => {
-        try {
-            const backupManager = (0, backup_1.getBackupManager)();
-            const backups = await backupManager.getBackupList();
-            return { success: true, backups };
-        }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Backup list failed:', error.message);
-                return { success: false, error: error.message };
-            }
-            else {
-                console.error('Backup list failed:', error);
-                return { success: false, error: String(error) };
-            }
-        }
-    });
-    electron_1.ipcMain.handle('backup:delete', async (event, backupId) => {
-        try {
-            const backupManager = (0, backup_1.getBackupManager)();
-            await backupManager.deleteBackup(backupId);
-            return { success: true };
-        }
-        catch (error) {
-            if (error instanceof Error) {
-                console.error('Backup delete failed:', error.message);
-                return { success: false, error: error.message };
-            }
-            else {
-                console.error('Backup delete failed:', error);
-                return { success: false, error: String(error) };
-            }
-        }
-    });
     // Export/Import operations
     electron_1.ipcMain.handle('export:data', async (event, format) => {
         try {
@@ -2201,7 +3332,9 @@ function initializeIpcMain(mainWindow) {
     // Sync operations
     electron_1.ipcMain.handle('sync:start', async () => {
         try {
-            const syncManager = (0, sync_1.getSyncManager)();
+            if (!syncManager.isEnabled()) {
+                syncManager.enable();
+            }
             await syncManager.start();
             return { success: true };
         }
@@ -2506,6 +3639,116 @@ function initializeIpcMain(mainWindow) {
             }
             return { success: false, error: String(error) };
         }
+    });
+    // Reset all application data
+    electron_1.ipcMain.handle('app:resetAllData', async () => {
+        try {
+            console.log('Starting complete application data reset...');
+            const userData = electron_1.app.getPath('userData');
+            const dbPath = path_1.default.join(userData, 'progress.db');
+            const dbShmPath = path_1.default.join(userData, 'progress.db-shm');
+            const dbWalPath = path_1.default.join(userData, 'progress.db-wal');
+            const syncConfigPath = path_1.default.join(userData, 'sync-config.json');
+            const encryptionKeyPath = path_1.default.join(userData, 'encryption.key');
+            const legacyJsonPath = path_1.default.join(userData, 'progress-data.json');
+            const backupDir = path_1.default.join(userData, 'backups');
+            // Clear Chromium session storage/caches (renderer localStorage is cleared in renderer code)
+            try {
+                await mainWindow.webContents.session.clearStorageData({
+                    storages: [
+                        'cookies',
+                        'filesystem',
+                        'indexdb',
+                        'localstorage',
+                        'shadercache',
+                        'serviceworkers',
+                        'cachestorage',
+                    ],
+                });
+                await mainWindow.webContents.session.clearCache();
+            }
+            catch (err) {
+                console.warn('Reset: failed to clear session storage/cache (continuing):', err);
+            }
+            // Stop sync (best-effort) to prevent background writes during wipe
+            try {
+                const sync = (0, sync_1.getSyncManager)();
+                await sync.stop();
+            }
+            catch (err) {
+                console.warn('Reset: failed to stop sync manager (continuing):', err);
+            }
+            // Close database connection before deletion
+            const db = (0, database_1.getDatabase)();
+            if (db && typeof db.close === 'function') {
+                db.close();
+            }
+            // Delete database files
+            const filesToDelete = [
+                dbPath,
+                dbShmPath,
+                dbWalPath,
+                syncConfigPath,
+                encryptionKeyPath,
+                legacyJsonPath,
+            ];
+            for (const filePath of filesToDelete) {
+                if (await fs_extra_1.default.pathExists(filePath)) {
+                    await fs_extra_1.default.remove(filePath);
+                    console.log(`Deleted: ${filePath}`);
+                }
+            }
+            // Remove legacy SQLite backup snapshots produced by older/duplicate systems.
+            // These are full DB copies and would cause "ghost data" after erase.
+            try {
+                if (await fs_extra_1.default.pathExists(backupDir)) {
+                    const entries = await fs_extra_1.default.readdir(backupDir);
+                    for (const name of entries) {
+                        if (name.startsWith('backup-') && name.endsWith('.db')) {
+                            await fs_extra_1.default.remove(path_1.default.join(backupDir, name));
+                            console.log(`Deleted legacy DB backup: ${name}`);
+                        }
+                    }
+                }
+            }
+            catch (err) {
+                console.warn('Reset: failed to remove legacy .db backups (continuing):', err);
+            }
+            console.log('All application data has been reset successfully');
+            // Wait a moment to ensure all file operations complete
+            await new Promise(resolve => setTimeout(resolve, 500));
+            // Relaunch the app to reinitialize with fresh state
+            electron_1.app.relaunch();
+            electron_1.app.exit(0);
+            return { success: true };
+        }
+        catch (error) {
+            if (error instanceof Error) {
+                console.error('Reset all data failed:', error.message);
+                return { success: false, error: error.message };
+            }
+            return { success: false, error: String(error) };
+        }
+    });
+    // ─── Feedback via Nodemailer SMTP (main-process) ──────────────────────────────
+    electron_1.ipcMain.handle('feedback:submit', async (_event, payload) => {
+        return (0, feedback_service_1.submitFeedback)(payload);
+    });
+    electron_1.ipcMain.handle('feedback:retryFailed', async () => {
+        try {
+            const result = await (0, feedback_service_1.retryFailedFeedbackQueue)();
+            return { success: true, ...result };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { success: false, error: message };
+        }
+    });
+    electron_1.ipcMain.handle('feedback:queueCount', async () => {
+        return (0, feedback_service_1.getFeedbackQueueCount)();
+    });
+    electron_1.ipcMain.handle('feedback:verifyConfig', async () => {
+        return (0, feedback_service_1.verifyFeedbackConfig)();
     });
 }
 
@@ -23765,225 +25008,6 @@ exports.fromPromise = function (fn) {
 
 /***/ },
 
-/***/ "./shared/constants.ts"
-/*!*****************************!*\
-  !*** ./shared/constants.ts ***!
-  \*****************************/
-(__unused_webpack_module, exports) {
-
-"use strict";
-
-// Application constants
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.DEFAULTS = exports.IPC_CHANNEL_KEYS = exports.STORAGE_KEYS = exports.SUCCESS_MESSAGES = exports.ERROR_MESSAGES = exports.API_ENDPOINTS = exports.NOTIFICATION_DURATION = exports.NOTIFICATION_TYPES = exports.CACHE_DURATION = exports.THROTTLE_DELAY = exports.DEBOUNCE_DELAY = exports.MIN_PASSWORD_LENGTH = exports.ENCRYPTION_KEY_SIZE = exports.MAX_BACKUP_FILE_SIZE = exports.MAX_IMPORT_FILE_SIZE = exports.IMPORT_FORMATS = exports.EXPORT_FORMATS = exports.KEYBOARD_SHORTCUTS = exports.CATEGORY_ICONS = exports.CATEGORY_COLORS = exports.PROGRESS_COLORS = exports.PRIORITY_WEIGHTS = exports.TIME_FORMATS = exports.DATE_FORMATS = exports.MAX_TAG_LENGTH = exports.MAX_TAGS_PER_ITEM = exports.MAX_DESCRIPTION_LENGTH = exports.MAX_TITLE_LENGTH = exports.DEFAULT_WEEK_START = exports.DEFAULT_TIMEZONE = exports.DEFAULT_LANGUAGE = exports.DEFAULT_THEME = exports.SYNC_PROVIDERS = exports.SYNC_INTERVAL_MINUTES = exports.BACKUP_INTERVAL_HOURS = exports.MAX_BACKUP_COUNT = exports.DATABASE_VERSION = exports.DATABASE_NAME = exports.APP_DESCRIPTION = exports.APP_VERSION = exports.APP_NAME = void 0;
-exports.APP_NAME = 'Progress OS';
-exports.APP_VERSION = '1.0.0';
-exports.APP_DESCRIPTION = 'Personal Progress & Goal Tracking Desktop Application';
-// Database constants
-exports.DATABASE_NAME = 'progress.db';
-exports.DATABASE_VERSION = 4;
-exports.MAX_BACKUP_COUNT = 30;
-exports.BACKUP_INTERVAL_HOURS = 6;
-// Sync constants
-exports.SYNC_INTERVAL_MINUTES = 5;
-exports.SYNC_PROVIDERS = ['supabase', 'firebase', 'custom'];
-// UI constants
-exports.DEFAULT_THEME = 'system';
-exports.DEFAULT_LANGUAGE = 'en';
-exports.DEFAULT_TIMEZONE = 'UTC';
-exports.DEFAULT_WEEK_START = 'monday';
-// Validation constants
-exports.MAX_TITLE_LENGTH = 200;
-exports.MAX_DESCRIPTION_LENGTH = 5000;
-exports.MAX_TAGS_PER_ITEM = 10;
-exports.MAX_TAG_LENGTH = 50;
-// Date/Time constants
-exports.DATE_FORMATS = [
-    'YYYY-MM-DD',
-    'MM/DD/YYYY',
-    'DD/MM/YYYY',
-    'MMMM D, YYYY',
-];
-exports.TIME_FORMATS = ['12h', '24h'];
-/**
- * Priority weight constants for task scoring.
- *
- * IMPORTANT: These values MUST match renderer/src/lib/progress.ts PRIORITY_WEIGHTS
- * The canonical source of truth for progress calculations is progress.ts
- *
- * Weight System (NON-NEGOTIABLE):
- * - critical: 4 (Highest priority - urgent + important)
- * - high: 3 (High-value tasks)
- * - medium: 2 (Standard tasks)
- * - low: 1 (Low-priority tasks)
- */
-exports.PRIORITY_WEIGHTS = {
-    low: 1,
-    medium: 2,
-    high: 3,
-    critical: 4,
-};
-// Progress constants
-exports.PROGRESS_COLORS = {
-    low: '#10b981', // green
-    medium: '#f59e0b', // yellow
-    high: '#ef4444', // red
-    complete: '#3b82f6', // blue
-};
-// Category constants
-exports.CATEGORY_COLORS = {
-    career: '#3b82f6', // blue
-    health: '#10b981', // green
-    learning: '#8b5cf6', // purple
-    finance: '#f59e0b', // yellow
-    personal: '#ec4899', // pink
-    custom: '#6b7280', // gray
-};
-exports.CATEGORY_ICONS = {
-    career: '💼',
-    health: '🏥',
-    learning: '📚',
-    finance: '💰',
-    personal: '👤',
-    custom: '🔧',
-};
-// Keyboard shortcuts
-exports.KEYBOARD_SHORTCUTS = {
-    NEW_GOAL: 'Ctrl+N',
-    NEW_TASK: 'Ctrl+T',
-    NEW_HABIT: 'Ctrl+H',
-    NEW_NOTE: 'Ctrl+Shift+N',
-    SEARCH: 'Ctrl+K',
-    QUICK_ADD: 'Ctrl+Space',
-    UNDO: 'Ctrl+Z',
-    REDO: 'Ctrl+Y',
-    SAVE: 'Ctrl+S',
-    DELETE: 'Delete',
-    COMPLETE: 'Ctrl+Enter',
-    TOGGLE_SIDEBAR: 'Ctrl+B',
-    TOGGLE_THEME: 'Ctrl+Shift+T',
-    FOCUS_MODE: 'F11',
-    ESCAPE: 'Escape',
-};
-// Export formats
-exports.EXPORT_FORMATS = ['json', 'csv', 'pdf'];
-exports.IMPORT_FORMATS = ['json', 'csv'];
-// File size limits
-exports.MAX_IMPORT_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-exports.MAX_BACKUP_FILE_SIZE = 100 * 1024 * 1024; // 100MB
-// Security constants
-exports.ENCRYPTION_KEY_SIZE = 32; // bytes for AES-256
-exports.MIN_PASSWORD_LENGTH = 8;
-// Performance constants
-exports.DEBOUNCE_DELAY = 300; // ms
-exports.THROTTLE_DELAY = 100; // ms
-exports.CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
-// Notification constants
-exports.NOTIFICATION_TYPES = ['info', 'success', 'warning', 'error'];
-exports.NOTIFICATION_DURATION = 5000; // ms
-// API endpoints (for sync)
-exports.API_ENDPOINTS = {
-    SUPABASE: 'https://api.supabase.co/v1',
-    FIREBASE: 'https://firestore.googleapis.com/v1',
-};
-// Error messages
-exports.ERROR_MESSAGES = {
-    DATABASE_CONNECTION: 'Unable to connect to database',
-    DATABASE_QUERY: 'Database query failed',
-    BACKUP_FAILED: 'Backup creation failed',
-    RESTORE_FAILED: 'Backup restoration failed',
-    SYNC_FAILED: 'Sync failed',
-    EXPORT_FAILED: 'Export failed',
-    IMPORT_FAILED: 'Import failed',
-    VALIDATION_FAILED: 'Validation failed',
-    NETWORK_ERROR: 'Network error',
-    UNAUTHORIZED: 'Unauthorized access',
-    NOT_FOUND: 'Resource not found',
-    CONFLICT: 'Resource conflict',
-    RATE_LIMITED: 'Rate limited',
-    INTERNAL_ERROR: 'Internal server error',
-};
-// Success messages
-exports.SUCCESS_MESSAGES = {
-    SAVED: 'Saved successfully',
-    DELETED: 'Deleted successfully',
-    BACKUP_CREATED: 'Backup created successfully',
-    BACKUP_RESTORED: 'Backup restored successfully',
-    SYNC_COMPLETE: 'Sync completed successfully',
-    EXPORT_COMPLETE: 'Export completed successfully',
-    IMPORT_COMPLETE: 'Import completed successfully',
-};
-// Local storage keys
-exports.STORAGE_KEYS = {
-    THEME: 'progress-os-theme',
-    LANGUAGE: 'progress-os-language',
-    SETTINGS: 'progress-os-settings',
-    RECENT_SEARCHES: 'progress-os-recent-searches',
-    SIDEBAR_STATE: 'progress-os-sidebar-state',
-    LAST_VISITED: 'progress-os-last-visited',
-    CACHE: 'progress-os-cache',
-};
-// IPC Channels
-exports.IPC_CHANNEL_KEYS = {
-    DATABASE_INIT: 'database:init',
-    DATABASE_GET: 'database:get',
-    DATABASE_INSERT: 'database:insert',
-    DATABASE_UPDATE: 'database:update',
-    DATABASE_DELETE: 'database:delete',
-    BACKUP_CREATE: 'backup:create',
-    BACKUP_DATA: 'backup:data',
-    BACKUP_STATUS: 'backup:status',
-    RESTORE_DATA: 'backup:restore-data',
-    GET_BACKUPS: 'backup:get-backups',
-    DELETE_BACKUP: 'backup:delete-backup',
-    GET_BACKUP_STATS: 'backup:get-stats',
-    BACKUP_RESTORE: 'backup:restore',
-    APP_QUIT: 'app:quit',
-    OPEN_EXTERNAL_LINK: 'app:open-external-link',
-    GET_APP_VERSION: 'app:get-version',
-    GET_PATH: 'app:get-path',
-    SHOW_OPEN_DIALOG: 'dialog:show-open',
-    SHOW_SAVE_DIALOG: 'dialog:show-save',
-    TOGGLE_DARK_MODE: 'settings:toggle-dark-mode',
-    GET_SYSTEM_THEME: 'settings:get-system-theme',
-    CHECK_FOR_UPDATE: 'updater:check-for-update',
-    INSTALL_UPDATE: 'updater:install-update',
-    RESTART_APP: 'updater:restart-app',
-    DOWNLOAD_PROGRESS: 'updater:download-progress',
-};
-// Default values
-exports.DEFAULTS = {
-    GOAL: {
-        category: 'personal',
-        priority: 'medium',
-        status: 'active',
-        review_frequency: 'weekly',
-        progress_method: 'manual',
-        progress: 0,
-        tags: [],
-    },
-    TASK: {
-        priority: 'medium',
-        status: 'pending',
-        progress: 0,
-        tags: [],
-    },
-    HABIT: {
-        frequency: 'daily',
-        schedule: [],
-        streak_current: 0,
-        streak_longest: 0,
-        consistency_score: 0,
-    },
-    NOTE: {
-        type: 'free',
-        tags: [],
-    },
-};
-
-
-/***/ },
-
 /***/ "./sync/index.ts"
 /*!***********************!*\
   !*** ./sync/index.ts ***!
@@ -24791,6 +25815,17 @@ module.exports = require("http");
 
 /***/ },
 
+/***/ "nodemailer"
+/*!*****************************!*\
+  !*** external "nodemailer" ***!
+  \*****************************/
+(module) {
+
+"use strict";
+module.exports = require("nodemailer");
+
+/***/ },
+
 /***/ "os"
 /*!*********************!*\
   !*** external "os" ***!
@@ -24914,96 +25949,13 @@ module.exports = require("zlib");
 /******/ 	})();
 /******/ 	
 /************************************************************************/
-var __webpack_exports__ = {};
-// This entry needs to be wrapped in an IIFE because it needs to be in strict mode.
-(() => {
-"use strict";
-var exports = __webpack_exports__;
-/*!***************************!*\
-  !*** ./main/src/index.ts ***!
-  \***************************/
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-const electron_1 = __webpack_require__(/*! electron */ "electron");
-const ipc_1 = __webpack_require__(/*! ./ipc */ "./main/src/ipc.ts");
-const updater_1 = __webpack_require__(/*! ./updater */ "./main/src/updater.ts");
-const protocol_1 = __webpack_require__(/*! ./protocol */ "./main/src/protocol.ts");
-// IMPORTANT: move these into main/src or alias them in webpack
-const backup_1 = __webpack_require__(/*! ./backup */ "./main/src/backup/index.ts");
-const database_1 = __webpack_require__(/*! ./database */ "./main/src/database/index.ts");
-console.log('[MAIN] main/src/index.ts started');
-let mainWindow = null;
-function createWindow() {
-    mainWindow = new electron_1.BrowserWindow({
-        width: 1400,
-        height: 900,
-        minWidth: 800,
-        minHeight: 600,
-        backgroundColor: '#171717',
-        show: false,
-        webPreferences: {
-            preload: 'D:\\WEB DEVELOPMENT\\PersonalOS\\.webpack\\renderer\\main_window\\preload.js',
-            nodeIntegration: false,
-            contextIsolation: true,
-            sandbox: false,
-        },
-    });
-    mainWindow.loadURL('http://localhost:3000/main_window/index.html');
-    // Set CSP for development
-    if (true) {
-        mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
-            callback({
-                responseHeaders: {
-                    ...details.responseHeaders,
-                    'Content-Security-Policy': [
-                        "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: http://localhost:* https://localhost:* ws://localhost:* wss://localhost:*"
-                    ]
-                }
-            });
-        });
-    }
-    mainWindow.once('ready-to-show', () => {
-        mainWindow?.show();
-        if (true) {
-            mainWindow?.webContents.openDevTools({ mode: 'detach' });
-        }
-    });
-    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-        if (url.startsWith('http')) {
-            electron_1.shell.openExternal(url);
-            return { action: 'deny' };
-        }
-        return { action: 'allow' };
-    });
-    (0, ipc_1.initializeIpcMain)(mainWindow);
-    (0, updater_1.setupAutoUpdater)(mainWindow);
-    (0, protocol_1.setupProtocol)(mainWindow);
-    (0, backup_1.initializeBackupManager)(mainWindow);
-}
-electron_1.app.whenReady().then(async () => {
-    try {
-        await (0, database_1.initDatabase)();
-        createWindow();
-    }
-    catch (err) {
-        console.error('[MAIN] Failed to start app:', err);
-        electron_1.app.quit();
-    }
-});
-electron_1.app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
-        electron_1.app.quit();
-    }
-});
-electron_1.app.on('activate', () => {
-    if (electron_1.BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-    }
-});
-
-})();
-
-module.exports = __webpack_exports__;
+/******/ 	
+/******/ 	// startup
+/******/ 	// Load entry module and return exports
+/******/ 	// This entry module is referenced by other modules so it can't be inlined
+/******/ 	var __webpack_exports__ = __webpack_require__("./main/src/index.ts");
+/******/ 	module.exports = __webpack_exports__;
+/******/ 	
 /******/ })()
 ;
 //# sourceMappingURL=index.js.map

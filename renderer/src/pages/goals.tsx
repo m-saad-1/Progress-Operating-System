@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { 
   Card, 
   CardContent, 
@@ -12,7 +12,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
-import { Progress } from '@/components/ui/progress'
 import { 
   Select, 
   SelectContent, 
@@ -50,10 +49,8 @@ import {
   Calendar,
   Archive,
   Edit,
-  Trash2,
   Eye,
   CheckCircle,
-  PauseCircle,
   X,
   ListTodo,
   Repeat,
@@ -62,13 +59,15 @@ import {
 } from 'lucide-react'
 import { format, parseISO, isBefore, differenceInMonths, differenceInDays } from 'date-fns'
 import { useToaster } from '@/hooks/use-toaster'
+import { useElectron } from '@/hooks/use-electron'
+import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 import { database, CreateGoalDTO, UpdateGoalDTO } from '@/lib/database'
-import { Goal } from '@/types'
+import { Goal, HabitCompletion, Task } from '@/types'
 import { 
-  calculateGoalProgress, 
   calculateGoalAnalytics
 } from '@/lib/progress'
+import { ContextTipsDialog } from '@/components/context-tips-dialog'
 
 interface GoalFormData {
   title: string
@@ -77,9 +76,33 @@ interface GoalFormData {
   priority: Goal['priority']
   target_date: string
   motivation: string
-  review_frequency: Goal['review_frequency']
-  progress_method: 'manual' | 'task-based'
   tags: string[]
+}
+
+interface GoalActivityItem {
+  date: string
+  action: string
+}
+
+interface GoalInsights {
+  linkedTasks: Task[]
+  linkedHabitsCount: number
+  completedTasksCount: number
+  completionEvents: number
+  avgHabitConsistency: number
+  activeDays: number
+  activeDuration: string
+  totalEffortMinutes: number
+  totalEffortHours: number
+  recentActivity: GoalActivityItem[]
+  metadata: {
+    createdAt: string
+    updatedAt: string
+    startDate: string
+    targetDate?: string
+    completedAt?: string
+    status: string
+  }
 }
 
 interface GoalStats {
@@ -89,9 +112,37 @@ interface GoalStats {
   overdue: number;
 }
 
+const GOAL_TIPS_SECTIONS = [
+  {
+    title: 'Goal Tracking Logic',
+    points: [
+      'Goal progress is strengthened by real linked execution, not only by editing goal details.',
+      'Use clear target dates and priority levels to keep weekly decisions aligned with long-term direction.',
+      'Review active goals frequently to prevent drift and hidden overdue risk.',
+    ],
+  },
+  {
+    title: 'Impact of Linked Tasks and Habits',
+    points: [
+      'Linked tasks capture concrete delivery events that move goals forward.',
+      'Linked habits support consistency and show whether your system is sustainable.',
+      'A balanced mix of tasks (milestones) and habits (routines) usually performs best over time.',
+    ],
+  },
+  {
+    title: 'Effort and Long-Term Strategy',
+    points: [
+      'Track effort minutes/hours to compare intention versus actual investment.',
+      'If activity is low for multiple periods, reduce scope or split the goal into smaller phases.',
+      'Use review cycles to recalibrate timelines before goals become chronically overdue.',
+    ],
+  },
+] as const
+
 export default function Goals() {
   const queryClient = useQueryClient()
   const { success, error: toastError } = useToaster()
+  const electron = useElectron()
   const { goals, tasks, habits, addGoal, updateGoal, archiveGoal } = useStore()
   
   const [searchQuery] = useState('')
@@ -101,6 +152,7 @@ export default function Goals() {
   const [sortBy] = useState<'priority' | 'due_date' | 'updated' | 'tasks'>('priority')
   const [isCreating, setIsCreating] = useState(false)
   const [isEditing, setIsEditing] = useState<string | null>(null)
+  const [detailsGoalId, setDetailsGoalId] = useState<string | null>(null)
   const [formData, setFormData] = useState<GoalFormData>({
     title: '',
     description: '',
@@ -108,55 +160,200 @@ export default function Goals() {
     priority: 'medium',
     target_date: format(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), 'yyyy-MM-dd'),
     motivation: '',
-    review_frequency: 'weekly',
-    progress_method: 'manual',
     tags: [],
   })
   const [newTag, setNewTag] = useState('')
 
-  // Helper function to get goal insights using centralized calculation
-  const getGoalInsights = (goalId: string) => {
-    const goal = goals.find(g => g.id === goalId)
-    if (!goal) return null
-    
-    const goalWithProgress = calculateGoalProgress(goal, tasks, habits)
-    
-    // Calculate active duration
-    let activeDuration = ''
-    const startDate = parseISO(goal.start_date || goal.created_at)
-    const months = differenceInMonths(new Date(), startDate)
-    const days = differenceInDays(new Date(), startDate) % 30
-    if (months > 0) {
-      activeDuration = `${months} month${months > 1 ? 's' : ''}${days > 0 ? `, ${days} days` : ''}`
-    } else {
-      activeDuration = `${Math.max(1, days)} day${days !== 1 ? 's' : ''}`
+  const { data: allHabitCompletions = [] } = useQuery<HabitCompletion[]>({
+    queryKey: ['goals-habit-completions-all'],
+    queryFn: async () => {
+      if (!electron.isReady) return []
+      const earliestHabitDate = habits.length > 0
+        ? habits
+            .map((habit) => format(parseISO(habit.created_at), 'yyyy-MM-dd'))
+            .sort()[0]
+        : format(new Date(), 'yyyy-MM-dd')
+      const today = format(new Date(), 'yyyy-MM-dd')
+      return database.getHabitCompletions(earliestHabitDate, today)
+    },
+    enabled: electron.isReady,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+  })
+
+  const todayKey = format(new Date(), 'yyyy-MM-dd')
+
+  const completionEventsForTask = (task: Task): number => {
+    const history = task.daily_progress || {}
+
+    if (task.duration_type === 'today') {
+      const todayEntry = history[todayKey] as any
+      if (todayEntry && (Number(todayEntry?.progress || 0) >= 100 || todayEntry?.status === 'completed')) {
+        return 1
+      }
+      if (task.completed_at && format(parseISO(task.completed_at), 'yyyy-MM-dd') === todayKey) {
+        return 1
+      }
+      return 0
     }
-    
-    // Calculate total effort (task time + habit streaks)
-    const linkedTasks = tasks.filter(t => t.goal_id === goalId && !t.deleted_at)
-    const completedTasks = linkedTasks.filter(t => t.status === 'completed')
-    const linkedHabits = habits.filter(h => h.goal_id === goalId && !h.deleted_at)
-    const taskEffort = completedTasks.reduce((sum, t) => sum + (t.actual_time || t.estimated_time || 1), 0)
-    const habitEffort = linkedHabits.reduce((sum, h) => sum + h.streak_current, 0)
-    const totalEffort = Math.round((taskEffort + habitEffort) / 60) // Convert to hours
-    
-    // Get recent activity
-    const recentActivity: { date: string; action: string }[] = []
-    linkedTasks.slice(0, 3).forEach(t => {
-      if (t.completed_at) {
-        recentActivity.push({ date: t.completed_at, action: `Completed: ${t.title}` })
-      } else if (t.updated_at) {
-        recentActivity.push({ date: t.updated_at, action: `Updated: ${t.title}` })
+
+    const completionDays = new Set<string>()
+    Object.entries(history).forEach(([dayKey, entry]: any) => {
+      const progress = Number(entry?.progress || 0)
+      const status = entry?.status
+      if (progress >= 100 || status === 'completed') {
+        completionDays.add(dayKey)
       }
     })
-    recentActivity.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-    
-    return {
-      ...goalWithProgress,
-      activeDuration,
-      totalEffort,
-      recentActivity: recentActivity.slice(0, 3),
+
+    if (task.completed_at && (task.status === 'completed' || task.progress === 100)) {
+      completionDays.add(format(parseISO(task.completed_at), 'yyyy-MM-dd'))
     }
+
+    return completionDays.size
+  }
+
+  const goalInsightsById = useMemo<Record<string, GoalInsights>>(() => {
+    const completionDatesByHabit = new Map<string, string[]>()
+    allHabitCompletions.forEach((completion) => {
+      if (!completion.completed) return
+      const arr = completionDatesByHabit.get(completion.habit_id) || []
+      arr.push(completion.date)
+      completionDatesByHabit.set(completion.habit_id, arr)
+    })
+
+    return goals.reduce((acc, goal) => {
+      const linkedTasks = tasks.filter((task) => task.goal_id === goal.id && !task.deleted_at)
+      const linkedHabits = habits.filter((habit) => habit.goal_id === goal.id && !habit.deleted_at)
+      const isPausedGoal = goal.status === 'paused'
+
+      const avgHabitConsistency = linkedHabits.length > 0
+        ? Math.round(linkedHabits.reduce((sum, habit) => sum + (habit.consistency_score || 0), 0) / linkedHabits.length)
+        : 0
+
+      if (isPausedGoal) {
+        acc[goal.id] = {
+          linkedTasks,
+          linkedHabitsCount: linkedHabits.length,
+          completedTasksCount: 0,
+          completionEvents: 0,
+          avgHabitConsistency,
+          activeDays: 0,
+          activeDuration: '0 days',
+          totalEffortMinutes: 0,
+          totalEffortHours: 0,
+          recentActivity: [],
+          metadata: {
+            createdAt: goal.created_at,
+            updatedAt: goal.updated_at,
+            startDate: goal.start_date || goal.created_at,
+            targetDate: goal.target_date,
+            completedAt: goal.completed_at,
+            status: goal.status,
+          },
+        }
+        return acc
+      }
+
+      const completionEvents = linkedTasks.reduce((sum, task) => sum + completionEventsForTask(task), 0)
+      const completedTasksCount = linkedTasks.filter((task) => completionEventsForTask(task) > 0).length
+      const totalEffortMinutes = linkedTasks.reduce((sum, task) => {
+        const perCompletionMinutes = task.actual_time || task.estimated_time || 0
+        return sum + perCompletionMinutes * completionEventsForTask(task)
+      }, 0)
+
+      const activityDays = new Set<string>()
+      const recentActivity: GoalActivityItem[] = []
+
+      linkedTasks.forEach((task) => {
+        const history = task.daily_progress || {}
+        Object.entries(history).forEach(([dayKey, entry]: any) => {
+          if (task.duration_type === 'today' && dayKey !== todayKey) return
+          const progress = Number(entry?.progress || 0)
+          const status = entry?.status
+          const recordedAt = entry?.recorded_at || `${dayKey}T00:00:00.000Z`
+          if (progress > 0 || status === 'completed' || status === 'skipped') {
+            activityDays.add(dayKey)
+            recentActivity.push({
+              date: recordedAt,
+              action: `${task.title}: ${progress >= 100 || status === 'completed' ? 'Completed' : status === 'skipped' ? 'Skipped' : `Progress ${progress}%`}`,
+            })
+          }
+        })
+
+        if (task.completed_at && (task.status === 'completed' || task.progress === 100)) {
+          if (task.duration_type === 'today' && format(parseISO(task.completed_at), 'yyyy-MM-dd') !== todayKey) {
+            return
+          }
+          activityDays.add(format(parseISO(task.completed_at), 'yyyy-MM-dd'))
+          recentActivity.push({ date: task.completed_at, action: `Completed task: ${task.title}` })
+        }
+      })
+
+      linkedHabits.forEach((habit) => {
+        const dates = completionDatesByHabit.get(habit.id) || []
+        dates.forEach((dateKey) => {
+          activityDays.add(dateKey)
+          recentActivity.push({ date: `${dateKey}T00:00:00.000Z`, action: `Completed habit: ${habit.title}` })
+        })
+      })
+
+      recentActivity.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+
+      let activeDuration = '0 days'
+      if (activityDays.size > 0) {
+        const sortedDays = Array.from(activityDays).sort()
+        const firstDay = parseISO(sortedDays[0])
+        const months = differenceInMonths(new Date(), firstDay)
+        const days = differenceInDays(new Date(), firstDay) % 30
+        activeDuration = months > 0
+          ? `${months} month${months > 1 ? 's' : ''}${days > 0 ? `, ${days} days` : ''}`
+          : `${Math.max(1, days)} day${days !== 1 ? 's' : ''}`
+      }
+
+      acc[goal.id] = {
+        linkedTasks,
+        linkedHabitsCount: linkedHabits.length,
+        completedTasksCount,
+        completionEvents,
+        avgHabitConsistency,
+        activeDays: activityDays.size,
+        activeDuration,
+        totalEffortMinutes,
+        totalEffortHours: Math.round((totalEffortMinutes / 60) * 10) / 10,
+        recentActivity: recentActivity.slice(0, 8),
+        metadata: {
+          createdAt: goal.created_at,
+          updatedAt: goal.updated_at,
+          startDate: goal.start_date || goal.created_at,
+          targetDate: goal.target_date,
+          completedAt: goal.completed_at,
+          status: goal.status,
+        },
+      }
+      return acc
+    }, {} as Record<string, GoalInsights>)
+  }, [allHabitCompletions, goals, habits, tasks, todayKey])
+
+  const getGoalInsights = (goalId: string) => goalInsightsById[goalId] || null
+
+  const selectedGoal = useMemo(
+    () => goals.find((goal) => goal.id === detailsGoalId) || null,
+    [detailsGoalId, goals]
+  )
+
+  const selectedGoalInsights = useMemo(
+    () => (detailsGoalId ? getGoalInsights(detailsGoalId) : null),
+    [detailsGoalId, goalInsightsById]
+  )
+
+  const formatEffort = (minutes: number): string => {
+    if (minutes <= 0) return '0m'
+    const hours = Math.floor(minutes / 60)
+    const mins = minutes % 60
+    if (hours > 0 && mins > 0) return `${hours}h ${mins}m`
+    if (hours > 0) return `${hours}h`
+    return `${mins}m`
   }
 
   // Calculate goal analytics using centralized function
@@ -204,23 +401,6 @@ export default function Goals() {
     overdue: goalAnalytics.overdue,
   }), [goalAnalytics])
 
-  // Auto-convert manual goals to task-based when a task is linked
-  useEffect(() => {
-    goals.forEach((goal) => {
-      if (goal.progress_method === 'manual') {
-        const linkedTasksCount = tasks.filter(t => t.goal_id === goal.id && !t.deleted_at).length
-        if (linkedTasksCount > 0) {
-          // Auto-convert to task-based
-          updateGoalMutation.mutate({
-            id: goal.id,
-            updates: { progress_method: 'task-based' },
-            showToast: false,
-          })
-        }
-      }
-    })
-  }, [tasks, goals])
-
   // Create goal mutation
   const createGoalMutation = useMutation({
     mutationFn: async (goalData: CreateGoalDTO) => {
@@ -256,9 +436,10 @@ export default function Goals() {
             updateGoal(updatedGoal)
             if (showToast) {
               success('Goal updated successfully')
+              setIsCreating(false)
+              setIsEditing(null)
+              resetForm()
             }
-            setIsEditing(null)
-            resetForm()
         } else {
             toastError('Failed to retrieve updated goal.')
         }
@@ -272,7 +453,8 @@ export default function Goals() {
   // Update goal status mutation
   const updateGoalStatusMutation = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: Goal['status'] }) => {
-      await database.updateGoal(id, { status })
+      const completed_at = status === 'completed' ? new Date().toISOString() : null
+      await database.updateGoal(id, { status, completed_at })
       const updatedGoal = await database.getGoalById(id)
       return { updatedGoal, status }
     },
@@ -324,18 +506,25 @@ export default function Goals() {
       priority: 'medium',
       target_date: format(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), 'yyyy-MM-dd'),
       motivation: '',
-      review_frequency: 'weekly',
-      progress_method: 'manual',
       tags: [],
     })
     setNewTag('')
   }
 
+  useEffect(() => {
+    const openCreateGoal = () => {
+      setIsEditing(null)
+      resetForm()
+      setIsCreating(true)
+    }
+
+    window.addEventListener('app:new-goal', openCreateGoal as EventListener)
+    return () => window.removeEventListener('app:new-goal', openCreateGoal as EventListener)
+  }, [])
+
   const handleEdit = (goal: Goal) => {
     setIsEditing(goal.id)
     setIsCreating(true)
-    // Handle legacy milestone-based goals by converting to task-based
-    const progressMethod = goal.progress_method === 'milestone-based' ? 'task-based' : goal.progress_method
     setFormData({
       title: goal.title,
       description: goal.description || '',
@@ -343,8 +532,6 @@ export default function Goals() {
       priority: goal.priority,
       target_date: goal.target_date ? format(parseISO(goal.target_date), 'yyyy-MM-dd') : '',
       motivation: goal.motivation || '',
-      review_frequency: goal.review_frequency,
-      progress_method: progressMethod as 'manual' | 'task-based',
       tags: goal.tags || [],
     })
   }
@@ -398,7 +585,15 @@ export default function Goals() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Goals</h1>
+          <div className="flex items-baseline gap-1.5">
+            <h1 className="text-3xl font-bold">Goals</h1>
+            <ContextTipsDialog
+              title="Goals Section Tips"
+              description="Guidance for goal progress logic, linked work impact, effort tracking, and sustainable long-term planning."
+              sections={GOAL_TIPS_SECTIONS}
+              triggerLabel="Open goal tips"
+            />
+          </div>
           <p className="text-muted-foreground">
             Define and track your long-term objectives
           </p>
@@ -485,7 +680,6 @@ export default function Goals() {
                         <SelectItem value="low">Low</SelectItem>
                         <SelectItem value="medium">Medium</SelectItem>
                         <SelectItem value="high">High</SelectItem>
-                        <SelectItem value="critical">Critical</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -512,49 +706,6 @@ export default function Goals() {
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Review Frequency</label>
-                    <Select
-                      value={formData.review_frequency}
-                      onValueChange={(value: Goal['review_frequency']) => 
-                        setFormData({ ...formData, review_frequency: value })
-                      }
-                    >
-                      <SelectTrigger className="bg-secondary/50 border border-green-500/20 dark:border-green-500/15 focus:ring-primary/50 dark:bg-secondary/30">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="daily">Daily</SelectItem>
-                        <SelectItem value="weekly">Weekly</SelectItem>
-                        <SelectItem value="monthly">Monthly</SelectItem>
-                        <SelectItem value="quarterly">Quarterly</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                      
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Progress Method</label>
-                    <Select
-                      value={formData.progress_method}
-                      onValueChange={(value: 'manual' | 'task-based') => 
-                        setFormData({ ...formData, progress_method: value })
-                      }
-                    >
-                      <SelectTrigger className="bg-secondary/50 border border-green-500/20 dark:border-green-500/15 focus:ring-primary/50 dark:bg-secondary/30">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="manual">Manual</SelectItem>
-                        <SelectItem value="task-based">Task-based</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">
-                      Manual goals auto-convert to Task-based when tasks are linked
-                    </p>
-                  </div>
-                </div>
-                
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Tags</label>
                   <div className="flex gap-2">
@@ -594,7 +745,7 @@ export default function Goals() {
                 setIsCreating(false)
                 setIsEditing(null)
                 resetForm()
-              }}>
+              }} className="bg-transparent dark:bg-transparent border-green-500/30 text-green-600 dark:text-green-300 hover:bg-green-500/10 hover:border-green-500/50 transition-colors duration-200">
                 Cancel
               </Button>
               <Button 
@@ -613,10 +764,10 @@ export default function Goals() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Goals</CardTitle>
-            <Target className="h-4 w-4 text-muted-foreground" />
+            <Target className="h-4 w-4 text-purple-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.total}</div>
+            <div className="text-2xl font-bold text-purple-500">{stats.total}</div>
             <p className="text-xs text-muted-foreground mt-1">
               Goals in your system
             </p>
@@ -652,10 +803,10 @@ export default function Goals() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Overdue</CardTitle>
-            <AlertCircle className="h-4 w-4 text-destructive" />
+            <AlertCircle className="h-4 w-4 text-red-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-destructive">{stats.overdue}</div>
+            <div className="text-2xl font-bold text-red-500">{stats.overdue}</div>
             <p className="text-xs text-muted-foreground mt-1">
               Past target date
             </p>
@@ -665,7 +816,7 @@ export default function Goals() {
 
       {/* Goals List */}
       <Tabs defaultValue="all">
-        <TabsList>
+        <TabsList className="bg-secondary/30 dark:bg-secondary/20">
           <TabsTrigger value="all">All Goals ({filteredGoals.length})</TabsTrigger>
           <TabsTrigger value="active">Active ({filteredGoals.filter(g => g.status === 'active').length})</TabsTrigger>
           <TabsTrigger value="completed">Completed ({filteredGoals.filter(g => g.status === 'completed').length})</TabsTrigger>
@@ -737,13 +888,155 @@ export default function Goals() {
           )}
         </TabsContent>
       </Tabs>
+
+      <Dialog open={!!detailsGoalId} onOpenChange={(open) => !open && setDetailsGoalId(null)}>
+        <DialogContent className="max-w-3xl bg-card">
+          <DialogHeader>
+            <DialogTitle>{selectedGoal?.title || 'Goal Details'}</DialogTitle>
+            <DialogDescription>
+              Complete goal information, linked tasks and habits, and activity history.
+            </DialogDescription>
+          </DialogHeader>
+
+          {selectedGoal && selectedGoalInsights && (
+            <div className="max-h-[70vh] overflow-y-auto pr-2 space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="rounded-lg bg-secondary/50 dark:bg-zinc-900/60 p-3">
+                  <p className="text-xs text-muted-foreground">Status</p>
+                  <p className="text-sm font-semibold capitalize">{selectedGoal.status}</p>
+                </div>
+                <div className="rounded-lg bg-secondary/50 dark:bg-zinc-900/60 p-3">
+                  <p className="text-xs text-muted-foreground">Effort</p>
+                  <p className="text-sm font-semibold">{formatEffort(selectedGoalInsights.totalEffortMinutes)}</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Description</p>
+                <p className="text-sm text-muted-foreground">{selectedGoal.description || 'No description'}</p>
+              </div>
+
+              {selectedGoal.motivation && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Motivation</p>
+                  <p className="text-sm text-muted-foreground italic">"{selectedGoal.motivation}"</p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="rounded-lg bg-secondary/50 dark:bg-zinc-900/60 p-3">
+                  <p className="text-xs text-muted-foreground">Linked Tasks</p>
+                  <p className="text-sm font-semibold">
+                    {selectedGoalInsights.completedTasksCount}/{selectedGoalInsights.linkedTasks.length}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Completion events: {selectedGoalInsights.completionEvents}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-secondary/50 dark:bg-zinc-900/60 p-3">
+                  <p className="text-xs text-muted-foreground">Linked Habits</p>
+                  <p className="text-sm font-semibold">{selectedGoalInsights.linkedHabitsCount} habits</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Avg: {selectedGoalInsights.avgHabitConsistency}%
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="rounded-lg bg-secondary/50 p-3 space-y-2">
+                  <p className="text-xs text-muted-foreground">Task Details</p>
+                  {selectedGoalInsights.linkedTasks.length > 0 ? (
+                    <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+                      {selectedGoalInsights.linkedTasks.map((task) => (
+                        <div key={task.id} className="flex items-center justify-between text-xs">
+                          <span className="truncate pr-2 text-muted-foreground">{task.title}</span>
+                          <span className="font-medium">{task.progress || 0}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No linked tasks</p>
+                  )}
+                </div>
+
+                <div className="rounded-lg bg-secondary/50 p-3 space-y-2">
+                  <p className="text-xs text-muted-foreground">Habit Details</p>
+                  {habits.filter((habit) => habit.goal_id === selectedGoal.id && !habit.deleted_at).length > 0 ? (
+                    <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+                      {habits
+                        .filter((habit) => habit.goal_id === selectedGoal.id && !habit.deleted_at)
+                        .map((habit) => (
+                          <div key={habit.id} className="flex items-center justify-between text-xs">
+                            <span className="truncate pr-2 text-muted-foreground">{habit.title}</span>
+                            <span className="font-medium">{habit.consistency_score || 0}%</span>
+                          </div>
+                        ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No linked habits</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="rounded-lg bg-secondary/50 dark:bg-zinc-900/60 p-3">
+                  <p className="text-xs text-muted-foreground">Activity</p>
+                  <p className="text-sm font-semibold">{selectedGoalInsights.activeDays} active days</p>
+                  <p className="text-xs text-muted-foreground mt-1">Active for {selectedGoalInsights.activeDuration}</p>
+                </div>
+                <div className="rounded-lg bg-secondary/50 dark:bg-zinc-900/60 p-3">
+                  <p className="text-xs text-muted-foreground">Metadata</p>
+                  <p className="text-xs text-muted-foreground">Created: {format(parseISO(selectedGoalInsights.metadata.createdAt), 'MMM d, yyyy')}</p>
+                  <p className="text-xs text-muted-foreground">Updated: {format(parseISO(selectedGoalInsights.metadata.updatedAt), 'MMM d, yyyy')}</p>
+                  <p className="text-xs text-muted-foreground">Start: {format(parseISO(selectedGoalInsights.metadata.startDate), 'MMM d, yyyy')}</p>
+                  {selectedGoalInsights.metadata.targetDate && (
+                    <p className="text-xs text-muted-foreground">Target: {format(parseISO(selectedGoalInsights.metadata.targetDate), 'MMM d, yyyy')}</p>
+                  )}
+                  {selectedGoalInsights.metadata.completedAt && (
+                    <p className="text-xs text-muted-foreground">Completed: {format(parseISO(selectedGoalInsights.metadata.completedAt), 'MMM d, yyyy')}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Recent Activity</p>
+                {selectedGoalInsights.recentActivity.length > 0 ? (
+                  <div className="space-y-1">
+                    {selectedGoalInsights.recentActivity.map((activity, index) => (
+                      <div key={`${activity.date}-${index}`} className="flex items-center justify-between rounded-md bg-secondary/40 dark:bg-zinc-900/55 px-3 py-2 text-xs">
+                        <span className="text-muted-foreground truncate pr-3">{activity.action}</span>
+                        <span className="text-muted-foreground whitespace-nowrap">{format(parseISO(activity.date), 'MMM d, yyyy')}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No tracked activity yet.</p>
+                )}
+              </div>
+
+              {selectedGoal.tags && selectedGoal.tags.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Tags</p>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedGoal.tags.map((tag: string) => (
+                      <Badge key={tag} variant="outline" className="text-xs">{tag}</Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 
   // Helper function to render goal cards
   function renderGoalCard(goal: Goal) {
+    const insights = getGoalInsights(goal.id)
+
     return (
-      <Card key={goal.id} interactive className="transition-colors">
+      <Card key={goal.id} interactive className="transition-colors h-full flex flex-col">
         <CardHeader>
           <div className="flex items-start justify-between">
             <div className="flex-1 min-w-0">
@@ -752,155 +1045,125 @@ export default function Goals() {
                 {goal.description || 'No description'}
               </CardDescription>
             </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8 cursor-pointer">
-                  <MoreVertical className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem 
-                  onClick={() => handleEdit(goal)}
-                  className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
-                >
-                  <Edit className="mr-2 h-4 w-4" />
-                  Edit
-                </DropdownMenuItem>
-                
-                {/* Status Actions - Show based on current status */}
-                {goal.status !== 'completed' && (
-                  <DropdownMenuItem 
-                    onClick={() => handleStatusChange(goal.id, 'completed')}
+            <div className="flex items-center gap-1">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 cursor-pointer">
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="bg-white dark:bg-zinc-900">
+                  <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={() => setDetailsGoalId(goal.id)}
+                    className="cursor-pointer hover:bg-blue-500/10 focus:bg-blue-500/10"
+                  >
+                    <Eye className="mr-2 h-4 w-4" />
+                    View Details
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => handleEdit(goal)}
                     className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
                   >
-                    <CheckCircle className="mr-2 h-4 w-4 text-green-500" />
-                    Mark Complete
+                    <Edit className="mr-2 h-4 w-4" />
+                    Edit
                   </DropdownMenuItem>
-                )}
-                
-                {goal.status === 'completed' && (
-                  <DropdownMenuItem 
-                    onClick={() => handleStatusChange(goal.id, 'active')}
-                    className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
-                  >
-                    <Target className="mr-2 h-4 w-4 text-blue-500" />
-                    Reactivate
-                  </DropdownMenuItem>
-                )}
-                
-                {goal.status !== 'paused' && goal.status !== 'completed' && (
-                  <DropdownMenuItem 
-                    onClick={() => handleStatusChange(goal.id, 'paused')}
-                    className="cursor-pointer hover:bg-yellow-500/10 focus:bg-yellow-500/10"
-                  >
-                    <PauseCircle className="mr-2 h-4 w-4 text-yellow-500" />
-                    Pause
-                  </DropdownMenuItem>
-                )}
-                
-                {goal.status === 'paused' && (
-                  <DropdownMenuItem 
-                    onClick={() => handleStatusChange(goal.id, 'active')}
-                    className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
-                  >
-                    <Target className="mr-2 h-4 w-4 text-blue-500" />
-                    Resume
-                  </DropdownMenuItem>
-                )}
-                
-                {goal.status !== 'archived' && (
-                  <DropdownMenuItem 
-                    onClick={() => handleStatusChange(goal.id, 'archived')}
+
+                  {(goal.status === 'active' || goal.status === 'paused') && (
+                    <DropdownMenuItem
+                      onClick={() => handleStatusChange(goal.id, goal.status === 'active' ? 'paused' : 'active')}
+                      className="cursor-pointer hover:bg-yellow-500/10 focus:bg-yellow-500/10"
+                    >
+                      {goal.status === 'active' ? 'Pause' : 'Resume'}
+                    </DropdownMenuItem>
+                  )}
+
+                  {goal.status !== 'completed' && (
+                    <DropdownMenuItem
+                      onClick={() => handleStatusChange(goal.id, 'completed')}
+                      className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
+                    >
+                      <CheckCircle className="mr-2 h-4 w-4 text-green-500" />
+                      Mark Complete
+                    </DropdownMenuItem>
+                  )}
+
+                  {goal.status === 'completed' && (
+                    <DropdownMenuItem
+                      onClick={() => handleStatusChange(goal.id, 'active')}
+                      className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
+                    >
+                      <Target className="mr-2 h-4 w-4 text-blue-500" />
+                      Reactivate
+                    </DropdownMenuItem>
+                  )}
+
+                  {goal.status === 'archived' && (
+                    <DropdownMenuItem
+                      onClick={() => handleStatusChange(goal.id, 'active')}
+                      className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
+                    >
+                      <Target className="mr-2 h-4 w-4 text-blue-500" />
+                      Restore
+                    </DropdownMenuItem>
+                  )}
+
+                  <DropdownMenuItem
+                    onClick={() => handleDelete(goal.id)}
                     className="cursor-pointer hover:bg-gray-500/10 focus:bg-gray-500/10"
                   >
                     <Archive className="mr-2 h-4 w-4" />
                     Archive
                   </DropdownMenuItem>
-                )}
-                
-                {goal.status === 'archived' && (
-                  <DropdownMenuItem 
-                    onClick={() => handleStatusChange(goal.id, 'active')}
-                    className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
-                  >
-                    <Target className="mr-2 h-4 w-4 text-blue-500" />
-                    Restore
-                  </DropdownMenuItem>
-                )}
-                
-                <DropdownMenuSeparator />
-                <DropdownMenuItem 
-                  className="cursor-pointer text-destructive hover:text-destructive hover:bg-red-500/10 focus:bg-red-500/10"
-                  onClick={() => handleDelete(goal.id)}
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant={goal.category === 'career' ? 'default' : 'secondary'}>
-              {goal.category}
-            </Badge>
-            <Badge variant={
-              goal.priority === 'critical' ? 'destructive' : 
-              goal.priority === 'high' ? 'default' : 
-              'secondary'
-            }>
-              {goal.priority}
-            </Badge>
-            <Badge variant={
-              goal.status === 'completed' ? 'default' : 
-              goal.status === 'paused' ? 'outline' : 
-              goal.status === 'archived' ? 'secondary' :
-              'default'
-            } className={
-              goal.status === 'completed' ? 'bg-green-500/20 text-green-500' : 
-              goal.status === 'active' ? 'bg-blue-500/20 text-blue-500' : 
-              ''
-            }>
-              {goal.status}
-            </Badge>
+          {/* Badges Section - Styled consistently */}
+          <div className="flex flex-col gap-2 mt-2">
+            <div className="flex justify-end">
+              <Badge 
+                variant="outline"
+                className={cn(
+                  "text-xs capitalize",
+                  goal.status === 'completed' && "bg-green-500/10 text-green-500 border-green-500/30",
+                  goal.status === 'active' && "bg-blue-500/10 text-blue-500 border-blue-500/30",
+                  goal.status === 'paused' && "bg-yellow-500/10 text-yellow-600 border-yellow-500/30",
+                  goal.status === 'archived' && "bg-gray-500/10 text-gray-500 border-gray-500/30"
+                )}
+              >
+                {goal.status}
+              </Badge>
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>Priority: {goal.priority}</span>
+              <span>Category: {goal.category}</span>
+            </div>
           </div>
         </CardHeader>
         
-        <CardContent>
-          {(() => {
-            const insights = getGoalInsights(goal.id)
-            if (!insights) return null
-            
-            return (
+        <CardContent className="flex-1">
+          {insights && (
               <div className="space-y-4">
-                {/* Progress Bar - Using Calculated Progress */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Progress</span>
-                    <span className="font-bold text-green-500">{insights.calculatedProgress}%</span>
-                  </div>
-                  <Progress value={insights.calculatedProgress} className="h-2" />
-                </div>
-                
                 {/* Task & Habit Stats */}
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/50">
+                  <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/50 dark:bg-zinc-900/55">
                     <ListTodo className="h-4 w-4 text-blue-500" />
                     <div>
                       <p className="text-xs text-muted-foreground">Tasks</p>
                       <p className="text-sm font-semibold">
-                        {insights.completedTasksCount}/{insights.linkedTasksCount} completed
+                        {insights.completedTasksCount}/{insights.linkedTasks.length}
                       </p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/50">
+                  <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/50 dark:bg-zinc-900/55">
                     <Repeat className="h-4 w-4 text-purple-500" />
                     <div>
                       <p className="text-xs text-muted-foreground">Habits</p>
                       <p className="text-sm font-semibold">
-                        {insights.linkedHabitsCount > 0 
-                          ? `${insights.avgHabitConsistency}% consistency`
+                        {insights.linkedHabitsCount > 0
+                          ? `${insights.avgHabitConsistency}%`
                           : 'None linked'}
                       </p>
                     </div>
@@ -908,16 +1171,16 @@ export default function Goals() {
                 </div>
                 
                 {/* Activity Summary */}
-                <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/50">
+                <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/50 dark:bg-zinc-900/55">
                   <Activity className="h-4 w-4 text-green-500" />
                   <div className="flex-1">
-                    <p className="text-xs text-muted-foreground">Active for</p>
-                    <p className="text-sm font-semibold">{insights.activeDuration}</p>
+                    <p className="text-xs text-muted-foreground">Active Days</p>
+                    <p className="text-sm font-semibold">{insights.activeDays} days</p>
                   </div>
-                  {insights.totalEffort > 0 && (
+                  {insights.totalEffortMinutes > 0 && (
                     <div className="text-right">
                       <p className="text-xs text-muted-foreground">Effort</p>
-                      <p className="text-sm font-semibold">{insights.totalEffort}h invested</p>
+                      <p className="text-sm font-semibold">{formatEffort(insights.totalEffortMinutes)}</p>
                     </div>
                   )}
                 </div>
@@ -927,7 +1190,7 @@ export default function Goals() {
                   <div className="space-y-2">
                     <p className="text-xs font-medium text-muted-foreground uppercase">Recent Activity</p>
                     <div className="space-y-1">
-                      {insights.recentActivity.map((activity, idx) => (
+                      {insights.recentActivity.slice(0, 3).map((activity, idx) => (
                         <div key={idx} className="flex items-center gap-2 text-xs text-muted-foreground">
                           <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
                           <span className="truncate flex-1">{activity.action}</span>
@@ -965,11 +1228,15 @@ export default function Goals() {
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <div className="flex items-center">
                     <Calendar className="mr-1 h-3 w-3" />
-                    {goal.target_date ? (
+                    {goal.status === 'completed' && goal.completed_at ? (
+                      <>
+                        Completed: {format(parseISO(goal.completed_at), 'MMM d, yyyy')}
+                      </>
+                    ) : goal.target_date ? (
                       <>
                         Due: {format(parseISO(goal.target_date), 'MMM d, yyyy')}
                         {isBefore(parseISO(goal.target_date), new Date()) && goal.status === 'active' && (
-                          <span className="ml-2 text-destructive">(Overdue)</span>
+                          <span className="ml-2 text-red-500 font-medium">(Overdue)</span>
                         )}
                       </>
                     ) : (
@@ -981,19 +1248,19 @@ export default function Goals() {
                   </div>
                 </div>
               </div>
-            )
-          })()}
+          )}
         </CardContent>
         
-        <CardFooter>
+        <CardFooter className="bg-white dark:bg-zinc-900/70 mt-auto flex flex-col gap-3">
+          {/* Action Buttons */}
           <div className="flex items-center justify-between w-full">
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => handleEdit(goal)}
-              className="cursor-pointer hover:bg-green-500/10"
+              onClick={() => setDetailsGoalId(goal.id)}
+              className="cursor-pointer bg-secondary/40 hover:bg-secondary/70 dark:bg-zinc-900/60 dark:hover:bg-zinc-800/70"
             >
-              <Eye className="mr-2 h-4 w-4" />
+              <Eye className="mr-2 h-4 w-4 text-blue-500" />
               View Details
             </Button>
             

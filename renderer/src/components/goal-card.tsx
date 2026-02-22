@@ -1,6 +1,5 @@
 import React from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -35,6 +34,7 @@ interface GoalCardProps {
     start_date: string
     target_date: string | null
     tags: string[]
+    review_frequency?: string
   }
   onEdit?: (goalId: string) => void
   onArchive?: (goalId: string) => void
@@ -125,7 +125,10 @@ export function GoalCard({
                 {goal.category}
               </Badge>
               <Badge variant={getPriorityColor(goal.priority) as any}>
-                {goal.priority}
+                Priority: {goal.priority}
+              </Badge>
+              <Badge variant="outline">
+                Frequency: {goal.review_frequency || 'weekly'}
               </Badge>
               <Badge variant={getStatusColor(goal.status) as any}>
                 {goal.status}
@@ -182,16 +185,6 @@ export function GoalCard({
         )}
         
         <div className="space-y-3">
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-sm font-medium">Progress</span>
-              <span className="text-sm font-bold text-primary">
-                {Math.round(goal.progress)}%
-              </span>
-            </div>
-            <Progress value={goal.progress} className="h-2" />
-          </div>
-          
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <div className="flex items-center">
               <Calendar className="h-3 w-3 mr-1" />

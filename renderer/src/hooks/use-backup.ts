@@ -1,429 +1,365 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useElectron } from './use-electron'
 import { useToaster } from './use-toaster'
-import dayjs from 'dayjs'
+import { format as formatDateFns } from 'date-fns'
 
 export interface Backup {
   id: string
   path: string
-  timestamp: Date
+  timestamp: string
   size: number
   checksum: string
   version: number
-  isCorrupted?: boolean
+  exists?: boolean
+  sizeFormatted?: string
+  dateFormatted?: string
+  verified?: boolean | null // null = not yet verified, true/false = result
 }
 
 export interface BackupStats {
   totalBackups: number
   totalSize: number
-  lastBackup?: Date
-  oldestBackup?: Date
-  averageSize: number
+  totalSizeFormatted: string
+  oldestBackup: string | null
+  newestBackup: string | null
+  healthyBackups: number
+  missingBackups: number
 }
 
-export interface BackupConfig {
-  autoBackup: boolean
-  backupInterval: number // hours
-  maxBackups: number
-  backupLocation?: string
-  compressBackups: boolean
-  encryptBackups: boolean
+const DEFAULT_STATS: BackupStats = {
+  totalBackups: 0,
+  totalSize: 0,
+  totalSizeFormatted: '0 B',
+  oldestBackup: null,
+  newestBackup: null,
+  healthyBackups: 0,
+  missingBackups: 0,
 }
 
 export const useBackup = () => {
   const electron = useElectron()
   const { success, error, info } = useToaster()
-  
+
   const [backups, setBackups] = useState<Backup[]>([])
-  const [stats, setStats] = useState<BackupStats>({
-    totalBackups: 0,
-    totalSize: 0,
-    averageSize: 0,
-  })
-  
-  const [config, setConfig] = useState<BackupConfig>({
-    autoBackup: true,
-    backupInterval: 24, // hours
-    maxBackups: 30,
-    compressBackups: true,
-    encryptBackups: true,
-  })
-  
+  const [stats, setStats] = useState<BackupStats>(DEFAULT_STATS)
   const [isCreatingBackup, setIsCreatingBackup] = useState(false)
   const [isRestoring, setIsRestoring] = useState(false)
-  const [verificationProgress, setVerificationProgress] = useState(0)
+  const [isVerifying, setIsVerifying] = useState(false)
+  const [isImporting, setIsImporting] = useState(false)
+  const loadedRef = useRef(false)
+
+  // ── Helpers ──
 
   const formatFileSize = useCallback((bytes: number): string => {
-    if (bytes === 0) return '0 Bytes'
-    const k = 1024
-    const sizes = ['Bytes', 'KB', 'MB', 'GB']
-    const i = Math.floor(Math.log(bytes) / Math.log(k))
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+    if (bytes === 0) return '0 B'
+    const units = ['B', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(1024))
+    return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`
   }, [])
 
-  const updateStats = useCallback((backupList: Backup[]) => {
-    if (backupList.length === 0) {
-      setStats({
-        totalBackups: 0,
-        totalSize: 0,
-        averageSize: 0,
-      })
-      return
+  const formatDate = useCallback((ts: string | Date): string => {
+    try {
+      const d = typeof ts === 'string' ? new Date(ts) : ts
+      return formatDateFns(d, 'yyyy-MM-dd HH:mm')
+    } catch {
+      return String(ts)
     }
-
-    const totalSize = backupList.reduce((sum, backup) => sum + backup.size, 0)
-    const lastBackup = backupList.length > 0 
-      ? new Date(Math.max(...backupList.map(b => b.timestamp.getTime())))
-      : undefined
-    const oldestBackup = backupList.length > 0
-      ? new Date(Math.min(...backupList.map(b => b.timestamp.getTime())))
-      : undefined
-
-    setStats({
-      totalBackups: backupList.length,
-      totalSize,
-      lastBackup,
-      oldestBackup,
-      averageSize: Math.round(totalSize / backupList.length),
-    })
   }, [])
+
+  // ── Load backups from main process ──
 
   const loadBackups = useCallback(async (): Promise<void> => {
     if (!electron.isReady) return
 
     try {
       const backupList = await electron.listBackups()
-      const loadedBackups: Backup[] = backupList.map((b: any) => ({
+
+      const loaded: Backup[] = (Array.isArray(backupList) ? backupList : []).map((b: any) => ({
         id: b.id,
         path: b.path,
-        timestamp: new Date(b.timestamp),
-        size: b.size,
-        checksum: b.checksum,
-        version: b.version,
-        isCorrupted: b.isCorrupted,
+        timestamp: b.timestamp,
+        size: b.size ?? 0,
+        checksum: b.checksum ?? '',
+        version: b.version ?? 1,
+        exists: b.exists ?? true,
+        sizeFormatted: b.sizeFormatted ?? formatFileSize(b.size ?? 0),
+        dateFormatted: b.dateFormatted ?? formatDate(b.timestamp),
+        verified: null,
       }))
 
-      setBackups(loadedBackups)
-      updateStats(loadedBackups)
+      setBackups(loaded)
     } catch (err) {
       console.error('Failed to load backups:', err)
       error('Failed to load backups')
     }
-  }, [electron, error, updateStats])
+  }, [electron, error, formatFileSize, formatDate])
 
-  // Load backups on mount
-  useEffect(() => {
-    if (electron.isReady) {
-      loadBackups()
+  // ── Load stats from main process ──
+
+  const loadStats = useCallback(async (): Promise<void> => {
+    if (!electron.isReady) return
+
+    try {
+      const s = await electron.getBackupStats()
+      if (s) setStats(s)
+    } catch (err) {
+      console.error('Failed to load stats:', err)
     }
-  }, [electron.isReady])
+  }, [electron])
 
-  // Listen for backup events
+  // ── Refresh both ──
+
+  const refresh = useCallback(async () => {
+    await Promise.all([loadBackups(), loadStats()])
+  }, [loadBackups, loadStats])
+
+  // ── Initial load ──
+
+  useEffect(() => {
+    if (electron.isReady && !loadedRef.current) {
+      loadedRef.current = true
+      refresh()
+    }
+  }, [electron.isReady, refresh])
+
+  // ── Listen for real-time backup:created events ──
+
   useEffect(() => {
     if (!electron.isReady) return
 
-    const handleBackupCreated = (backup: Backup) => {
-      const newBackup: Backup = {
-        id: backup.id,
-        path: backup.path,
-        timestamp: new Date(backup.timestamp),
-        size: backup.size,
-        checksum: backup.checksum,
-        version: backup.version,
-      }
-      
-      setBackups(prev => [newBackup, ...prev])
-      updateStats([newBackup, ...backups])
-      
-      success('Backup created successfully', `Size: ${formatFileSize(backup.size)}`)
+    const handleBackupCreated = (_backup: any) => {
+      // Just reload the full list to stay in sync
+      refresh()
     }
 
     const cleanup = electron.onBackupCreated(handleBackupCreated)
+    return () => { cleanup() }
+  }, [electron, refresh])
 
-    return () => {
-      cleanup()
-    }
-  }, [electron, success, backups, formatFileSize, updateStats])
+  // ── Create ──
 
-  const createBackup = useCallback(async (manual = true): Promise<Backup | null> => {
+  const createBackup = useCallback(async (): Promise<boolean> => {
     if (!electron.isReady) {
-      error('Electron not ready')
-      return null
+      error('Not ready')
+      return false
     }
-
     if (isCreatingBackup) {
       info('Backup already in progress')
-      return null
+      return false
     }
 
     setIsCreatingBackup(true)
     try {
-      const backupPath = await electron.createBackup()
-      
-      // Load the new backup details
-      await loadBackups()
-      
-      if (manual) {
-        success('Manual backup created')
+      const record = await electron.createBackup()
+      if (record) {
+        success('Backup created', `Size: ${record.sizeFormatted || formatFileSize(record.size || 0)}`)
+        await refresh()
+        return true
       }
-      
-      return backups.find(b => b.path === backupPath) || null
-    } catch (err) {
-      console.error('Failed to create backup:', err)
       error('Failed to create backup')
-      return null
+      return false
+    } catch (err: any) {
+      console.error('Failed to create backup:', err)
+      error(err?.message || 'Failed to create backup')
+      return false
     } finally {
       setIsCreatingBackup(false)
     }
-  }, [electron, error, info, success, isCreatingBackup, backups, loadBackups])
+  }, [electron, error, info, success, isCreatingBackup, formatFileSize, refresh])
+
+  // ── Restore ──
 
   const restoreBackup = useCallback(async (backupId: string): Promise<boolean> => {
     if (!electron.isReady) {
-      error('Electron not ready')
+      error('Not ready')
       return false
     }
-
     if (isRestoring) {
       info('Restore already in progress')
       return false
     }
 
     setIsRestoring(true)
-    setVerificationProgress(0)
-    
     try {
-      // Simulate verification progress
-      const interval = setInterval(() => {
-        setVerificationProgress(prev => {
-          if (prev >= 90) {
-            clearInterval(interval)
-            return 90
-          }
-          return prev + 10
-        })
-      }, 100)
-
       const result = await electron.restoreBackup(backupId)
-      
-      clearInterval(interval)
-      setVerificationProgress(100)
 
       if (result) {
-        success('Backup restored successfully', 'Application will reload...')
-        
-        // Reload after a delay
-        setTimeout(() => {
-          window.location.reload()
-        }, 2000)
-        
+        success('Backup restored successfully', 'Application will reload…')
+        setTimeout(() => window.location.reload(), 2000)
         return true
-      } else {
-        error('Failed to restore backup')
-        return false
       }
-    } catch (err) {
-      console.error('Failed to restore backup:', err)
+
       error('Failed to restore backup')
+      return false
+    } catch (err: any) {
+      console.error('Failed to restore backup:', err)
+      error(err?.message || 'Failed to restore backup')
       return false
     } finally {
       setIsRestoring(false)
-      setVerificationProgress(0)
     }
   }, [electron, error, info, success, isRestoring])
 
+  // ── Delete ──
+
   const deleteBackup = useCallback(async (backupId: string): Promise<boolean> => {
-    if (!electron.isReady) {
-      return false
-    }
+    if (!electron.isReady) return false
 
     try {
-      // In a real implementation, this would call electron.deleteBackup
-      setBackups(prev => prev.filter(backup => backup.id !== backupId))
-      success('Backup deleted')
-      return true
-    } catch (err) {
-      console.error('Failed to delete backup:', err)
+      const result = await electron.deleteBackup(backupId)
+      if (result) {
+        success('Backup deleted')
+        await refresh()
+        return true
+      }
       error('Failed to delete backup')
       return false
+    } catch (err: any) {
+      console.error('Failed to delete backup:', err)
+      error(err?.message || 'Failed to delete backup')
+      return false
     }
-  }, [electron, success, error])
+  }, [electron, success, error, refresh])
 
-  const deleteOldBackups = useCallback(async (): Promise<number> => {
-    if (!electron.isReady || backups.length <= config.maxBackups) {
-      return 0
-    }
-
-    try {
-      const backupsToDelete = backups
-        .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()) // newest first
-        .slice(config.maxBackups) // keep only maxBackups
-
-      // In a real implementation, this would call electron.deleteBackups
-      const deletedCount = backupsToDelete.length
-      setBackups(prev => prev.slice(0, config.maxBackups))
-      
-      info(`Deleted ${deletedCount} old backups`)
-      return deletedCount
-    } catch (err) {
-      console.error('Failed to delete old backups:', err)
-      error('Failed to delete old backups')
-      return 0
-    }
-  }, [electron, info, error, backups, config.maxBackups])
+  // ── Verify ──
 
   const verifyBackup = useCallback(async (backupId: string): Promise<boolean> => {
-    if (!electron.isReady) {
-      return false
-    }
+    if (!electron.isReady) return false
 
+    setIsVerifying(true)
     try {
-      // In a real implementation, this would call electron.verifyBackup
-      setBackups(prev => prev.map(backup => 
-        backup.id === backupId 
-          ? { ...backup, isCorrupted: false }
-          : backup
-      ))
-      
-      success('Backup verification successful')
-      return true
-    } catch (err) {
+      const result = await electron.verifyBackup(backupId)
+      const isValid = result?.valid === true
+
+      setBackups(prev =>
+        prev.map(b => (b.id === backupId ? { ...b, verified: isValid } : b))
+      )
+
+      if (isValid) {
+        success('Backup is valid')
+      } else {
+        error(`Backup verification failed: ${result?.error || 'Unknown error'}`)
+      }
+      return isValid
+    } catch (err: any) {
       console.error('Backup verification failed:', err)
-      
-      setBackups(prev => prev.map(backup => 
-        backup.id === backupId 
-          ? { ...backup, isCorrupted: true }
-          : backup
-      ))
-      
-      error('Backup verification failed')
+      setBackups(prev =>
+        prev.map(b => (b.id === backupId ? { ...b, verified: false } : b))
+      )
+      error(err?.message || 'Backup verification failed')
       return false
+    } finally {
+      setIsVerifying(false)
     }
   }, [electron, success, error])
 
-  const verifyAllBackups = useCallback(async (): Promise<{ valid: number; corrupted: number }> => {
-    if (!electron.isReady) {
-      return { valid: 0, corrupted: 0 }
-    }
+  // ── Verify all ──
 
+  const verifyAllBackups = useCallback(async (): Promise<{ valid: number; corrupted: number }> => {
+    if (!electron.isReady) return { valid: 0, corrupted: 0 }
+
+    setIsVerifying(true)
     let valid = 0
     let corrupted = 0
 
-    for (const backup of backups) {
-      const isValid = await verifyBackup(backup.id)
-      if (isValid) {
-        valid++
-      } else {
-        corrupted++
-      }
+    for (const b of backups) {
+      const isValid = await verifyBackup(b.id)
+      if (isValid) valid++
+      else corrupted++
     }
 
+    setIsVerifying(false)
     info(`Verification complete: ${valid} valid, ${corrupted} corrupted`)
     return { valid, corrupted }
   }, [electron, info, backups, verifyBackup])
 
-  const updateConfig = useCallback(async (newConfig: Partial<BackupConfig>): Promise<boolean> => {
-    try {
-      const updatedConfig = { ...config, ...newConfig }
-      setConfig(updatedConfig)
-      
-      // If maxBackups changed, delete old backups
-      if (newConfig.maxBackups !== undefined) {
-        await deleteOldBackups()
-      }
+  // ── Export ──
 
-      success('Backup configuration updated')
-      return true
-    } catch (err) {
-      console.error('Failed to update backup config:', err)
-      error('Failed to update backup configuration')
-      return false
-    }
-  }, [config, deleteOldBackups, success, error])
-
-  const exportBackup = useCallback(async (backupId: string, format: 'json' | 'csv' | 'pdf' = 'json'): Promise<boolean> => {
-    if (!electron.isReady) {
-      return false
-    }
+  const exportBackup = useCallback(async (backupId: string): Promise<boolean> => {
+    if (!electron.isReady) return false
 
     try {
-      const backup = backups.find(b => b.id === backupId)
-      if (!backup) {
-        error('Backup not found')
-        return false
+      const result = await electron.exportBackup(backupId)
+      if (result?.success) {
+        success('Backup exported successfully')
+        return true
       }
-
-      const options = {
-        defaultPath: `backup-${dayjs(backup.timestamp).format('YYYY-MM-DD-HH-mm')}.${format}`,
-        filters: [
-          { name: format.toUpperCase(), extensions: [format] },
-        ],
+      // Cancelled by user or failed
+      if (result?.error && result.error !== 'Export cancelled') {
+        error(result.error)
       }
-
-      const savePath = await electron.saveFile(options)
-      if (!savePath) {
-        return false
-      }
-
-      // In a real implementation, this would export the backup
-      success(`Backup exported as ${format.toUpperCase()}`)
-      return true
-    } catch (err) {
+      return false
+    } catch (err: any) {
       console.error('Failed to export backup:', err)
-      error('Failed to export backup')
+      error(err?.message || 'Failed to export backup')
       return false
     }
-  }, [electron, success, error, backups])
+  }, [electron, success, error])
 
-  const formatDate = useCallback((date: Date): string => {
-    return dayjs(date).format('YYYY-MM-DD HH:mm')
-  }, [])
+  // ── Import ──
 
-  // Auto-backup interval
-  useEffect(() => {
-    if (!config.autoBackup || config.backupInterval <= 0) {
-      return
+  const importBackup = useCallback(async (): Promise<boolean> => {
+    if (!electron.isReady) return false
+
+    setIsImporting(true)
+    try {
+      const result = await electron.importBackup()
+      if (result?.success) {
+        success('Backup imported successfully')
+        await refresh()
+        return true
+      }
+      if (result?.error && result.error !== 'Import cancelled') {
+        error(result.error)
+      }
+      return false
+    } catch (err: any) {
+      console.error('Failed to import backup:', err)
+      error(err?.message || 'Failed to import backup')
+      return false
+    } finally {
+      setIsImporting(false)
     }
+  }, [electron, success, error, refresh])
 
-    const interval = setInterval(() => {
-      createBackup(false)
-    }, config.backupInterval * 60 * 60 * 1000)
+  // ── Derived values ──
 
-    return () => clearInterval(interval)
-  }, [config.autoBackup, config.backupInterval, createBackup])
+  const latestBackup = backups.length > 0 ? backups[0] : null
+  const oldestBackup = backups.length > 0 ? backups[backups.length - 1] : null
+  const missingBackups = backups.filter(b => b.exists === false)
+  const verifiedCount = backups.filter(b => b.verified === true).length
+  const failedCount = backups.filter(b => b.verified === false).length
 
   return {
     // State
     backups,
     stats,
-    config,
     isCreatingBackup,
     isRestoring,
-    verificationProgress,
-    
+    isVerifying,
+    isImporting,
+
     // Actions
     createBackup,
     restoreBackup,
     deleteBackup,
-    deleteOldBackups,
     verifyBackup,
     verifyAllBackups,
-    updateConfig,
     exportBackup,
+    importBackup,
+    refresh,
     loadBackups,
-    
+
     // Utility
     formatFileSize,
     formatDate,
+
+    // Derived
     hasBackups: backups.length > 0,
-    latestBackup: backups.length > 0 ? backups[0] : null,
-    oldestBackup: backups.length > 0 ? backups[backups.length - 1] : null,
-    
-    // Derived values
-    backupHealth: {
-      total: backups.length,
-      corrupted: backups.filter(b => b.isCorrupted).length,
-      healthy: backups.filter(b => !b.isCorrupted).length,
-      lastVerified: backups.length > 0 ? backups[0].timestamp : null,
-    },
+    latestBackup,
+    oldestBackup,
+    missingBackups,
+    verifiedCount,
+    failedCount,
   }
 }

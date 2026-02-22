@@ -1,7 +1,8 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Search, Bell, HelpCircle, Sun, Moon, Menu, X, Filter, CheckSquare, Target, FileText, Repeat, Tag } from 'lucide-react'
+import { addDays, endOfDay, formatDistanceToNowStrict, isBefore, isSameDay, isThisMonth, isThisWeek, parseISO, startOfToday } from 'date-fns'
+import { Search, Bell, HelpCircle, Sun, Moon, Menu, X, Filter, CheckSquare, Target, FileText, Repeat, Tag, AlertOctagon, Clock3, CalendarClock, RefreshCw, Database, Rocket } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -22,8 +23,11 @@ import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { useStore } from '@/store'
 import { useElectron } from '@/hooks/use-electron'
+import { useTheme } from '@/components/theme-provider'
 import { cn } from '@/lib/utils'
-import { calculateDailyProgress } from '@/lib/progress'
+import { useTodayAnalyticsProductivity } from '@/hooks/use-today-analytics-productivity'
+import { database, getLocalDateString, type Review } from '@/lib/database'
+import { isTaskPausedOnDate } from '@/lib/daily-reset'
 
 interface HeaderProps {
   sidebarCollapsed: boolean
@@ -50,18 +54,131 @@ interface Note {
   updated_at: string
 }
 
+type AlertPriority = 'critical' | 'high' | 'medium'
+type AlertCategory = 'tasks' | 'habits' | 'goals' | 'reviews' | 'sync' | 'backup' | 'system'
+
+interface HeaderNotificationItem {
+  id: string
+  title: string
+  message: string
+  type: 'info' | 'success' | 'warning' | 'error'
+  time: string
+  read: boolean
+  priority: AlertPriority
+  category: AlertCategory
+  route?: string
+  source: 'store' | 'derived'
+  sortKey: number
+}
+
+const PRIORITY_RANK: Record<AlertPriority, number> = {
+  critical: 3,
+  high: 2,
+  medium: 1,
+}
+
+const toDateSafe = (value: string | null | undefined): Date | null => {
+  if (!value) return null
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return new Date(`${value}T00:00:00`)
+  }
+  const parsed = parseISO(value)
+  if (!Number.isNaN(parsed.getTime())) return parsed
+  const fallback = new Date(value)
+  return Number.isNaN(fallback.getTime()) ? null : fallback
+}
+
+const relativeTime = (value: string | null | undefined): string => {
+  const parsed = toDateSafe(value)
+  if (!parsed) return 'Now'
+  return `${formatDistanceToNowStrict(parsed, { addSuffix: true })}`
+}
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const isCurrentPeriodReviewCompleted = (review: Review | null | undefined, type: 'daily' | 'weekly' | 'monthly') => {
+  if (!review || review.status !== 'completed') return false
+  const periodDate = toDateSafe(review.period_end)
+  if (!periodDate) return false
+  if (type === 'daily') return isSameDay(periodDate, new Date())
+  if (type === 'weekly') return isThisWeek(periodDate, { weekStartsOn: 1 })
+  return isThisMonth(periodDate)
+}
+
+const toDayKey = (value: string | null | undefined): string => {
+  if (!value) return getLocalDateString(new Date())
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  const parsed = toDateSafe(value)
+  return parsed ? getLocalDateString(parsed) : getLocalDateString(new Date(value))
+}
+
+const isSkippedOrEmptyEntry = (entry: { progress?: number | null; status?: string | null }): boolean => {
+  const status = entry.status || 'pending'
+  const progress = entry.progress ?? 0
+  return status === 'skipped' || (progress <= 0 && status !== 'completed')
+}
+
+const isTaskOverdueForToday = (task: any, todayKey: string): boolean => {
+  if (!task?.due_date) return false
+
+  const dueKey = toDayKey(task.due_date)
+  if (dueKey >= todayKey) return false
+
+  const createdKey = toDayKey(task.created_at)
+  if (createdKey > dueKey) return false
+  if ((task.duration_type || 'today') !== 'continuous' && createdKey !== dueKey) return false
+
+  if (isTaskPausedOnDate(task, parseISO(`${dueKey}T00:00:00`))) return false
+
+  const dayState = task.daily_progress?.[dueKey]
+  const status = dayState?.status ?? 'pending'
+  const progress = dayState?.progress ?? 0
+
+  return isSkippedOrEmptyEntry({ status, progress })
+}
+
 export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const electron = useElectron()
-  const { theme, toggleTheme, notifications, userProfile, tasks, habits, goals, syncEnabled, syncStatus } = useStore()
+  const { theme, setTheme } = useTheme()
+  const {
+    notifications,
+    userProfile,
+    habits,
+    goals,
+    syncEnabled,
+    syncInterval,
+    lastSync,
+    syncStatus,
+    markAsRead,
+    markAllAsRead,
+    clearNotifications,
+    tasks,
+  } = useStore()
+  const todayProductivity = useTodayAnalyticsProductivity()
   
   const [searchQuery, setSearchQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const [latestAppUpdate, setLatestAppUpdate] = useState<any | null>(null)
+  const appUpdateSubscribed = useRef(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const resultsRef = useRef<HTMLDivElement>(null)
 
-  const unreadNotifications = notifications.filter(n => !n.read).length
+  const todayLocalKey = useMemo(() => {
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = `${now.getMonth() + 1}`.padStart(2, '0')
+    const day = `${now.getDate()}`.padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }, [])
+
+  const unreadStoreNotifications = notifications.filter(n => !n.read).length
+
+  const handleToggleTheme = useCallback(() => {
+    setTheme(theme === 'dark' ? 'light' : 'dark')
+  }, [setTheme, theme])
   
   // Fetch notes for search
   const { data: notes = [] } = useQuery<Note[]>({
@@ -92,10 +209,519 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
     staleTime: 30000, // Cache for 30 seconds
   })
 
-  // Calculate daily progress
-  const dailyProgress = useMemo(() => {
-    return calculateDailyProgress(tasks, habits)
-  }, [tasks, habits])
+  const { data: latestReviews } = useQuery<{ daily: Review | null; weekly: Review | null; monthly: Review | null }>({
+    queryKey: ['header-latest-reviews'],
+    queryFn: async () => {
+      const [daily, weekly, monthly] = await Promise.all([
+        database.getLatestReview('daily'),
+        database.getLatestReview('weekly'),
+        database.getLatestReview('monthly'),
+      ])
+      return { daily, weekly, monthly }
+    },
+    enabled: electron.isReady,
+    staleTime: 30000,
+    refetchInterval: 60000,
+  })
+
+  const { data: todayHabitCompletions = [] } = useQuery<Array<{ habit_id: string; completed: boolean }>>({
+    queryKey: ['header-habit-completions', todayLocalKey],
+    queryFn: async () => {
+      const completions = await database.getHabitCompletions(todayLocalKey, todayLocalKey)
+      return Array.isArray(completions) ? completions : []
+    },
+    enabled: electron.isReady,
+    staleTime: 20000,
+    refetchInterval: 60000,
+  })
+
+  const { data: backupStats } = useQuery<any>({
+    queryKey: ['header-backup-stats'],
+    queryFn: async () => {
+      if (!electron.isReady) return null
+      return electron.getBackupStats()
+    },
+    enabled: electron.isReady,
+    staleTime: 30000,
+    refetchInterval: 60000,
+  })
+
+  useEffect(() => {
+    const electronApi = window.electronAPI as any
+    if (!electron.isReady || !electronApi?.onAppUpdate || appUpdateSubscribed.current) return
+    const handler = (_event: unknown, update: any) => {
+      setLatestAppUpdate(update)
+    }
+    electronApi.onAppUpdate(handler)
+    appUpdateSubscribed.current = true
+  }, [electron.isReady])
+
+  const derivedNotifications = useMemo<HeaderNotificationItem[]>(() => {
+    const now = new Date()
+    const todayStart = startOfToday()
+    const todayEnd = endOfDay(todayStart)
+    const upcomingWindowEnd = addDays(todayStart, 2)
+
+    const activeTasks = tasks.filter((task: any) => !task.deleted_at)
+    const overdueTasks = activeTasks.filter((task: any) => {
+      if ((task.progress || 0) === 100 || task.status === 'completed') return false
+      return isTaskOverdueForToday(task, todayLocalKey)
+    })
+    const dueSoonTasks = activeTasks.filter((task: any) => {
+      if (!task.due_date || task.status === 'completed' || task.status === 'skipped') return false
+      const due = toDateSafe(task.due_date)
+      return !!due && due >= todayStart && due <= upcomingWindowEnd
+    })
+    const dueTodayTasks = activeTasks.filter((task: any) => {
+      if (!task.due_date || task.status === 'completed' || task.status === 'skipped') return false
+      const due = toDateSafe(task.due_date)
+      return !!due && due >= todayStart && due <= todayEnd
+    })
+
+    const blockedTasks = activeTasks.filter((task: any) => task.status === 'blocked')
+
+    const activeGoals = goals.filter((goal: any) => !goal.deleted_at && goal.status === 'active')
+    const atRiskGoals = activeGoals.filter((goal: any) => {
+      if (!goal.target_date || (goal.progress ?? 0) >= 100) return false
+      const target = toDateSafe(goal.target_date)
+      return !!target && target >= todayStart && target <= addDays(todayStart, 7)
+    })
+
+    const todayName = now.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase()
+    const dayOfMonth = `${now.getDate()}`
+    const completedHabitIds = new Set(
+      todayHabitCompletions.filter((completion) => completion.completed).map((completion) => completion.habit_id)
+    )
+    const dueTodayHabits = habits.filter((habit: any) => {
+      if (habit.deleted_at) return false
+      if (habit.frequency === 'daily') return true
+      if (habit.frequency === 'weekly') {
+        return Array.isArray(habit.schedule)
+          ? habit.schedule.some((entry: string) => String(entry).toLowerCase() === todayName)
+          : false
+      }
+      if (habit.frequency === 'monthly') {
+        return Array.isArray(habit.schedule)
+          ? habit.schedule.some((entry: string) => String(entry) === dayOfMonth)
+          : false
+      }
+      return false
+    })
+    const incompleteDueHabits = dueTodayHabits.filter((habit: any) => !completedHabitIds.has(habit.id))
+
+    const pendingDailyReview = !isCurrentPeriodReviewCompleted(latestReviews?.daily, 'daily')
+    const pendingWeeklyReview = !isCurrentPeriodReviewCompleted(latestReviews?.weekly, 'weekly')
+    const pendingMonthlyReview = !isCurrentPeriodReviewCompleted(latestReviews?.monthly, 'monthly')
+
+    const syncStaleMinutes = lastSync ? Math.round((Date.now() - new Date(lastSync).getTime()) / 60000) : null
+    const syncStaleThreshold = Math.max(syncInterval * 3, 30)
+
+    const alerts: HeaderNotificationItem[] = []
+
+    if (overdueTasks.length > 0) {
+      alerts.push({
+        id: 'critical-overdue-tasks',
+        title: 'Overdue Tasks',
+        message: `${overdueTasks.length} task${overdueTasks.length === 1 ? '' : 's'} overdue and need attention.`,
+        type: 'error',
+        time: 'Now',
+        read: false,
+        priority: 'critical',
+        category: 'tasks',
+        route: '/tasks',
+        source: 'derived',
+        sortKey: Date.now(),
+      })
+    }
+
+    if (blockedTasks.length > 0) {
+      alerts.push({
+        id: 'high-blocked-tasks',
+        title: 'Blocked Tasks',
+        message: `${blockedTasks.length} blocked task${blockedTasks.length === 1 ? '' : 's'} slowing progress.`,
+        type: 'warning',
+        time: 'Now',
+        read: false,
+        priority: 'high',
+        category: 'tasks',
+        route: '/tasks',
+        source: 'derived',
+        sortKey: Date.now() - 1,
+      })
+    }
+
+    if (dueSoonTasks.length > 0) {
+      alerts.push({
+        id: 'high-due-soon',
+        title: 'Upcoming Deadlines',
+        message: `${dueSoonTasks.length} task${dueSoonTasks.length === 1 ? '' : 's'} due within 48 hours.`,
+        type: 'warning',
+        time: 'Soon',
+        read: false,
+        priority: 'high',
+        category: 'tasks',
+        route: '/tasks',
+        source: 'derived',
+        sortKey: Date.now() - 2,
+      })
+    }
+
+    if (dueTodayTasks.length > 0) {
+      alerts.push({
+        id: 'medium-due-today',
+        title: 'Task Reminders',
+        message: `${dueTodayTasks.length} task${dueTodayTasks.length === 1 ? '' : 's'} due today.`,
+        type: 'info',
+        time: 'Today',
+        read: false,
+        priority: 'medium',
+        category: 'tasks',
+        route: '/tasks',
+        source: 'derived',
+        sortKey: Date.now() - 3,
+      })
+    }
+
+    if (incompleteDueHabits.length > 0) {
+      alerts.push({
+        id: 'medium-habit-reminders',
+        title: 'Habit Reminders',
+        message: `${incompleteDueHabits.length} scheduled habit${incompleteDueHabits.length === 1 ? '' : 's'} still pending today.`,
+        type: 'info',
+        time: 'Today',
+        read: false,
+        priority: 'medium',
+        category: 'habits',
+        route: '/habits',
+        source: 'derived',
+        sortKey: Date.now() - 4,
+      })
+    }
+
+    if (atRiskGoals.length > 0) {
+      alerts.push({
+        id: 'high-goal-deadlines',
+        title: 'Goal Deadlines Approaching',
+        message: `${atRiskGoals.length} active goal${atRiskGoals.length === 1 ? '' : 's'} due within 7 days.`,
+        type: 'warning',
+        time: 'This week',
+        read: false,
+        priority: 'high',
+        category: 'goals',
+        route: '/goals',
+        source: 'derived',
+        sortKey: Date.now() - 5,
+      })
+    }
+
+    if (pendingDailyReview) {
+      alerts.push({
+        id: 'high-review-daily',
+        title: 'Daily Review Pending',
+        message: 'Your daily reflection is not completed yet.',
+        type: 'warning',
+        time: 'Today',
+        read: false,
+        priority: 'high',
+        category: 'reviews',
+        route: '/reviews',
+        source: 'derived',
+        sortKey: Date.now() - 6,
+      })
+    }
+
+    if (pendingWeeklyReview) {
+      alerts.push({
+        id: 'high-review-weekly',
+        title: 'Weekly Review Pending',
+        message: 'Weekly review for this week is still pending.',
+        type: 'warning',
+        time: 'This week',
+        read: false,
+        priority: 'high',
+        category: 'reviews',
+        route: '/reviews',
+        source: 'derived',
+        sortKey: Date.now() - 7,
+      })
+    }
+
+    if (pendingMonthlyReview) {
+      alerts.push({
+        id: 'high-review-monthly',
+        title: 'Monthly Review Pending',
+        message: 'Monthly review for this month is still pending.',
+        type: 'warning',
+        time: 'This month',
+        read: false,
+        priority: 'high',
+        category: 'reviews',
+        route: '/reviews',
+        source: 'derived',
+        sortKey: Date.now() - 8,
+      })
+    }
+
+    if (syncEnabled && syncStatus === 'error') {
+      alerts.push({
+        id: 'critical-sync-error',
+        title: 'Sync Error',
+        message: 'Cloud sync is failing. Check sync settings and connectivity.',
+        type: 'error',
+        time: 'Now',
+        read: false,
+        priority: 'critical',
+        category: 'sync',
+        route: '/settings?tab=sync',
+        source: 'derived',
+        sortKey: Date.now() - 9,
+      })
+    }
+
+    if (syncEnabled && syncStaleMinutes !== null && syncStaleMinutes > syncStaleThreshold) {
+      alerts.push({
+        id: 'high-sync-stale',
+        title: 'Sync Delayed',
+        message: `Last successful sync was ${syncStaleMinutes} minutes ago.`,
+        type: 'warning',
+        time: lastSync ? relativeTime(lastSync as any) : 'Unknown',
+        read: false,
+        priority: 'high',
+        category: 'sync',
+        route: '/settings?tab=sync',
+        source: 'derived',
+        sortKey: Date.now() - 10,
+      })
+    }
+
+    if (backupStats?.missingBackups > 0) {
+      alerts.push({
+        id: 'critical-backup-missing',
+        title: 'Backup Integrity Issue',
+        message: `${backupStats.missingBackups} backup file${backupStats.missingBackups === 1 ? '' : 's'} missing or inaccessible.`,
+        type: 'error',
+        time: 'Now',
+        read: false,
+        priority: 'critical',
+        category: 'backup',
+        route: '/backup',
+        source: 'derived',
+        sortKey: Date.now() - 11,
+      })
+    }
+
+    if (backupStats && backupStats.totalBackups === 0) {
+      alerts.push({
+        id: 'high-backup-none',
+        title: 'No Backups Found',
+        message: 'Create a backup to protect your data.',
+        type: 'warning',
+        time: 'Now',
+        read: false,
+        priority: 'high',
+        category: 'backup',
+        route: '/backup',
+        source: 'derived',
+        sortKey: Date.now() - 12,
+      })
+    }
+
+    if (backupStats?.newestBackup) {
+      const newestBackupDate = toDateSafe(backupStats.newestBackup)
+      if (newestBackupDate && isBefore(newestBackupDate, addDays(todayStart, -7))) {
+        alerts.push({
+          id: 'high-backup-stale',
+          title: 'Backup Outdated',
+          message: `Last backup was ${relativeTime(backupStats.newestBackup)}.`,
+          type: 'warning',
+          time: relativeTime(backupStats.newestBackup),
+          read: false,
+          priority: 'high',
+          category: 'backup',
+          route: '/backup',
+          source: 'derived',
+          sortKey: Date.now() - 13,
+        })
+      }
+    }
+
+    if (latestAppUpdate?.type === 'available') {
+      alerts.push({
+        id: `system-update-available-${latestAppUpdate.version || 'unknown'}`,
+        title: 'Major System Update Available',
+        message: `Version ${latestAppUpdate.version || 'new'} is available to download.`,
+        type: 'info',
+        time: 'Now',
+        read: false,
+        priority: 'high',
+        category: 'system',
+        source: 'derived',
+        sortKey: Date.now() - 14,
+      })
+    }
+
+    if (latestAppUpdate?.type === 'downloaded') {
+      alerts.push({
+        id: `system-update-ready-${latestAppUpdate.version || 'unknown'}`,
+        title: 'System Update Ready',
+        message: `Version ${latestAppUpdate.version || 'new'} downloaded. Restart to install.`,
+        type: 'success',
+        time: 'Now',
+        read: false,
+        priority: 'high',
+        category: 'system',
+        source: 'derived',
+        sortKey: Date.now() - 15,
+      })
+    }
+
+    if (latestAppUpdate?.type === 'error') {
+      alerts.push({
+        id: 'system-update-error',
+        title: 'System Update Error',
+        message: latestAppUpdate.error || 'Failed to check/download updates.',
+        type: 'error',
+        time: 'Now',
+        read: false,
+        priority: 'high',
+        category: 'system',
+        source: 'derived',
+        sortKey: Date.now() - 16,
+      })
+    }
+
+    return alerts
+  }, [tasks, goals, habits, todayHabitCompletions, latestReviews, syncEnabled, syncStatus, syncInterval, lastSync, backupStats, latestAppUpdate])
+
+  const dropdownNotifications = useMemo<HeaderNotificationItem[]>(() => {
+    const mappedStore: HeaderNotificationItem[] = notifications.map((notification, index) => ({
+      id: `store-${notification.id}`,
+      title: notification.title,
+      message: notification.message,
+      type: notification.type,
+      time: notification.time || 'Now',
+      read: notification.read,
+      priority:
+        notification.type === 'error'
+          ? 'critical' as AlertPriority
+          : notification.type === 'warning'
+            ? 'high' as AlertPriority
+            : 'medium' as AlertPriority,
+      category: 'system' as const,
+      route: notification.type === 'error' ? '/settings?tab=notifications' : undefined,
+      source: 'store' as const,
+      sortKey: Date.now() - (index + 200),
+    }))
+
+    return [...derivedNotifications, ...mappedStore]
+      .sort((a, b) => {
+        const priorityDiff = PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority]
+        if (priorityDiff !== 0) return priorityDiff
+        if (a.read !== b.read) return a.read ? 1 : -1
+        return b.sortKey - a.sortKey
+      })
+      .slice(0, 12)
+  }, [derivedNotifications, notifications])
+
+  const unreadNotifications = dropdownNotifications.filter((notification) => !notification.read).length
+
+  const handleNotificationClick = useCallback((notification: HeaderNotificationItem) => {
+    if (notification.source === 'store') {
+      const originalId = notification.id.replace(/^store-/, '')
+      if (originalId) {
+        markAsRead(originalId)
+      }
+    }
+
+    if (notification.route) {
+      navigate(notification.route)
+    }
+  }, [markAsRead, navigate])
+
+  const renderNotificationIcon = useCallback((notification: HeaderNotificationItem) => {
+    if (notification.priority === 'critical') {
+      return <AlertOctagon className="h-4 w-4 text-destructive" />
+    }
+    if (notification.category === 'sync') {
+      return <RefreshCw className="h-4 w-4 text-yellow-500" />
+    }
+    if (notification.category === 'backup') {
+      return <Database className="h-4 w-4 text-orange-500" />
+    }
+    if (notification.category === 'tasks' || notification.category === 'reviews') {
+      return <CalendarClock className="h-4 w-4 text-blue-500" />
+    }
+    if (notification.category === 'system') {
+      return <Rocket className="h-4 w-4 text-green-500" />
+    }
+    return <Clock3 className="h-4 w-4 text-muted-foreground" />
+  }, [])
+
+  const renderPriorityBadge = useCallback((priority: AlertPriority) => {
+    if (priority === 'critical') {
+      return <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-4">Critical</Badge>
+    }
+    if (priority === 'high') {
+      return <Badge variant="warning" className="text-[10px] px-1.5 py-0 h-4">High</Badge>
+    }
+    return <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">Info</Badge>
+  }, [])
+
+  const actionButtonClass = 'h-9 w-9 transition-colors hover:bg-green-500/10 hover:text-green-600 dark:hover:text-green-400'
+
+  const breadcrumbs = useMemo(() => {
+    const pathLabels: Record<string, string> = {
+      '/': 'Dashboard',
+      '/goals': 'Goals',
+      '/tasks': 'Tasks',
+      '/habits': 'Habits',
+      '/notes': 'Notes',
+      '/reviews': 'Reviews',
+      '/analytics': 'Analytics',
+      '/time': 'Time',
+      '/archive': 'Archive',
+      '/settings': 'Settings',
+      '/backup': 'Backup & Restore',
+      '/help-support': 'Help & Support',
+    }
+
+    const settingsTabLabels: Record<string, string> = {
+      profile: 'Profile',
+      notifications: 'Notifications',
+      preferences: 'Preferences',
+      data: 'Data Management',
+      privacy: 'Privacy & Security',
+      shortcuts: 'Keyboard Shortcuts',
+      help: 'Help & Support',
+      'help-support': 'Help & Support',
+    }
+
+    const items: Array<{ label: string; path?: string }> = [{ label: 'Progress OS' }]
+
+    if (location.pathname === '/backup') {
+      items.push({ label: 'Settings', path: '/settings' })
+      items.push({ label: 'Backup & Restore' })
+      return items
+    }
+
+    if (location.pathname === '/help-support') {
+      items.push({ label: 'Settings', path: '/settings' })
+      items.push({ label: 'Help & Support' })
+      return items
+    }
+
+    const baseLabel = pathLabels[location.pathname] || 'Dashboard'
+    items.push({ label: baseLabel, path: location.pathname === '/' ? undefined : location.pathname })
+
+    if (location.pathname === '/settings') {
+      const tab = new URLSearchParams(location.search).get('tab')
+      if (tab && tab !== 'profile') {
+        items.push({ label: settingsTabLabels[tab] || tab })
+      }
+    }
+
+    return items
+  }, [location.pathname, location.search])
 
   // Get user initials for avatar
   const userInitials = useMemo(() => {
@@ -295,6 +921,29 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
     return 'outline'
   }
 
+  const highlightSearchMatch = useCallback((value: string, query: string) => {
+    const safeValue = value || ''
+    const normalizedQuery = query.trim()
+    if (!normalizedQuery) return safeValue
+
+    const regex = new RegExp(`(${escapeRegExp(normalizedQuery)})`, 'ig')
+    const parts = safeValue.split(regex)
+
+    return parts.map((part, index) => {
+      const isMatch = part.toLowerCase() === normalizedQuery.toLowerCase()
+      if (!isMatch) return <span key={`${part}-${index}`}>{part}</span>
+
+      return (
+        <span
+          key={`${part}-${index}`}
+          className="rounded-sm bg-green-500/20 px-0.5 font-semibold text-green-700 dark:bg-green-500/25 dark:text-green-300"
+        >
+          {part}
+        </span>
+      )
+    })
+  }, [])
+
   return (
     <header className="sticky top-0 z-30 bg-background/95 backdrop-blur-md supports-[backdrop-filter]:bg-background/80 dark:bg-zinc-900/95 dark:supports-[backdrop-filter]:bg-zinc-900/90 shadow-md shadow-black/8 dark:shadow-black/20">
       <div className="flex h-16 items-center justify-between px-6">
@@ -304,16 +953,37 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
             variant="ghost"
             size="icon"
             onClick={onToggleSidebar}
-            className="h-9 w-9"
+            className="h-9 w-9 transition-colors hover:bg-green-500/10 hover:text-green-600 dark:hover:text-green-400"
           >
             {sidebarCollapsed ? <Menu className="h-5 w-5" /> : <X className="h-5 w-5" />}
           </Button>
 
           {/* Breadcrumb */}
           <div className="hidden md:flex items-center space-x-2 text-sm">
-            <span className="text-muted-foreground">Progress OS</span>
-            <span className="text-muted-foreground">/</span>
-            <span className="font-medium">Dashboard</span>
+            {breadcrumbs.map((crumb, index) => {
+              const isFirst = index === 0
+              const isLast = index === breadcrumbs.length - 1
+              const clickable = !isFirst && !isLast && !!crumb.path
+
+              return (
+                <div key={`${crumb.label}-${index}`} className="flex items-center space-x-2">
+                  {index > 0 && <span className="text-muted-foreground">/</span>}
+                  {clickable ? (
+                    <button
+                      type="button"
+                      onClick={() => navigate(crumb.path!)}
+                      className="text-muted-foreground hover:text-green-600 dark:hover:text-green-400 transition-colors"
+                    >
+                      {crumb.label}
+                    </button>
+                  ) : (
+                    <span className={cn(isLast ? 'font-medium text-foreground' : 'text-muted-foreground')}>
+                      {crumb.label}
+                    </span>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
 
@@ -351,18 +1021,18 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
             {searchOpen && searchQuery.trim() && (
               <div 
                 ref={resultsRef}
-                className="absolute top-full left-0 right-0 mt-2 bg-popover/95 backdrop-blur-md rounded-lg shadow-xl shadow-black/20 border border-green-500/10 dark:bg-zinc-900/95 dark:border-green-500/10 overflow-hidden z-50"
+                className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-zinc-950 backdrop-blur-sm rounded-lg shadow-lg border border-border/60 overflow-hidden z-50"
               >
                 {searchResults.length > 0 ? (
-                  <div className="max-h-[360px] overflow-y-auto py-1">
+                  <div className="max-h-96 overflow-y-auto py-1">
                     {searchResults.map((result, index) => (
                       <div
                         key={`${result.type}-${result.id}`}
                         className={cn(
                           "flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors duration-150",
                           index === selectedIndex 
-                            ? "bg-accent/60 dark:bg-accent/40" 
-                            : "hover:bg-accent/40 dark:hover:bg-accent/20"
+                            ? "bg-green-500/12" 
+                            : "hover:bg-green-500/8"
                         )}
                         onClick={() => handleSelectResult(result)}
                         onMouseEnter={() => setSelectedIndex(index)}
@@ -375,7 +1045,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                         {/* Content */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="font-medium truncate">{result.title}</span>
+                            <span className="font-medium truncate">{highlightSearchMatch(result.title, searchQuery)}</span>
                             <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 flex-shrink-0">
                               {getTypeLabel(result.type)}
                             </Badge>
@@ -392,7 +1062,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                                 <Tag className="h-3 w-3" />
                                 <span className="truncate max-w-[120px]">
-                                  {result.tags.slice(0, 2).join(', ')}
+                                  {highlightSearchMatch(result.tags.slice(0, 2).join(', '), searchQuery)}
                                   {result.tags.length > 2 && ` +${result.tags.length - 2}`}
                                 </span>
                               </div>
@@ -410,7 +1080,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                     ))}
                   </div>
                 ) : (
-                  <div className="px-4 py-8 text-center">
+                  <div className="px-4 py-8 text-center rounded-md bg-muted/30 dark:bg-zinc-900/50 my-2 mx-2">
                     <Search className="h-8 w-8 mx-auto mb-2 text-muted-foreground/50" />
                     <p className="text-sm text-muted-foreground">No results found</p>
                     <p className="text-xs text-muted-foreground/70 mt-1">
@@ -421,18 +1091,18 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                 
                 {/* Footer hint */}
                 {searchResults.length > 0 && (
-                  <div className="px-3 py-2 border-t border-border/30 dark:border-zinc-700/50 bg-secondary/30 dark:bg-zinc-800/50">
+                  <div className="px-3 py-2 border-t border-border/40 bg-muted/30 dark:bg-zinc-900/40 dark:border-border/25">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <div className="flex items-center gap-2">
-                        <kbd className="px-1.5 py-0.5 rounded bg-secondary/50 dark:bg-zinc-800">↑↓</kbd>
+                        <kbd className="px-1.5 py-0.5 rounded bg-secondary/40 dark:bg-zinc-800/60 border border-border/30 dark:border-border/20">↑↓</kbd>
                         <span>Navigate</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <kbd className="px-1.5 py-0.5 rounded bg-secondary/50 dark:bg-zinc-800">↵</kbd>
+                        <kbd className="px-1.5 py-0.5 rounded bg-secondary/40 dark:bg-zinc-800/60 border border-border/30 dark:border-border/20">↵</kbd>
                         <span>Select</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <kbd className="px-1.5 py-0.5 rounded bg-secondary/50 dark:bg-zinc-800">Esc</kbd>
+                        <kbd className="px-1.5 py-0.5 rounded bg-secondary/40 dark:bg-zinc-800/60 border border-border/30 dark:border-border/20">Esc</kbd>
                         <span>Close</span>
                       </div>
                     </div>
@@ -452,8 +1122,8 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={toggleTheme}
-                  className="h-9 w-9"
+                  onClick={handleToggleTheme}
+                  className={actionButtonClass}
                 >
                   {theme === 'dark' ? (
                     <Sun className="h-5 w-5" />
@@ -469,59 +1139,111 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
           </TooltipProvider>
 
           {/* Filter Button */}
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-9 w-9 relative">
-                  <Filter className="h-5 w-5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Filters</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          <DropdownMenu>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className={cn(actionButtonClass, 'relative')}>
+                      <Filter className="h-5 w-5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Filters</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            <DropdownMenuContent align="end" className="w-64 border-slate-200 bg-white text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 p-2">
+              <DropdownMenuLabel className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Open Filters</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/tasks')}>Tasks</DropdownMenuItem>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/habits')}>Habits</DropdownMenuItem>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/goals')}>Goals</DropdownMenuItem>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/notes')}>Notes</DropdownMenuItem>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/analytics')}>Analytics</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => {
+                setSearchOpen(true)
+                searchInputRef.current?.focus()
+              }} className="rounded-xl border border-border/60 bg-white px-3 py-3 shadow-sm transition-all duration-200 hover:bg-green-500/5 hover:shadow-md focus:bg-green-500/8 dark:bg-zinc-900 dark:hover:bg-green-500/10">
+                <div className="flex w-full items-start gap-3">
+                  <div className="mt-0.5 rounded-lg bg-green-500/12 p-1.5 text-green-600 dark:bg-green-500/20 dark:text-green-300">
+                    <Search className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-slate-900 dark:text-zinc-100">Focus Search</span>
+                      <kbd className="inline-flex h-5 items-center rounded border border-green-500/25 bg-green-500/8 px-1.5 text-[10px] font-medium text-green-700 dark:text-green-300">⌘K</kbd>
+                    </div>
+                    <span className="mt-0.5 block text-xs leading-relaxed text-slate-600 dark:text-zinc-400">Quickly find tasks, habits, goals, and notes with smart match highlighting.</span>
+                  </div>
+                </div>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           {/* Notifications */}
-          <DropdownMenu>
+          <DropdownMenu onOpenChange={(open) => {
+            if (open && unreadStoreNotifications > 0) {
+              markAllAsRead()
+            }
+          }}>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-9 w-9 relative">
+              <Button variant="ghost" size="icon" className={cn(actionButtonClass, 'relative')}>
                 <Bell className="h-5 w-5" />
                 {unreadNotifications > 0 && (
-                  <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-xs font-bold text-white">
+                  <span className="absolute top-0 right-0 text-[11px] font-bold leading-none text-black dark:text-white">
                     {unreadNotifications}
                   </span>
                 )}
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-80">
-              <DropdownMenuLabel>Notifications</DropdownMenuLabel>
+            <DropdownMenuContent align="end" className="w-[22rem] border-slate-200 bg-white text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 p-2">
+              <DropdownMenuLabel className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Notifications</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {notifications.slice(0, 5).map((notification) => (
-                <DropdownMenuItem key={notification.id} className="py-3">
+              {dropdownNotifications.map((notification) => (
+                <DropdownMenuItem
+                  key={notification.id}
+                  className={cn(
+                    'rounded-lg px-3 py-3 focus:bg-slate-100',
+                    notification.priority === 'critical' && 'bg-red-50/80'
+                  )}
+                  onClick={() => handleNotificationClick(notification)}
+                >
                   <div className="flex items-start space-x-3">
-                    <div className={cn(
-                      "mt-1 h-2 w-2 rounded-full",
-                      notification.type === 'success' && "bg-status-completed",
-                      notification.type === 'warning' && "bg-status-paused",
-                      notification.type === 'info' && "bg-primary",
-                      notification.type === 'error' && "bg-destructive",
-                    )} />
+                    <div className="mt-0.5">
+                      {renderNotificationIcon(notification)}
+                    </div>
                     <div className="flex-1">
-                      <p className="text-sm font-medium">{notification.title}</p>
-                      <p className="text-xs text-muted-foreground">{notification.message}</p>
-                      <span className="text-xs text-muted-foreground">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium leading-5">{notification.title}</p>
+                        {renderPriorityBadge(notification.priority)}
+                      </div>
+                      <p className="text-xs text-slate-600">{notification.message}</p>
+                      <span className="text-xs text-slate-500">
                         {notification.time}
                       </span>
                     </div>
                   </div>
                 </DropdownMenuItem>
               ))}
+              {dropdownNotifications.length === 0 && (
+                <div className="py-6 px-3 text-center text-sm text-slate-600">No active alerts</div>
+              )}
               {notifications.length > 5 && (
                 <>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem className="text-center text-sm font-medium text-primary">
+                  <DropdownMenuItem className="rounded-md text-center text-sm font-medium text-primary focus:bg-slate-100" onClick={() => navigate('/settings?tab=notifications')}>
                     View all notifications
+                  </DropdownMenuItem>
+                </>
+              )}
+              {notifications.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={clearNotifications} className="rounded-md text-destructive focus:bg-slate-100 focus:text-destructive">
+                    Clear notifications
                   </DropdownMenuItem>
                 </>
               )}
@@ -532,7 +1254,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-9 w-9">
+                <Button variant="ghost" size="icon" className={actionButtonClass} onClick={() => navigate('/help-support')}>
                   <HelpCircle className="h-5 w-5" />
                 </Button>
               </TooltipTrigger>
@@ -554,8 +1276,8 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                 </Avatar>
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-64">
-              <div className="px-2 py-3">
+            <DropdownMenuContent align="end" className="w-64 border-slate-200 bg-white text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 p-2">
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
                 <div className="flex items-center gap-3">
                   <Avatar className="h-10 w-10">
                     <AvatarImage src={userProfile.avatar} />
@@ -565,33 +1287,36 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                   </Avatar>
                   <div className="flex-1">
                     <p className="text-sm font-medium">{userProfile.name || 'User'}</p>
-                    <p className="text-xs text-muted-foreground">{userProfile.email || 'Set up your profile'}</p>
+                    <p className="text-xs text-slate-600">{userProfile.email || 'Set up your profile'}</p>
                   </div>
                 </div>
                 <div className="mt-3 flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">Today's Progress</span>
+                  <span className="text-slate-600">Today Progress</span>
                   <span className={cn(
                     "font-medium",
-                    dailyProgress >= 80 ? "text-green-500" :
-                    dailyProgress >= 50 ? "text-yellow-500" :
-                    "text-muted-foreground"
+                    todayProductivity.overall >= 80 ? "text-green-500" :
+                    todayProductivity.overall >= 50 ? "text-yellow-500" :
+                    "text-green-500"
                   )}>
-                    {dailyProgress}%
+                    {todayProductivity.overall}%
                   </span>
                 </div>
               </div>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => navigate('/settings')}>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/settings')}>
                 Profile Settings
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate('/settings')}>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/settings')}>
                 Preferences
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate('/backup')}>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/backup')}>
                 Backup & Restore
               </DropdownMenuItem>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/help-support')}>
+                Help & Support
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-muted-foreground cursor-not-allowed">
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-slate-500 cursor-not-allowed">
                 Sign out (Local Mode)
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -617,17 +1342,14 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
               </span>
             </div>
             <span className="text-muted-foreground">•</span>
-            <Badge variant="secondary" className="font-normal">
+            <Badge variant="secondary" className="font-normal dark:bg-zinc-800 dark:text-zinc-100">
               {syncEnabled ? 'Cloud Sync' : 'Local Mode'}
             </Badge>
             <span className="text-muted-foreground">•</span>
             <span className={cn(
-              "font-medium",
-              dailyProgress >= 80 ? "text-green-500" :
-              dailyProgress >= 50 ? "text-yellow-500" :
-              "text-muted-foreground"
+              "font-medium text-green-500"
             )}>
-              Progress: {dailyProgress}%
+              Progress: {todayProductivity.overall}%
             </span>
           </div>
         </div>

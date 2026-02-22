@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   restoreBackup: (backupId: string) => ipcRenderer.invoke('backup:restore', backupId),
   listBackups: () => ipcRenderer.invoke('backup:list'),
   deleteBackup: (backupId: string) => ipcRenderer.invoke('backup:delete', backupId),
+  verifyBackup: (backupId: string) => ipcRenderer.invoke('backup:verify', backupId),
+  getBackupStats: () => ipcRenderer.invoke('backup:stats'),
+  exportBackup: (backupId: string) => ipcRenderer.invoke('backup:export', backupId),
+  importBackup: () => ipcRenderer.invoke('backup:import'),
   
   // Export operations
   exportData: (format: 'json' | 'csv' | 'pdf') => 
@@ -48,6 +52,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPlatform: () => process.platform,
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
   relaunch: () => ipcRenderer.invoke('app:relaunch'),
+  resetAllData: () => ipcRenderer.invoke('app:resetAllData'),
   
   // Sync operations
   syncStart: () => ipcRenderer.invoke('sync:start'),
@@ -61,6 +66,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getUndoStack: () => ipcRenderer.invoke('undo:stack'),
   clearHistory: () => ipcRenderer.invoke('undo:clear'),
   
+  // Feedback
+  submitFeedback: (payload: any) => ipcRenderer.invoke('feedback:submit', payload),
+  retryFailedFeedback: () => ipcRenderer.invoke('feedback:retryFailed'),
+  getFeedbackQueueCount: () => ipcRenderer.invoke('feedback:queueCount'),
+  verifyFeedbackConfig: () => ipcRenderer.invoke('feedback:verifyConfig'),
+
   // Window operations
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: () => ipcRenderer.invoke('window:maximize'),
@@ -151,6 +162,12 @@ declare global {
       getUndoStack: () => Promise<any>;
       clearHistory: () => Promise<void>;
       
+      // Feedback
+      submitFeedback: (payload: any) => Promise<any>;
+      retryFailedFeedback: () => Promise<any>;
+      getFeedbackQueueCount: () => Promise<number>;
+      verifyFeedbackConfig: () => Promise<{ configured: boolean; transport: string; details: string }>;
+
       // Window
       minimizeWindow: () => Promise<void>;
       maximizeWindow: () => Promise<void>;

@@ -1,16 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   Card, 
   CardContent, 
   CardHeader, 
-  CardTitle, 
-  CardDescription,
-  CardFooter
+  CardTitle
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { 
   Select, 
@@ -29,47 +26,45 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import {
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { 
   Plus, 
-  Filter, 
   Search, 
-  MoreVertical, 
   FileText,
   Calendar,
   Target,
   Edit,
-  Trash2,
-  Eye,
   X,
   BookOpen,
   Bookmark,
   Smile,
-  Type,
-  Save,
   Clock,
   Tag,
-  Download,
-  Upload
+  Eye,
+  Archive,
 } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
-import { useElectron } from '@/hooks/use-electron'
 import { useToaster } from '@/hooks/use-toaster'
 import { useUndoRedo } from '@/hooks/use-undo-redo'
-import { cn } from '@/lib/utils'
 import { database } from '@/lib/database'
+import { cn } from '@/lib/utils'
+import { RichTextEditor } from '@/components/rich-text-editor'
+import { ContextTipsDialog } from '@/components/context-tips-dialog'
 
 interface Note {
   id: string
@@ -121,8 +116,314 @@ interface NoteStats {
   withTags: number;
 }
 
+interface NoteFormErrors {
+  title?: string;
+  content?: string;
+  type?: string;
+}
+
+// Mood options
+const moodOptions = [
+  { value: 'happy', label: '😊 Happy', color: 'text-yellow-500' },
+  { value: 'excited', label: '🎉 Excited', color: 'text-orange-500' },
+  { value: 'neutral', label: '😐 Neutral', color: 'text-gray-500' },
+  { value: 'thoughtful', label: '🤔 Thoughtful', color: 'text-blue-500' },
+  { value: 'stressed', label: '😰 Stressed', color: 'text-red-500' },
+  { value: 'tired', label: '😴 Tired', color: 'text-purple-500' },
+  { value: 'grateful', label: '🙏 Grateful', color: 'text-green-500' },
+  { value: 'inspired', label: '💡 Inspired', color: 'text-cyan-500' },
+]
+
+const NOTES_TIPS_SECTIONS = [
+  {
+    title: 'Capture and Structure',
+    points: [
+      'Use clear titles so notes remain searchable and reusable later.',
+      'Choose note types intentionally (free, daily, weekly, goal, task) to support reviews.',
+      'Break long thoughts into short sections and bullet points for fast scanning.',
+    ],
+  },
+  {
+    title: 'Connect Notes to Action',
+    points: [
+      'Link notes to goals or tasks when insights should drive execution.',
+      'Turn repeated observations into concrete tasks during planning blocks.',
+      'Use consistent tags to group patterns across projects and weeks.',
+    ],
+  },
+  {
+    title: 'Reflection Habits',
+    points: [
+      'Capture quick daily notes and summarize key learnings weekly.',
+      'Track mood trends to identify focus triggers and blockers.',
+      'Archive old notes instead of deleting when historical context may still help.',
+    ],
+  },
+] as const
+
+const formatNoteType = (type: string) => {
+  switch (type) {
+    case 'free': return 'Free Note'
+    case 'daily': return 'Daily Journal'
+    case 'weekly': return 'Weekly Review'
+    case 'goal': return 'Goal Note'
+    case 'task': return 'Task Note'
+    default: return type
+  }
+}
+
+const formatMood = (mood: string | null) => {
+  if (!mood) return null
+  const moodOption = moodOptions.find(m => m.value === mood)
+  return moodOption ? moodOption.label : mood
+}
+
+const hasHtmlContent = (content: string) => /<\/?[a-z][\s\S]*>/i.test(content)
+
+const extractStructuredText = (content: string) => {
+  if (!content) return ''
+
+  if (!hasHtmlContent(content)) {
+    return content
+      .replace(/\r\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  }
+
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(content, 'text/html')
+  const root = doc.body.cloneNode(true) as HTMLElement
+
+  root.querySelectorAll('li').forEach((item) => {
+    const bulletPrefix = doc.createTextNode('• ')
+    item.insertBefore(bulletPrefix, item.firstChild)
+  })
+
+  return (root.innerText || root.textContent || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+const getSearchableContent = (content: string) => {
+  return extractStructuredText(content)
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+const getPreviewContent = (content: string, maxChars = 220) => {
+  const normalized = extractStructuredText(content)
+  if (normalized.length <= maxChars) return normalized
+  return `${normalized.substring(0, maxChars).trimEnd()}...`
+}
+
+function NoteCardGrid({ note, onEdit, onArchive, onView }: { 
+  note: NoteWithDetails, 
+  onEdit: (note: NoteWithDetails) => void,
+  onArchive: (id: string) => void,
+  onView: (note: NoteWithDetails) => void
+}) {
+  const truncatedContent = getPreviewContent(note.content)
+
+  return (
+    <div 
+      className="group flex flex-col h-full rounded-lg px-5 py-4 transition-shadow duration-200 border-0 shadow hover:shadow-lg bg-white dark:bg-slate-950"
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex-1 min-w-0">
+          <h3 className="font-semibold text-base truncate text-foreground">{note.title}</h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            {formatNoteType(note.type)} • {format(parseISO(note.updated_at), 'MMM d, yyyy')}
+          </p>
+        </div>
+        <div className="flex items-center gap-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            className="h-8 w-8" 
+            onClick={() => onEdit(note)}
+          >
+            <Edit className="h-4 w-4" />
+          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                className="h-8 w-8 text-orange-500 hover:text-orange-600 hover:bg-orange-500/10"
+              >
+                <Archive className="h-4 w-4" />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent className="bg-white dark:bg-card border border-border shadow-lg">
+              <AlertDialogHeader>
+                <AlertDialogTitle>Archive Note</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This note will be moved to the Archive. You can restore it later from the Archive section.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction 
+                  onClick={() => onArchive(note.id)}
+                  className="bg-orange-500 text-white hover:bg-orange-600"
+                >
+                  Archive
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+      </div>
+      
+      {/* Badges */}
+      <div className="flex items-center gap-1.5 flex-wrap mb-3">
+        <span className={cn(
+          "inline-flex items-center px-2 py-1 rounded-md text-xs font-medium",
+          note.type === 'free' && "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+          note.type === 'daily' && "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
+          note.type === 'weekly' && "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300",
+          note.type === 'goal' && "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+          note.type === 'task' && "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+        )}>
+          {formatNoteType(note.type)}
+        </span>
+        {note.mood && (
+          <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
+            <Smile className="mr-1 h-3 w-3" />
+            {formatMood(note.mood)}
+          </span>
+        )}
+        {note.goal_title && (
+          <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300">
+            <Target className="mr-1 h-3 w-3" />
+            {note.goal_title}
+          </span>
+        )}
+      </div>
+      
+      {/* Content */}
+      <div className="flex-1 mb-3">
+        <p className="text-sm text-muted-foreground whitespace-pre-line line-clamp-4 break-words">
+          {truncatedContent}
+        </p>
+      </div>
+      
+      {/* Tags */}
+      {note.tags && note.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-3">
+          {note.tags.slice(0, 4).map((tag: string) => (
+            <span key={tag} className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-muted text-muted-foreground">
+              {tag}
+            </span>
+          ))}
+          {note.tags.length > 4 && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-muted text-muted-foreground">
+              +{note.tags.length - 4}
+            </span>
+          )}
+        </div>
+      )}
+      
+      {/* Footer */}
+      <div className="flex items-center justify-between text-xs text-muted-foreground pt-3 border-t border-secondary/20">
+        <div className="flex items-center">
+          <Clock className="mr-1 h-3 w-3" />
+          {format(parseISO(note.updated_at), 'MMM d')}
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="h-7 px-2 text-xs bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20"
+          onClick={() => onView(note)}
+        >
+          <Eye className="mr-1 h-3 w-3" />
+          View
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function NoteCardList({ note, onEdit, onArchive, onView }: { 
+  note: NoteWithDetails, 
+  onEdit: (note: NoteWithDetails) => void,
+  onArchive: (id: string) => void,
+  onView: (note: NoteWithDetails) => void
+}) {
+  const truncatedContent = getPreviewContent(note.content, 140)
+
+  return (
+    <div 
+      className="group flex items-center justify-between px-4 py-2.5 transition-shadow duration-200 border-0 rounded-md bg-white dark:bg-slate-950 shadow hover:shadow-lg"
+      role="button"
+      tabIndex={0}
+    >
+      <div className="flex-1 min-w-0 cursor-pointer" onClick={() => onView(note)}>
+        <div className="font-medium truncate text-foreground">{note.title}</div>
+        <div className="text-xs text-muted-foreground flex items-center gap-2 mt-1">
+          <span className="truncate">{formatNoteType(note.type)}</span>
+          <span>•</span>
+          <span className="whitespace-nowrap">{format(parseISO(note.updated_at), 'MMM d')}</span>
+          {note.mood && (
+            <>
+              <span>•</span>
+              <span className="truncate">{formatMood(note.mood)}</span>
+            </>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground/80 whitespace-pre-line line-clamp-2 mt-1 break-words">
+          {truncatedContent}
+        </p>
+      </div>
+      
+      <div className="flex items-center gap-1 ml-4 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+        <Button 
+          variant="ghost" 
+          size="icon" 
+          className="h-7 w-7" 
+          onClick={() => onEdit(note)}
+        >
+          <Edit className="h-3.5 w-3.5" />
+        </Button>
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              className="h-7 w-7 text-orange-500 hover:text-orange-600 hover:bg-orange-500/10"
+            >
+              <Archive className="h-3.5 w-3.5" />
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent className="bg-white dark:bg-card border border-border shadow-lg">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Archive Note</AlertDialogTitle>
+              <AlertDialogDescription>
+                This note will be moved to the Archive. You can restore it later from the Archive section.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction 
+                onClick={() => onArchive(note.id)}
+                className="bg-orange-500 text-white hover:bg-orange-600"
+              >
+                Archive
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+    </div>
+  )
+}
+
 export default function Notes() {
-  const electron = useElectron()
   const { success, error: toastError } = useToaster()
   const queryClient = useQueryClient()
   const { executeCommand } = useUndoRedo()
@@ -132,7 +433,7 @@ export default function Notes() {
   const [selectedMood, setSelectedMood] = useState<string | 'all'>('all')
   const [selectedGoal, setSelectedGoal] = useState<string | 'all'>('all')
   const [sortBy, setSortBy] = useState<'updated' | 'created' | 'title'>('updated')
-  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list')
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid')
   const [isCreating, setIsCreating] = useState(false)
   const [isEditing, setIsEditing] = useState<string | null>(null)
   const [formData, setFormData] = useState<NoteFormData>({
@@ -146,52 +447,27 @@ export default function Notes() {
   })
   const [newTag, setNewTag] = useState('')
   const [activeTab, setActiveTab] = useState('all')
-  const [previewMode, setPreviewMode] = useState(false)
+  const [viewingNote, setViewingNote] = useState<NoteWithDetails | null>(null)
+  const [formErrors, setFormErrors] = useState<NoteFormErrors>({})
   
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-
-  // Mood options
-  const moodOptions = [
-    { value: 'happy', label: '😊 Happy', color: 'text-yellow-500' },
-    { value: 'excited', label: '🎉 Excited', color: 'text-orange-500' },
-    { value: 'neutral', label: '😐 Neutral', color: 'text-gray-500' },
-    { value: 'thoughtful', label: '🤔 Thoughtful', color: 'text-blue-500' },
-    { value: 'stressed', label: '😰 Stressed', color: 'text-red-500' },
-    { value: 'tired', label: '😴 Tired', color: 'text-purple-500' },
-    { value: 'grateful', label: '🙏 Grateful', color: 'text-green-500' },
-    { value: 'inspired', label: '💡 Inspired', color: 'text-cyan-500' },
-  ]
-
-  // Fetch notes
+  // Fetch notes using database service for consistent data handling
   const { data: notes, isLoading, error: notesError } = useQuery<NoteWithDetails[]>({
     queryKey: ['notes'],
     queryFn: async () => {
       try {
-        const notes = await electron.executeQuery<NoteWithDetails[]>(`
-          SELECT n.*, 
-                 g.title as goal_title,
-                 t.title as task_title
-          FROM notes n
-          LEFT JOIN goals g ON n.goal_id = g.id
-          LEFT JOIN tasks t ON n.task_id = t.id
-          WHERE n.deleted_at IS NULL
-          ORDER BY updated_at DESC
-        `)
-        return (Array.isArray(notes) ? notes : []).map((note: any) => {
-          let tags = []
-          try {
-            tags = typeof note.tags === 'string' ? JSON.parse(note.tags || '[]') : note.tags
-          } catch (e) {
-            console.warn('Failed to parse tags for note:', note.id)
-          }
-          return { ...note, tags: Array.isArray(tags) ? tags : [] }
-        })
+        const fetchedNotes = await database.getNotes()
+        return fetchedNotes.map((note: any) => ({
+          ...note,
+          tags: Array.isArray(note.tags) ? note.tags : []
+        }))
       } catch (error) {
         console.error('Failed to fetch notes:', error)
         throw error
       }
     },
-    enabled: electron.isReady,
+    // Notes fetch should work immediately - database service handles electron readiness
+    staleTime: 1000,
+    refetchOnWindowFocus: true,
   })
 
   // Fetch goals for dropdown
@@ -199,18 +475,13 @@ export default function Notes() {
     queryKey: ['goals-for-notes'],
     queryFn: async () => {
       try {
-        const goals = await electron.executeQuery<GoalForNote[]>(`
-          SELECT id, title FROM goals 
-          WHERE deleted_at IS NULL
-          ORDER BY title
-        `)
-        return Array.isArray(goals) ? goals : []
+        const allGoals = await database.getGoals()
+        return allGoals.map(g => ({ id: g.id, title: g.title }))
       } catch (error) {
         console.error('Failed to fetch goals:', error)
         return []
       }
     },
-    enabled: electron.isReady,
   })
 
   // Fetch tasks for dropdown
@@ -218,26 +489,23 @@ export default function Notes() {
     queryKey: ['tasks-for-notes'],
     queryFn: async () => {
       try {
-        const tasks = await electron.executeQuery<TaskForNote[]>(`
-          SELECT id, title FROM tasks 
-          WHERE deleted_at IS NULL
-          AND status != 'completed'
-          ORDER BY title
-        `)
-        return Array.isArray(tasks) ? tasks : []
+        const allTasks = await database.getTasks({ status: undefined })
+        return allTasks
+          .filter(t => t.status !== 'completed')
+          .map(t => ({ id: t.id, title: t.title }))
       } catch (error) {
         console.error('Failed to fetch tasks:', error)
         return []
       }
     },
-    enabled: electron.isReady,
   })
 
   // Filter and sort notes
   const filteredNotes = notes?.filter((note: NoteWithDetails) => {
+    const searchableContent = getSearchableContent(note.content).toLowerCase()
     const matchesSearch = searchQuery === '' || 
       note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      note.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      searchableContent.includes(searchQuery.toLowerCase()) ||
       note.tags.some((tag: string) => tag.toLowerCase().includes(searchQuery.toLowerCase()))
     
     const matchesType = selectedType === 'all' || note.type === selectedType
@@ -278,28 +546,15 @@ export default function Notes() {
   // Create note mutation
   const createNoteMutation = useMutation({
     mutationFn: async (noteData: NoteFormData) => {
-      const operations = [{
-        query: `
-          INSERT INTO notes (
-            id, title, content, type, mood, goal_id, task_id, tags,
-            created_at, updated_at, version
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-        `,
-        params: [
-          crypto.randomUUID(),
-          noteData.title,
-          noteData.content,
-          noteData.type,
-          noteData.mood || null,
-          noteData.goal_id || null,
-          noteData.task_id || null,
-          JSON.stringify(noteData.tags),
-          new Date().toISOString(),
-          new Date().toISOString(),
-        ]
-      }]
-      
-      return await electron.executeTransaction(operations)
+      return await database.createNote({
+        title: noteData.title,
+        content: noteData.content,
+        type: noteData.type,
+        mood: noteData.mood || undefined,
+        goal_id: noteData.goal_id || undefined,
+        task_id: noteData.task_id || undefined,
+        tags: noteData.tags,
+      })
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notes'] })
@@ -319,31 +574,20 @@ export default function Notes() {
   // Update note mutation
   const updateNoteMutation = useMutation({
     mutationFn: async ({ id, updates }: { id: string; updates: Partial<Note> }) => {
-      const operations = [{
-        query: `
-          UPDATE notes 
-          SET title = ?, content = ?, type = ?, mood = ?, 
-              goal_id = ?, task_id = ?, tags = ?, updated_at = ?, version = version + 1
-          WHERE id = ?
-        `,
-        params: [
-          updates.title,
-          updates.content,
-          updates.type,
-          updates.mood,
-          updates.goal_id,
-          updates.task_id,
-          JSON.stringify(updates.tags),
-          new Date().toISOString(),
-          id,
-        ]
-      }]
-      
-      return await electron.executeTransaction(operations)
+      return await database.updateNote(id, {
+        title: updates.title,
+        content: updates.content,
+        type: updates.type,
+        mood: updates.mood === undefined ? undefined : (updates.mood || null) as any,
+        goal_id: updates.goal_id === undefined ? undefined : (updates.goal_id || null) as any,
+        task_id: updates.task_id === undefined ? undefined : (updates.task_id || null) as any,
+        tags: updates.tags,
+      })
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notes'] })
       success('Note updated successfully')
+      setIsCreating(false)
       setIsEditing(null)
       resetForm()
     },
@@ -381,11 +625,12 @@ export default function Notes() {
       tags: [],
     })
     setNewTag('')
-    setPreviewMode(false)
+    setFormErrors({})
   }
 
   const handleEdit = (note: NoteWithDetails) => {
     setIsEditing(note.id)
+    setFormErrors({})
     setFormData({
       title: note.title,
       content: note.content,
@@ -395,16 +640,30 @@ export default function Notes() {
       task_id: note.task_id || '',
       tags: note.tags || [],
     })
+    setIsCreating(true)
+  }
+
+  const validateForm = () => {
+    const errors: NoteFormErrors = {}
+
+    if (!formData.title.trim()) {
+      errors.title = 'Please enter a note title.'
+    }
+
+    if (!formData.type) {
+      errors.type = 'Please select a note type.'
+    }
+
+    if (!getSearchableContent(formData.content).trim()) {
+      errors.content = 'Please add note content before saving.'
+    }
+
+    setFormErrors(errors)
+    return Object.keys(errors).length === 0
   }
 
   const handleSubmit = () => {
-    if (!formData.title.trim()) {
-      toastError('Please enter a note title')
-      return
-    }
-
-    if (!electron.isReady) {
-      toastError('System is not ready. Please try again.')
+    if (!validateForm()) {
       return
     }
 
@@ -418,28 +677,6 @@ export default function Notes() {
     }
   }
 
-  const handleQuickNote = () => {
-    const quickNote = {
-      title: format(new Date(), 'MMM d, yyyy - h:mm a'),
-      content: '',
-      type: 'free' as const,
-      mood: '',
-      goal_id: '',
-      task_id: '',
-      tags: ['quick-note'],
-    }
-    
-    setFormData(quickNote)
-    setIsCreating(true)
-    
-    // Focus the textarea after a brief delay
-    setTimeout(() => {
-      if (textareaRef.current) {
-        textareaRef.current.focus()
-      }
-    }, 100)
-  }
-
   const addTag = () => {
     if (newTag.trim() && !formData.tags.includes(newTag.trim())) {
       setFormData({
@@ -448,6 +685,17 @@ export default function Notes() {
       })
       setNewTag('')
     }
+
+    useEffect(() => {
+      const openCreateNote = () => {
+        setIsEditing(null)
+        resetForm()
+        setIsCreating(true)
+      }
+
+      window.addEventListener('app:new-note', openCreateNote as EventListener)
+      return () => window.removeEventListener('app:new-note', openCreateNote as EventListener)
+    }, [])
   }
 
   const removeTag = (tagToRemove: string) => {
@@ -455,93 +703,6 @@ export default function Notes() {
       ...formData,
       tags: formData.tags.filter(tag => tag !== tagToRemove),
     })
-  }
-
-  const formatNoteType = (type: string) => {
-    switch (type) {
-      case 'free': return 'Free Note'
-      case 'daily': return 'Daily Journal'
-      case 'weekly': return 'Weekly Review'
-      case 'goal': return 'Goal Note'
-      case 'task': return 'Task Note'
-      default: return type
-    }
-  }
-
-  const formatMood = (mood: string | null) => {
-    if (!mood) return null
-    const moodOption = moodOptions.find(m => m.value === mood)
-    return moodOption ? moodOption.label : mood
-  }
-
-  const exportNote = async (note: Note) => {
-    try {
-      const content = `# ${note.title}\n\n${note.content}\n\n---\nCreated: ${format(parseISO(note.created_at), 'PPP')}\nLast Updated: ${format(parseISO(note.updated_at), 'PPP')}\nTags: ${note.tags.join(', ')}`
-      
-      const options = {
-        defaultPath: `${note.title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.md`,
-        filters: [
-          { name: 'Markdown', extensions: ['md'] },
-          { name: 'Text', extensions: ['txt'] },
-        ],
-      }
-
-      const savePath = await electron.saveFile(options)
-      if (!savePath) return
-
-      // In a real implementation, you would save the file
-      success('Note exported successfully')
-    } catch (error) {
-      console.error('Failed to export note:', error)
-      toastError('Failed to export note')
-    }
-  }
-
-  const handleFormatText = (format: 'bold' | 'italic' | 'code' | 'list') => {
-    if (!textareaRef.current) return
-
-    const textarea = textareaRef.current
-    const start = textarea.selectionStart
-    const end = textarea.selectionEnd
-    const selectedText = formData.content.substring(start, end)
-    
-    let formattedText = selectedText
-    let newCursorPos = start
-
-    switch (format) {
-      case 'bold':
-        formattedText = `**${selectedText}**`
-        newCursorPos = start + 2
-        break
-      case 'italic':
-        formattedText = `*${selectedText}*`
-        newCursorPos = start + 1
-        break
-      case 'code':
-        formattedText = `\`${selectedText}\``
-        newCursorPos = start + 1
-        break
-      case 'list':
-        formattedText = selectedText.split('\n').map(line => `- ${line}`).join('\n')
-        newCursorPos = start + 2
-        break
-    }
-
-    const newContent = 
-      formData.content.substring(0, start) + 
-      formattedText + 
-      formData.content.substring(end)
-
-    setFormData({ ...formData, content: newContent })
-
-    // Restore cursor position
-    setTimeout(() => {
-      if (textareaRef.current) {
-        textareaRef.current.selectionStart = newCursorPos
-        textareaRef.current.selectionEnd = newCursorPos + selectedText.length
-        textareaRef.current.focus()
-      }
-    }, 0)
   }
 
   if (notesError) {
@@ -570,57 +731,84 @@ export default function Notes() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Notes</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-3xl font-bold">Notes</h1>
+            <ContextTipsDialog
+              title="Notes Tab Tips"
+              description="Guidance for capturing ideas, reflecting effectively, and turning notes into action."
+              sections={NOTES_TIPS_SECTIONS}
+              triggerLabel="Open notes tips"
+              onboardingKey="notes-tab-tips"
+            />
+          </div>
           <p className="text-muted-foreground">
             Capture thoughts, ideas, and reflections
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            onClick={handleQuickNote}
-            className="transition-all duration-300 hover:scale-105 active:scale-95"
+          <Dialog
+            open={isCreating}
+            onOpenChange={(open) => {
+              setIsCreating(open)
+              if (!open) {
+                setIsEditing(null)
+                resetForm()
+              }
+            }}
           >
-            <Plus className="mr-2 h-4 w-4" />
-            Quick Note
-          </Button>
-          <Dialog open={isCreating} onOpenChange={setIsCreating}>
             <DialogTrigger asChild>
-              <Button className="transition-all duration-300 hover:scale-105 active:scale-95 shadow-md hover:shadow-lg hover:bg-green-700">
+              <Button
+                className="transition-all duration-300 hover:scale-105 active:scale-95 shadow-md hover:shadow-lg hover:bg-green-700"
+                onClick={() => {
+                  setIsEditing(null)
+                  resetForm()
+                }}
+              >
                 <Plus className="mr-2 h-4 w-4" />
                 New Note
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-4xl bg-card">
-              <DialogHeader className="flex-shrink-0">
-                <DialogTitle>{isEditing ? 'Edit Note' : 'Create New Note'}</DialogTitle>
-                <DialogDescription>
+            <DialogContent className="max-w-6xl max-h-[95vh] bg-white dark:bg-slate-950 border-0 shadow-xl flex flex-col gap-0 m-2 p-6">
+              <DialogHeader className="flex-shrink-0 border-b border-gray-100 dark:border-gray-800 pb-4">
+                <DialogTitle className="text-2xl font-bold">{isEditing ? 'Edit Note' : 'Create New Note'}</DialogTitle>
+                <DialogDescription className="text-base mt-1">
                   Capture your thoughts, ideas, or reflections.
                 </DialogDescription>
               </DialogHeader>
               
-              <div className="flex-1 overflow-y-auto pr-2 -mr-2 scroll-smooth">
-                <div className="space-y-4 py-4">
+              <div className="flex-1 overflow-y-auto pr-4 -mr-4 scroll-smooth">
+                <div className="space-y-5 py-4">
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Note Title</label>
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Note Title</label>
                     <Input
                       placeholder="Note title..."
                       value={formData.title}
-                      onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                      className="bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15"
+                      onChange={(e) => {
+                        setFormData({ ...formData, title: e.target.value })
+                        if (formErrors.title) {
+                          setFormErrors((prev) => ({ ...prev, title: undefined }))
+                        }
+                      }}
+                      className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus-visible:ring-green-500/50 focus-visible:border-green-500 focus:border-green-500"
                     />
+                    {formErrors.title && (
+                      <p className="text-xs text-red-500">{formErrors.title}</p>
+                    )}
                   </div>
                   
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <label className="text-sm font-medium">Type</label>
+                      <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Type</label>
                       <Select
                         value={formData.type}
-                        onValueChange={(value: Note['type']) => 
+                        onValueChange={(value: Note['type']) => {
                           setFormData({ ...formData, type: value })
-                        }
+                          if (formErrors.type) {
+                            setFormErrors((prev) => ({ ...prev, type: undefined }))
+                          }
+                        }}
                       >
-                        <SelectTrigger className="bg-secondary/50 border-green-500/20 focus:ring-green-500/50 dark:border-green-500/15">
+                        <SelectTrigger className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus:ring-green-500/50 focus:border-green-500">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -631,17 +819,20 @@ export default function Notes() {
                           <SelectItem value="task">Task Note</SelectItem>
                         </SelectContent>
                       </Select>
+                      {formErrors.type && (
+                        <p className="text-xs text-red-500">{formErrors.type}</p>
+                      )}
                     </div>
                     
                     <div className="space-y-2">
-                      <label className="text-sm font-medium">Mood (Optional)</label>
+                      <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Mood (Optional)</label>
                       <Select
                         value={formData.mood || "none"}
                         onValueChange={(value) => 
                           setFormData({ ...formData, mood: value === "none" ? "" : value })
                         }
                       >
-                        <SelectTrigger className="bg-secondary/50 border-green-500/20 focus:ring-green-500/50 dark:border-green-500/15">
+                        <SelectTrigger className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus:ring-green-500/50 focus:border-green-500">
                           <SelectValue placeholder="How are you feeling?" />
                         </SelectTrigger>
                         <SelectContent>
@@ -658,21 +849,21 @@ export default function Notes() {
                   
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <label className="text-sm font-medium">Related Goal (Optional)</label>
+                      <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Related Goal (Optional)</label>
                       <Select
                         value={formData.goal_id || "none"}
                         onValueChange={(value) => 
                           setFormData({ ...formData, goal_id: value === "none" ? "" : value })
                         }
                       >
-                        <SelectTrigger className="bg-secondary/50 border-green-500/20 focus:ring-green-500/50 dark:border-green-500/15">
+                        <SelectTrigger className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus:ring-green-500/50 focus:border-green-500">
                           <SelectValue placeholder="Select a goal..." />
                         </SelectTrigger>
                         <SelectContent>
                         <SelectItem value="none">No Goal</SelectItem>
                           {goals?.map((goal: any) => (
                             <SelectItem key={goal.id} value={goal.id}>
-                              {goal.title}
+                              <span className="line-clamp-2">{goal.title}</span>
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -680,14 +871,14 @@ export default function Notes() {
                     </div>
                     
                     <div className="space-y-2">
-                      <label className="text-sm font-medium">Related Task (Optional)</label>
+                      <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Related Task (Optional)</label>
                       <Select
                         value={formData.task_id || "none"}
                         onValueChange={(value) => 
                           setFormData({ ...formData, task_id: value === "none" ? "" : value })
                         }
                       >
-                        <SelectTrigger className="bg-secondary/50 border-green-500/20 focus:ring-green-500/50 dark:border-green-500/15">
+                        <SelectTrigger className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus:ring-green-500/50 focus:border-green-500">
                           <SelectValue placeholder="Select a task..." />
                         </SelectTrigger>
                         <SelectContent>
@@ -702,83 +893,25 @@ export default function Notes() {
                     </div>
                   </div>
                   
-                  {/* Content editor with formatting toolbar */}
-                  <div className="space-y-3">
-                    {/* Formatting toolbar */}
-                    <div className="flex items-center gap-1 p-2 border border-green-500/20 rounded-lg dark:border-green-500/15">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleFormatText('bold')}
-                          title="Bold"
-                        >
-                          <span className="font-bold">B</span>
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleFormatText('italic')}
-                          title="Italic"
-                        >
-                          <span className="italic">I</span>
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleFormatText('code')}
-                          title="Code"
-                        >
-                          <code className="text-xs">{'<>'}</code>
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleFormatText('list')}
-                          title="Bullet List"
-                        >
-                          <span>•</span>
-                        </Button>
-                        <div className="flex-1"></div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setPreviewMode(!previewMode)}
-                        >
-                          {previewMode ? 'Edit' : 'Preview'}
-                        </Button>
-                      </div>
-                      
-                      {/* Content editor/preview */}
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium">Content</label>
-                        {previewMode ? (
-                          <div className="min-h-[200px] max-h-[300px] overflow-y-auto p-4 border border-green-500/20 rounded-lg prose prose-sm max-w-none dark:border-green-500/15">
-                            <h1>{formData.title}</h1>
-                            <div dangerouslySetInnerHTML={{ 
-                              __html: formData.content
-                                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                                .replace(/\*(.*?)\*/g, '<em>$1</em>')
-                                .replace(/`(.*?)`/g, '<code>$1</code>')
-                                .replace(/\n/g, '<br>')
-                            }} />
-                          </div>
-                        ) : (
-                          <Textarea
-                            ref={textareaRef}
-                            placeholder="Write your note here... (Markdown supported)"
-                            value={formData.content}
-                            onChange={(e) => setFormData({ ...formData, content: e.target.value })}
-                            rows={8}
-                            className="font-mono text-sm bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15 min-h-[200px] max-h-[300px]"
-                          />
-                        )}
-                      </div>
-                    </div>
+                  {/* Content editor with fixed toolbar + internal content scroll */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Content</label>
+                    <RichTextEditor
+                      value={formData.content}
+                      onChange={(content) => {
+                        setFormData({ ...formData, content })
+                        if (formErrors.content) {
+                          setFormErrors((prev) => ({ ...prev, content: undefined }))
+                        }
+                      }}
+                      placeholder="Write your note here..."
+                      className="h-[520px] bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800"
+                      autoSaveDelay={800}
+                    />
+                    {formErrors.content && (
+                      <p className="text-xs text-red-500">{formErrors.content}</p>
+                    )}
+                  </div>
                   
                   {/* Tags */}
                   <div className="space-y-2">
@@ -789,7 +922,7 @@ export default function Notes() {
                         value={newTag}
                         onChange={(e) => setNewTag(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && addTag()}
-                        className="bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15"
+                        className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus-visible:ring-green-500/50 focus:border-green-500"
                       />
                       <Button type="button" onClick={addTag}>
                         Add
@@ -816,19 +949,135 @@ export default function Notes() {
                 </div>
               </div>
               
-              <DialogFooter className="flex-shrink-0 border-t pt-4">
-                <Button variant="outline" onClick={() => {
-                  setIsCreating(false)
-                  setIsEditing(null)
-                  resetForm()
-                }}>
+              <DialogFooter className="flex-shrink-0 border-t border-gray-100 dark:border-gray-800 pt-4 mt-4 gap-2">
+                <Button 
+                  variant="outline"
+                  onClick={() => {
+                    setIsCreating(false)
+                    setIsEditing(null)
+                    resetForm()
+                  }}
+                  className="bg-transparent dark:bg-transparent border-green-500/30 text-green-600 dark:text-green-300 hover:bg-green-500/10 hover:border-green-500/50 transition-colors duration-200"
+                >
                   Cancel
                 </Button>
                 <Button 
                   onClick={handleSubmit}
-                  disabled={createNoteMutation.isPending || updateNoteMutation.isPending}
+                  disabled={
+                    createNoteMutation.isPending ||
+                    updateNoteMutation.isPending ||
+                    !formData.title.trim() ||
+                    !formData.type ||
+                    !getSearchableContent(formData.content).trim()
+                  }
                 >
                   {isEditing ? 'Update Note' : 'Create Note'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* View Note Modal */}
+          <Dialog open={!!viewingNote} onOpenChange={(open) => !open && setViewingNote(null)}>
+            <DialogContent className="max-w-6xl max-h-[95vh] bg-white dark:bg-slate-950 border-0 shadow-xl flex flex-col gap-0 m-2 p-6 overflow-hidden">
+              <DialogHeader className="flex-shrink-0 border-b border-gray-100 dark:border-gray-800 pb-4">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <DialogTitle className="text-3xl font-bold">{viewingNote?.title}</DialogTitle>
+                    <DialogDescription className="mt-3 flex items-center gap-2 text-base">
+                      {viewingNote && (
+                        <>
+                          <Badge className={cn(
+                            "border-0",
+                            viewingNote.type === 'free' && "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+                            viewingNote.type === 'daily' && "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
+                            viewingNote.type === 'weekly' && "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300",
+                            viewingNote.type === 'goal' && "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+                            viewingNote.type === 'task' && "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                          )}>
+                            {formatNoteType(viewingNote.type)}
+                          </Badge>
+                          <span className="text-muted-foreground">•</span>
+                          <span>{format(parseISO(viewingNote.created_at), 'PPP p')}</span>
+                        </>
+                      )}
+                    </DialogDescription>
+                  </div>
+                </div>
+              </DialogHeader>
+              
+              <div className="flex-1 overflow-y-auto pr-2 -mr-2">
+                {viewingNote && (
+                  <div className="space-y-6 py-4">
+                    {/* Metadata Badges */}
+                    <div className="flex flex-wrap gap-2">
+                      {viewingNote.mood && (
+                        <Badge className="px-3 py-1 bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300 border-0">
+                          <Smile className="mr-2 h-3.5 w-3.5" />
+                          {formatMood(viewingNote.mood)}
+                        </Badge>
+                      )}
+                      {viewingNote.goal_title && (
+                        <Badge className="px-3 py-1 bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 border-0">
+                          <Target className="mr-2 h-3.5 w-3.5" />
+                          {viewingNote.goal_title}
+                        </Badge>
+                      )}
+                      {viewingNote.task_title && (
+                        <Badge className="px-3 py-1 bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 border-0">
+                          <Bookmark className="mr-2 h-3.5 w-3.5" />
+                          {viewingNote.task_title}
+                        </Badge>
+                      )}
+                    </div>
+
+                    {/* Content */}
+                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                      <div className="font-sans text-base leading-relaxed p-4 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900">
+                        {hasHtmlContent(viewingNote.content) ? (
+                          <div
+                            className="break-words [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-6 [&_ol]:pl-6 [&_li]:my-1"
+                            dangerouslySetInnerHTML={{ __html: viewingNote.content }}
+                          />
+                        ) : (
+                          <div className="whitespace-pre-wrap break-words">{viewingNote.content}</div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Tags */}
+                    {viewingNote.tags && viewingNote.tags.length > 0 && (
+                      <div className="pt-4 border-t">
+                        <div className="flex flex-wrap gap-2">
+                          {viewingNote.tags.map(tag => (
+                            <Badge key={tag} variant="outline" className="text-xs">
+                              <Tag className="mr-1 h-3 w-3" />
+                              {tag}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              
+              <DialogFooter className="flex-shrink-0 border-t border-gray-100 dark:border-gray-800 pt-4 mt-4 gap-2">
+                <Button 
+                  variant="outline"
+                  onClick={() => setViewingNote(null)}
+                  className="border-green-500/30 text-green-600 dark:text-green-400 hover:bg-green-500/10 hover:border-green-500/50"
+                >
+                  Close
+                </Button>
+                <Button onClick={() => {
+                    if (viewingNote) {
+                        handleEdit(viewingNote)
+                        setViewingNote(null)
+                    }
+                }}>
+                    <Edit className="mr-2 h-4 w-4" />
+                    Edit Note
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -961,18 +1210,26 @@ export default function Notes() {
                 </SelectContent>
               </Select>
               
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 bg-gray-100/50 dark:bg-gray-800/30 rounded-lg p-1">
                 <Button
-                  variant={viewMode === 'list' ? 'default' : 'outline'}
+                  variant={viewMode === 'list' ? 'default' : 'ghost'}
                   size="sm"
                   onClick={() => setViewMode('list')}
+                  className={cn(
+                    "rounded-md",
+                    viewMode === 'list' ? '' : 'text-muted-foreground hover:text-foreground'
+                  )}
                 >
                   List
                 </Button>
                 <Button
-                  variant={viewMode === 'grid' ? 'default' : 'outline'}
+                  variant={viewMode === 'grid' ? 'default' : 'ghost'}
                   size="sm"
                   onClick={() => setViewMode('grid')}
+                  className={cn(
+                    "rounded-md",
+                    viewMode === 'grid' ? '' : 'text-muted-foreground hover:text-foreground'
+                  )}
                 >
                   Grid
                 </Button>
@@ -984,18 +1241,18 @@ export default function Notes() {
 
       {/* Notes List/Grid */}
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as any)}>
-        <TabsList className="w-full">
+        <TabsList className="w-full bg-secondary/30 dark:bg-secondary/20 p-1 h-12 border-transparent">
           <TabsTrigger value="all" className="flex-1">
-            All Notes ({filteredNotes?.length || 0})
+            All Notes [{stats.total}]
           </TabsTrigger>
           <TabsTrigger value="free" className="flex-1">
-            Free ({stats.free})
+            Free [{stats.free}]
           </TabsTrigger>
           <TabsTrigger value="daily" className="flex-1">
-            Daily ({stats.daily})
+            Daily [{stats.daily}]
           </TabsTrigger>
           <TabsTrigger value="weekly" className="flex-1">
-            Weekly ({stats.weekly})
+            Weekly [{stats.weekly}]
           </TabsTrigger>
         </TabsList>
         
@@ -1058,131 +1315,32 @@ export default function Notes() {
 
     if (viewMode === 'grid') {
       return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 auto-rows-fr">
           {filteredNotes?.map((note: NoteWithDetails) => (
-            <NoteCard key={note.id} note={note} />
+            <NoteCardGrid 
+              key={note.id} 
+              note={note} 
+              onEdit={handleEdit}
+              onArchive={(id) => deleteNoteMutation.mutate(id)}
+              onView={setViewingNote}
+            />
           ))}
         </div>
       )
     }
 
     return (
-      <div className="space-y-4">
+      <div className="space-y-3">
         {filteredNotes?.map((note: NoteWithDetails) => (
-          <NoteCard key={note.id} note={note} />
+          <NoteCardList 
+            key={note.id} 
+            note={note} 
+            onEdit={handleEdit}
+            onArchive={(id) => deleteNoteMutation.mutate(id)}
+            onView={setViewingNote}
+          />
         ))}
       </div>
-    )
-  }
-
-  function NoteCard({ note }: { note: NoteWithDetails }) {
-    const truncatedContent = note.content.length > 200 
-      ? note.content.substring(0, 200) + '...'
-      : note.content
-
-    return (
-      <Card className="card-hover">
-        <CardHeader>
-          <div className="flex items-start justify-between">
-            <div className="flex-1 min-w-0">
-              <CardTitle className="truncate">{note.title}</CardTitle>
-              <CardDescription className="truncate">
-                {formatNoteType(note.type)} • {format(parseISO(note.updated_at), 'MMM d, yyyy')}
-              </CardDescription>
-            </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8">
-                  <MoreVertical className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => handleEdit(note)}>
-                  <Edit className="mr-2 h-4 w-4" />
-                  Edit
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => exportNote(note)}>
-                  <Download className="mr-2 h-4 w-4" />
-                  Export
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem 
-                  className="text-orange-600"
-                  onClick={() => deleteNoteMutation.mutate(note.id)}
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Archive
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            <Badge variant="outline">
-              {formatNoteType(note.type)}
-            </Badge>
-            {note.mood && (
-              <Badge variant="secondary">
-                <Smile className="mr-1 h-3 w-3" />
-                {formatMood(note.mood)}
-              </Badge>
-            )}
-            {note.goal_title && (
-              <Badge variant="secondary">
-                <Target className="mr-1 h-3 w-3" />
-                {note.goal_title}
-              </Badge>
-            )}
-            {note.task_title && (
-              <Badge variant="secondary">
-                <Bookmark className="mr-1 h-3 w-3" />
-                {note.task_title}
-              </Badge>
-            )}
-          </div>
-        </CardHeader>
-        
-        <CardContent>
-          <div className="space-y-4">
-            <div className="prose prose-sm max-w-none">
-              {truncatedContent}
-            </div>
-            
-            {note.tags && note.tags.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {note.tags.slice(0, 5).map((tag: string) => (
-                  <Badge key={tag} variant="outline" size="sm">
-                    <Tag className="mr-1 h-3 w-3" />
-                    {tag}
-                  </Badge>
-                ))}
-                {note.tags.length > 5 && (
-                  <Badge variant="outline" size="sm">
-                    +{note.tags.length - 5}
-                  </Badge>
-                )}
-              </div>
-            )}
-          </div>
-        </CardContent>
-        
-        <CardFooter className="flex items-center justify-between text-sm text-muted-foreground">
-          <div className="flex items-center">
-            <Clock className="mr-1 h-3 w-3" />
-            Updated {format(parseISO(note.updated_at), 'MMM d, yyyy')}
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => handleEdit(note)}
-          >
-            <Eye className="mr-2 h-4 w-4" />
-            View Full
-          </Button>
-        </CardFooter>
-      </Card>
     )
   }
 }

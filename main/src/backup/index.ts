@@ -2,8 +2,82 @@ import { ipcMain, dialog, BrowserWindow, app } from 'electron';
 import path from 'path';
 import fs from 'fs-extra';
 import crypto from 'crypto';
+import zlib from 'zlib';
+import { promisify } from 'util';
 import { getDatabase } from '../database';
-import { IPC_CHANNEL_KEYS } from '../../../shared/constants';
+
+const gzip = promisify(zlib.gzip);
+const gunzip = promisify(zlib.gunzip);
+
+// All tables that hold user data (order matters for FK constraints on restore)
+const BACKUP_TABLES = [
+  'goals',
+  'projects',
+  'tasks',
+  'checklist_items',
+  'habits',
+  'habit_completions',
+  'notes',
+  'time_blocks',
+  'reviews',
+  'audit_log',
+  'sync_state',
+] as const;
+
+const REQUIRED_TABLES: ReadonlyArray<(typeof BACKUP_TABLES)[number]> = [
+  'goals',
+  'projects',
+  'tasks',
+  'checklist_items',
+  'habits',
+  'habit_completions',
+  'notes',
+  'time_blocks',
+  'reviews',
+];
+
+const BACKUP_EXTENSION = '.backup';
+
+function sha256Hex(input: Buffer | string): string {
+  return crypto.createHash('sha256').update(input).digest('hex');
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stableStringify(value: any): string {
+  if (value === null || value === undefined) return JSON.stringify(value);
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const obj = value as Record<string, any>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
+}
+
+export interface BackupMetadata {
+  id: string;
+  timestamp: string;
+  version: number;
+  appVersion: string;
+  compressed: boolean;
+  checksum: string; // Deterministic payload checksum (NOT file checksum)
+  tables: Record<string, number>; // table -> row count
+}
+
+export interface BackupRecord {
+  id: string;
+  path: string;
+  timestamp: string;
+  size: number;
+  checksum: string;
+  version: number;
+  // Computed fields added at list time
+  exists?: boolean;
+  sizeFormatted?: string;
+  dateFormatted?: string;
+  metadata?: BackupMetadata;
+}
 
 export class BackupManager {
   private backupDir: string;
@@ -11,328 +85,461 @@ export class BackupManager {
 
   constructor() {
     this.backupDir = path.join(app.getPath('userData'), 'backups');
-    this.maxBackups = 30; // Keep last 30 backups
+    this.maxBackups = 50;
     this.ensureBackupDir();
   }
 
   private ensureBackupDir(): void {
-    if (!fs.existsSync(this.backupDir)) {
-      fs.mkdirSync(this.backupDir, { recursive: true });
-    }
+    fs.ensureDirSync(this.backupDir);
   }
 
-  async createIncrementalBackup(): Promise<string> {
+  private backupPathForId(backupId: string): string {
+    return path.join(this.backupDir, `${backupId}${BACKUP_EXTENSION}`);
+  }
+
+  private async readAndParseBackupFile(backupPath: string): Promise<{ metadata: BackupMetadata; data: Record<string, any[]>; raw: Buffer }> {
+    const raw = await fs.readFile(backupPath);
+
+    // Decompress (or fallback to legacy uncompressed)
+    let payload: string;
     try {
-      const db = getDatabase();
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const backupId = crypto.randomUUID();
-      const backupPath = path.join(this.backupDir, `${backupId}.backup`);
-
-      // Export current state
-      const backupData = {
-        metadata: {
-          id: backupId,
-          timestamp: new Date().toISOString(),
-          version: 1,
-          appVersion: app.getVersion(),
-        },
-        data: {
-          goals: await this.exportTable('goals'),
-          projects: await this.exportTable('projects'),
-          tasks: await this.exportTable('tasks'),
-          habits: await this.exportTable('habits'),
-          notes: await this.exportTable('notes'),
-          checklist_items: await this.exportTable('checklist_items'),
-          habit_completions: await this.exportTable('habit_completions'),
-          time_blocks: await this.exportTable('time_blocks'),
-        },
-      };
-
-      // Compress and encrypt backup
-      const jsonData = JSON.stringify(backupData);
-      const compressed = await this.compressData(jsonData);
-      const encrypted = this.encryptData(compressed);
-
-      // Write backup file
-      await fs.writeFile(backupPath, encrypted);
-
-      // Verify backup
-      const verified = await this.verifyBackup(backupPath);
-      if (!verified) {
-        throw new Error('Backup verification failed');
-      }
-
-      // Record backup in database
-      const stats = await fs.stat(backupPath);
-      const checksum = await this.calculateChecksum(backupPath);
-
-      db.executeQuery(`
-        INSERT INTO backups (id, path, timestamp, size, checksum, version)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `, [backupId, backupPath, new Date().toISOString(), stats.size, checksum, 1]);
-
-      // Cleanup old backups
-      await this.cleanupOldBackups();
-
-      console.log(`Backup created: ${backupId}`);
-      return backupId;
-
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Backup creation failed:', error.message);
-      } else {
-        console.error('Backup creation failed:', error);
-      }
-      throw error;
+      const decompressed = await gunzip(raw);
+      payload = decompressed.toString('utf-8');
+    } catch {
+      payload = raw.toString('utf-8');
     }
+
+    const parsed = JSON.parse(payload);
+    if (!isRecord(parsed) || !isRecord(parsed.metadata) || !isRecord(parsed.data)) {
+      throw new Error('Invalid backup structure');
+    }
+
+    const metadata = parsed.metadata as BackupMetadata;
+    const data = parsed.data as Record<string, any[]>;
+
+    if (!metadata.id || !metadata.timestamp || !metadata.version) {
+      throw new Error('Invalid backup metadata');
+    }
+
+    return { metadata, data, raw };
   }
 
-  private async exportTable(table: string): Promise<any[]> {
+  private computePayloadChecksum(metadata: Omit<BackupMetadata, 'checksum'>, data: Record<string, any[]>): string {
+    return sha256Hex(stableStringify({ metadata, data }));
+  }
+
+  private async resolveBackupPath(backupId: string): Promise<string> {
+    const direct = this.backupPathForId(backupId);
+    if (await fs.pathExists(direct)) return direct;
+
+    // Fallback: scan directory (handles rare cases like imported files with mismatched names)
+    const entries = await fs.readdir(this.backupDir);
+    for (const name of entries) {
+      if (!name.endsWith(BACKUP_EXTENSION)) continue;
+      const candidate = path.join(this.backupDir, name);
+      try {
+        const { metadata } = await this.readAndParseBackupFile(candidate);
+        if (metadata.id === backupId) return candidate;
+      } catch {
+        // ignore broken file
+      }
+    }
+
+    throw new Error('Backup file not found');
+  }
+
+  // ────────────────────── CREATE ──────────────────────
+
+  async createBackup(): Promise<BackupRecord> {
     const db = getDatabase();
-    return db.executeQuery(`SELECT * FROM ${table} WHERE deleted_at IS NULL`);
-  }
+    const backupId = crypto.randomUUID();
+    const backupPath = this.backupPathForId(backupId);
 
-  private async compressData(data: string): Promise<Buffer> {
-    // Simple compression (in production, use zlib or similar)
-    return Buffer.from(data);
-  }
+    // Gather every table's data (including soft-deleted rows so restore is complete)
+    const tableCounts: Record<string, number> = {};
+    const data: Record<string, any[]> = {};
 
-  private encryptData(data: Buffer): Buffer {
-    // Simple encryption (in production, use proper encryption)
-    return data;
-  }
-
-  private async verifyBackup(backupPath: string): Promise<boolean> {
-    try {
-      const stats = await fs.stat(backupPath);
-      if (stats.size === 0) {
-        return false;
-      }
-
-      const checksum = await this.calculateChecksum(backupPath);
-      return checksum.length === 64; // SHA-256 hash length
-
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Backup verification failed:', error.message);
-      } else {
-        console.error('Backup verification failed:', error);
-      }
-      return false;
-    }
-  }
-
-  private async calculateChecksum(filePath: string): Promise<string> {
-    const fileBuffer = await fs.readFile(filePath);
-    return crypto.createHash('sha256').update(fileBuffer).digest('hex');
-  }
-
-  private async cleanupOldBackups(): Promise<void> {
-    try {
-      const db = getDatabase();
-      const backups = db.executeQuery<any>(`
-        SELECT id, path FROM backups
-        ORDER BY timestamp DESC
-      `);
-
-      if (backups.length > this.maxBackups) {
-        const backupsToDelete = backups.slice(this.maxBackups);
-
-        for (const backup of backupsToDelete) {
-          try {
-            await fs.unlink(backup.path);
-            db.executeQuery('DELETE FROM backups WHERE id = ?', [backup.id]);
-            console.log(`Deleted old backup: ${backup.id}`);
-          } catch (error) {
-            if (error instanceof Error) {
-              console.error(`Failed to delete backup ${backup.id}:`, error.message);
-            } else {
-              console.error(`Failed to delete backup ${backup.id}:`, error);
-            }
-          }
-        }
-      }
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Backup cleanup failed:', error.message);
-      } else {
-        console.error('Backup cleanup failed:', error);
+    for (const table of BACKUP_TABLES) {
+      try {
+        const rows = db.executeQuery(`SELECT * FROM ${table}`);
+        data[table] = rows;
+        tableCounts[table] = rows.length;
+      } catch {
+        // Table might not exist yet (e.g. reviews before migration)
+        data[table] = [];
+        tableCounts[table] = 0;
       }
     }
-  }
 
-  async getBackupList(): Promise<any[]> {
-    try {
-      const db = getDatabase();
-      const backups = db.executeQuery<any>(`
-        SELECT * FROM backups
-        ORDER BY timestamp DESC
-      `);
+    const metadataWithoutChecksum: Omit<BackupMetadata, 'checksum'> = {
+      id: backupId,
+      timestamp: new Date().toISOString(),
+      version: 3,
+      appVersion: app.getVersion(),
+      compressed: true,
+      tables: tableCounts,
+    };
 
-      // Add file existence check
-      const backupsWithStatus = await Promise.all(
-        backups.map(async (backup) => {
-          const exists = await fs.pathExists(backup.path);
-          return {
-            ...backup,
-            exists,
-            sizeFormatted: this.formatFileSize(backup.size),
-            dateFormatted: new Date(backup.timestamp).toLocaleString(),
-          };
-        })
-      );
+    const checksum = this.computePayloadChecksum(metadataWithoutChecksum, data);
 
-      return backupsWithStatus;
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Failed to list backups:', error.message);
-      } else {
-        console.error('Failed to list backups:', error);
-      }
-      return [];
+    const metadata: BackupMetadata = {
+      ...metadataWithoutChecksum,
+      checksum,
+    };
+
+    const payload = stableStringify({ metadata, data });
+
+    // Compress with gzip
+    const compressed = await gzip(Buffer.from(payload, 'utf-8'));
+
+    // Write to disk
+    await fs.writeFile(backupPath, compressed);
+
+    // Verify the file was written properly
+    const stats = await fs.stat(backupPath);
+    if (stats.size === 0) {
+      await fs.remove(backupPath);
+      throw new Error('Backup file is empty after write');
     }
+
+    await this.cleanupOldBackups();
+
+    console.log(
+      `Backup created: ${backupId} (${this.formatFileSize(stats.size)}, ${Object.values(tableCounts).reduce((a, b) => a + b, 0)} rows)`
+    );
+
+    return {
+      id: backupId,
+      path: backupPath,
+      timestamp: metadata.timestamp,
+      size: stats.size,
+      checksum,
+      version: metadata.version,
+      exists: true,
+      sizeFormatted: this.formatFileSize(stats.size),
+      dateFormatted: new Date(metadata.timestamp).toLocaleString(),
+      metadata,
+    };
   }
 
-  private formatFileSize(bytes: number): string {
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-    if (bytes === 0) return '0 Bytes';
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return Math.round(bytes / Math.pow(1024, i)) + ' ' + sizes[i];
-  }
+  // ────────────────────── RESTORE ──────────────────────
 
   async restoreFromBackup(backupId: string): Promise<boolean> {
-    try {
-      const db = getDatabase();
-      const backup = db.executeQuery<any>(
-        'SELECT * FROM backups WHERE id = ?',
-        [backupId]
-      )[0];
-
-      if (!backup) {
-        throw new Error('Backup not found');
-      }
-
-      if (!fs.existsSync(backup.path)) {
-        throw new Error('Backup file not found');
-      }
-
-      // Verify backup integrity
-      const checksum = await this.calculateChecksum(backup.path);
-      if (checksum !== backup.checksum) {
-        throw new Error('Backup integrity check failed');
-      }
-
-      // Read and decrypt backup
-      const encrypted = await fs.readFile(backup.path);
-      const decrypted = this.decryptData(encrypted);
-      const backupData = JSON.parse(decrypted.toString());
-
-      // Restore data
-      await this.restoreData(backupData.data);
-
-      console.log(`Backup restored: ${backupId}`);
-      return true;
-
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Backup restore failed:', error.message);
-      } else {
-        console.error('Backup restore failed:', error);
-      }
-      throw error;
-    }
-  }
-
-  private decryptData(data: Buffer): Buffer {
-    // Simple decryption
-    return data;
-  }
-
-  private async restoreData(data: any): Promise<void> {
     const db = getDatabase();
 
-    // Start transaction
-    db.executeTransaction([
-      // Clear existing data (soft delete)
-      { query: 'UPDATE goals SET deleted_at = ?', params: [new Date().toISOString()] },
-      { query: 'UPDATE projects SET deleted_at = ?', params: [new Date().toISOString()] },
-      { query: 'UPDATE tasks SET deleted_at = ?', params: [new Date().toISOString()] },
-      { query: 'UPDATE habits SET deleted_at = ?', params: [new Date().toISOString()] },
-      { query: 'UPDATE notes SET deleted_at = ?', params: [new Date().toISOString()] },
-      { query: 'UPDATE checklist_items SET deleted_at = ?', params: [new Date().toISOString()] },
-      { query: 'DELETE FROM habit_completions', params: [] },
-      { query: 'UPDATE time_blocks SET deleted_at = ?', params: [new Date().toISOString()] },
-    ]);
+    const backupPath = await this.resolveBackupPath(backupId);
+    const { metadata, data } = await this.readAndParseBackupFile(backupPath);
 
-    // Restore data
-    for (const [table, rows] of Object.entries(data)) {
-      if (Array.isArray(rows)) {
+    // Validate integrity (deterministic payload checksum)
+    const { checksum, ...metadataCore } = metadata as any;
+    const expected = String(checksum || '');
+    const actual = this.computePayloadChecksum(metadataCore, data);
+    // Backward compatibility: older backups may not have a checksum field.
+    if (expected) {
+      if (expected !== actual) {
+        throw new Error('Backup integrity check failed (checksum mismatch)');
+      }
+    }
+
+    // Validate required tables present (unless not part of this app build)
+    for (const t of REQUIRED_TABLES) {
+      if (!(t in data)) {
+        throw new Error(`Backup is missing required table: ${t}`);
+      }
+    }
+
+    // Determine which of the known tables exist in the DB
+    const existingTables = new Set(
+      db.executeQuery<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+      ).map((r) => r.name)
+    );
+
+    // All-or-nothing restore
+    const restoreTables = BACKUP_TABLES.filter((t) => existingTables.has(t));
+    if (restoreTables.length === 0) {
+      throw new Error('No restoreable tables exist in the current database');
+    }
+
+    db.runAtomic(() => {
+      // Clear (reverse order to respect FK constraints)
+      for (const table of [...restoreTables].reverse()) {
+        db.executeQuery(`DELETE FROM ${table}`);
+      }
+
+      // Insert (forward order)
+      for (const table of restoreTables) {
+        const rows = data[table];
+        if (!Array.isArray(rows) || rows.length === 0) continue;
+
+        const first = rows[0];
+        if (!isRecord(first)) {
+          throw new Error(`Invalid row format in table ${table}`);
+        }
+
+        const columns = Object.keys(first);
+        if (columns.length === 0) continue;
+        const placeholders = columns.map(() => '?').join(', ');
+        const insertSql = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`;
+
         for (const row of rows) {
-          // Remove id and timestamps to let database generate new ones
-          const { id, created_at, updated_at, ...rest } = row;
-          await db.insertData(table, rest);
+          if (!isRecord(row)) {
+            throw new Error(`Invalid row format in table ${table}`);
+          }
+          const values = columns.map((col) => (row as any)[col]);
+          db.executeQuery(insertSql, values);
+        }
+
+        // Post-verify counts match exactly
+        const expectedCount = metadata.tables?.[table] ?? rows.length;
+        const [{ count }] = db.executeQuery<{ count: number }>(`SELECT COUNT(*) as count FROM ${table}`);
+        if (Number(count) !== Number(expectedCount)) {
+          throw new Error(`Restore verification failed for ${table}: expected ${expectedCount}, got ${count}`);
         }
       }
+    });
+
+    console.log(`Backup restored: ${backupId}`);
+    return true;
+  }
+
+  // ────────────────────── VERIFY ──────────────────────
+
+  async verifyBackup(backupId: string): Promise<{ valid: boolean; error?: string }> {
+    try {
+      const backupPath = await this.resolveBackupPath(backupId);
+      if (!(await fs.pathExists(backupPath))) return { valid: false, error: 'Backup file missing' };
+
+      const { metadata, data } = await this.readAndParseBackupFile(backupPath);
+      const { checksum, ...metadataCore } = metadata as any;
+      const expected = String(checksum || '');
+      const actual = this.computePayloadChecksum(metadataCore, data);
+      // If checksum exists, enforce it. If missing (legacy), accept structure validation.
+      if (expected && expected !== actual) return { valid: false, error: 'Checksum mismatch' };
+
+      if (!metadata.tables || typeof metadata.tables !== 'object') {
+        return { valid: false, error: 'Missing table counts' };
+      }
+
+      return { valid: true };
+    } catch (err: any) {
+      return { valid: false, error: err?.message || String(err) };
     }
   }
+
+  // ────────────────────── LIST ──────────────────────
+
+  async getBackupList(): Promise<BackupRecord[]> {
+    const entries = await fs.readdir(this.backupDir);
+    const backups: BackupRecord[] = [];
+
+    for (const name of entries) {
+      if (!name.endsWith(BACKUP_EXTENSION)) continue;
+      const fullPath = path.join(this.backupDir, name);
+      const exists = await fs.pathExists(fullPath);
+      if (!exists) continue;
+
+      try {
+        const stats = await fs.stat(fullPath);
+        const { metadata } = await this.readAndParseBackupFile(fullPath);
+        backups.push({
+          id: metadata.id,
+          path: fullPath,
+          timestamp: metadata.timestamp,
+          size: stats.size,
+          checksum: metadata.checksum,
+          version: metadata.version,
+          exists: true,
+          sizeFormatted: this.formatFileSize(stats.size),
+          dateFormatted: new Date(metadata.timestamp).toLocaleString(),
+          metadata,
+        });
+      } catch {
+        // Broken file: still show as missing/invalid? keep minimal entry
+        const stats = await fs.stat(fullPath);
+        const id = name.replace(BACKUP_EXTENSION, '');
+        backups.push({
+          id,
+          path: fullPath,
+          timestamp: new Date(stats.mtimeMs).toISOString(),
+          size: stats.size,
+          checksum: '',
+          version: 0,
+          exists: true,
+          sizeFormatted: this.formatFileSize(stats.size),
+          dateFormatted: new Date(stats.mtimeMs).toLocaleString(),
+        });
+      }
+    }
+
+    backups.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+    return backups;
+  }
+
+  // ────────────────────── DELETE ──────────────────────
 
   async deleteBackup(backupId: string): Promise<boolean> {
+    const backupPath = await this.resolveBackupPath(backupId);
+    if (await fs.pathExists(backupPath)) {
+      await fs.remove(backupPath);
+    }
+    console.log(`Backup deleted: ${backupId}`);
+    return true;
+  }
+
+  // ────────────────────── STATS ──────────────────────
+
+  async getBackupStats(): Promise<{
+    totalBackups: number;
+    totalSize: number;
+    totalSizeFormatted: string;
+    oldestBackup: string | null;
+    newestBackup: string | null;
+    healthyBackups: number;
+    missingBackups: number;
+  }> {
+    const backups = await this.getBackupList();
+    const totalSize = backups.reduce((s, b) => s + (b.size || 0), 0);
+    const healthy = backups.filter((b) => b.exists).length;
+    const missing = backups.filter((b) => !b.exists).length;
+
+    return {
+      totalBackups: backups.length,
+      totalSize,
+      totalSizeFormatted: this.formatFileSize(totalSize),
+      oldestBackup: backups.length > 0 ? backups[backups.length - 1].timestamp : null,
+      newestBackup: backups.length > 0 ? backups[0].timestamp : null,
+      healthyBackups: healthy,
+      missingBackups: missing,
+    };
+  }
+
+  // ────────────────────── EXPORT TO FILE ──────────────────────
+
+  async exportBackupToFile(
+    backupId: string,
+    mainWindow: BrowserWindow
+  ): Promise<{ success: boolean; path?: string; error?: string }> {
+    let backupPath: string;
     try {
-      const db = getDatabase();
-      const backup = db.executeQuery<any>(
-        'SELECT * FROM backups WHERE id = ?',
-        [backupId]
-      )[0];
+      backupPath = await this.resolveBackupPath(backupId);
+    } catch {
+      return { success: false, error: 'Backup not found' };
+    }
 
-      if (!backup) {
-        throw new Error('Backup not found');
+    if (!(await fs.pathExists(backupPath))) return { success: false, error: 'Backup file missing' };
+
+    const { metadata, data } = await this.readAndParseBackupFile(backupPath);
+
+    const ts = new Date(metadata.timestamp)
+      .toISOString()
+      .replace(/[:.]/g, '-')
+      .slice(0, 19);
+
+    const { filePath, canceled } = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export Backup',
+      defaultPath: `PersonalOS-Backup-${ts}.json`,
+      filters: [{ name: 'JSON Backup', extensions: ['json'] }],
+    });
+
+    if (canceled || !filePath) return { success: false, error: 'Export cancelled' };
+
+    await fs.writeFile(filePath, JSON.stringify({ metadata, data }, null, 2), 'utf-8');
+
+    console.log(`Backup exported: ${backupId} → ${filePath}`);
+    return { success: true, path: filePath };
+  }
+
+  // ────────────────────── IMPORT FROM FILE ──────────────────────
+
+  async importBackupFromFile(
+    mainWindow: BrowserWindow
+  ): Promise<{ success: boolean; backupId?: string; error?: string }> {
+    const { filePaths, canceled } = await dialog.showOpenDialog(mainWindow, {
+      title: 'Import Backup',
+      filters: [{ name: 'JSON Backup', extensions: ['json'] }],
+      properties: ['openFile'],
+    });
+
+    if (canceled || filePaths.length === 0) return { success: false, error: 'Import cancelled' };
+
+    const fileContent = await fs.readFile(filePaths[0], 'utf-8');
+    let parsed: any;
+
+    try {
+      parsed = JSON.parse(fileContent);
+    } catch {
+      return { success: false, error: 'Invalid JSON file' };
+    }
+
+    if (!parsed.metadata || !parsed.data) {
+      return { success: false, error: 'Not a valid PersonalOS backup file' };
+    }
+
+    if (!isRecord(parsed.metadata) || !isRecord(parsed.data)) {
+      return { success: false, error: 'Invalid backup structure' };
+    }
+
+    // Save as a regular backup (new id, recomputed checksum)
+    const backupId = crypto.randomUUID();
+    const backupPath = this.backupPathForId(backupId);
+
+    parsed.metadata.id = backupId;
+    const metadataInput = parsed.metadata as any;
+    const dataInput = parsed.data as any;
+
+    // Ensure metadata fields exist
+    const metadataWithoutChecksum: Omit<BackupMetadata, 'checksum'> = {
+      id: String(metadataInput.id || backupId),
+      timestamp: String(metadataInput.timestamp || new Date().toISOString()),
+      version: Number(metadataInput.version || 3),
+      appVersion: String(metadataInput.appVersion || app.getVersion()),
+      compressed: true,
+      tables: isRecord(metadataInput.tables) ? (metadataInput.tables as Record<string, number>) : {},
+    };
+
+    const checksum = this.computePayloadChecksum(metadataWithoutChecksum, dataInput);
+    const metadata: BackupMetadata = { ...metadataWithoutChecksum, checksum };
+    const payloadStr = stableStringify({ metadata, data: dataInput });
+    const compressed = await gzip(Buffer.from(payloadStr, 'utf-8'));
+
+    await fs.writeFile(backupPath, compressed);
+
+    await fs.stat(backupPath);
+
+    console.log(`Backup imported: ${backupId} from ${filePaths[0]}`);
+    return { success: true, backupId };
+  }
+
+  // ────────────────────── CLEANUP ──────────────────────
+
+  private async cleanupOldBackups(): Promise<void> {
+    const backups = await this.getBackupList();
+    if (backups.length <= this.maxBackups) return;
+
+    for (const backup of backups.slice(this.maxBackups)) {
+      try {
+        if (await fs.pathExists(backup.path)) {
+          await fs.remove(backup.path);
+        }
+        console.log(`Cleaned up old backup: ${backup.id}`);
+      } catch (err) {
+        console.error(`Failed to clean up backup ${backup.id}:`, err);
       }
-
-      // Delete file
-      if (fs.existsSync(backup.path)) {
-        await fs.unlink(backup.path);
-      }
-
-      // Delete record
-      db.executeQuery('DELETE FROM backups WHERE id = ?', [backupId]);
-
-      console.log(`Backup deleted: ${backupId}`);
-      return true;
-
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Backup deletion failed:', error.message);
-      } else {
-        console.error('Backup deletion failed:', error);
-      }
-      throw error;
     }
   }
 
-  async getBackupStats(): Promise<any> {
-    try {
-      const backups = await this.getBackupList();
-      const totalSize = backups.reduce((sum, backup) => sum + backup.size, 0);
-      const oldestBackup = backups[backups.length - 1];
-      const newestBackup = backups[0];
+  // ────────────────────── UTILITIES ──────────────────────
 
-      return {
-        totalBackups: backups.length,
-        totalSize: this.formatFileSize(totalSize),
-        oldestBackup: oldestBackup?.dateFormatted || 'None',
-        newestBackup: newestBackup?.dateFormatted || 'None',
-        healthyBackups: backups.filter(b => b.exists).length,
-      };
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Failed to get backup stats:', error.message);
-      } else {
-        console.error('Failed to get backup stats:', error);
-      }
-      return null;
-    }
+  formatFileSize(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
   }
 }
+
+// ────────────────────── SINGLETON ──────────────────────
 
 let backupManager: BackupManager | null = null;
 
@@ -343,127 +550,133 @@ export function getBackupManager(): BackupManager {
   return backupManager;
 }
 
+// ────────────────────── AUTO-BACKUP SCHEDULER ──────────────────────
+
 export async function setupBackupSystem(): Promise<void> {
   const manager = getBackupManager();
 
   // Create initial backup if none exists
+  // NOTE: Do not auto-restore. Backups are created automatically, but restoring is always explicit.
   const backups = await manager.getBackupList();
   if (backups.length === 0) {
     try {
-      await manager.createIncrementalBackup();
+      await manager.createBackup();
       console.log('Initial backup created');
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Initial backup failed:', error.message);
-      } else {
-        console.error('Initial backup failed:', error);
-      }
+    } catch (err) {
+      console.error('Initial backup failed:', err);
     }
   }
 
-  // Schedule regular backups (every 6 hours)
+  // Schedule automatic backups every 6 hours
   setInterval(async () => {
     try {
-      await manager.createIncrementalBackup();
+      await manager.createBackup();
       console.log('Scheduled backup completed');
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Scheduled backup failed:', error.message);
-      } else {
-        console.error('Scheduled backup failed:', error);
-      }
+    } catch (err) {
+      console.error('Scheduled backup failed:', err);
     }
   }, 6 * 60 * 60 * 1000);
-
-  // Also backup on app close
-  process.on('beforeExit', async () => {
-    try {
-      await manager.createIncrementalBackup();
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Exit backup failed:', error.message);
-      } else {
-        console.error('Exit backup failed:', error);
-      }
-    }
-  });
 }
+
+// ────────────────────── IPC REGISTRATION ──────────────────────
 
 export function initializeBackupManager(mainWindow: BrowserWindow) {
   const manager = getBackupManager();
 
-  ipcMain.handle(IPC_CHANNEL_KEYS.BACKUP_DATA, async () => {
+  // Create backup
+  ipcMain.handle('backup:create', async () => {
     try {
-      const backupId = await manager.createIncrementalBackup();
-      mainWindow.webContents.send(IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: true, message: `Backup ${backupId} successful!` });
-      return { success: true, message: 'Backup successful!' };
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Backup failed:', error.message);
-        mainWindow.webContents.send(IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: false, message: `Backup failed: ${error.message}` });
-        return { success: false, message: `Backup failed: ${error.message}` };
-      } else {
-        console.error('Backup failed:', error);
-        mainWindow.webContents.send(IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: false, message: `Backup failed: ${String(error)}` });
-        return { success: false, message: `Backup failed: ${String(error)}` };
-      }
+      const record = await manager.createBackup();
+      mainWindow.webContents.send('backup:created', record);
+      return { success: true, data: record };
+    } catch (error: any) {
+      console.error('backup:create failed:', error);
+      return { success: false, error: error.message || String(error) };
     }
   });
 
-  ipcMain.handle(IPC_CHANNEL_KEYS.RESTORE_DATA, async (event, backupId) => {
+  // Restore backup
+  ipcMain.handle('backup:restore', async (_event, backupId: string) => {
     try {
-        await manager.restoreFromBackup(backupId);
-      mainWindow.webContents.send(IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: true, message: 'Restore successful!' });
-      return { success: true, message: 'Restore successful!' };
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Restore failed:', error.message);
-        mainWindow.webContents.send(IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: false, message: `Restore failed: ${error.message}` });
-        return { success: false, message: `Restore failed: ${error.message}` };
-      } else {
-        console.error('Restore failed:', error);
-        mainWindow.webContents.send(IPC_CHANNEL_KEYS.BACKUP_STATUS, { success: false, message: `Restore failed: ${String(error)}` });
-        return { success: false, message: `Restore failed: ${String(error)}` };
-      }
+      await manager.restoreFromBackup(backupId);
+      return { success: true };
+    } catch (error: any) {
+      console.error('backup:restore failed:', error);
+      return { success: false, error: error.message || String(error) };
     }
   });
 
-  ipcMain.handle(IPC_CHANNEL_KEYS.GET_BACKUPS, async () => {
+  // List backups
+  ipcMain.handle('backup:list', async () => {
     try {
-      return await manager.getBackupList();
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Failed to get backups:', error.message);
-      } else {
-        console.error('Failed to get backups:', error);
-      }
-      return [];
+      const backups = await manager.getBackupList();
+      return { success: true, data: backups };
+    } catch (error: any) {
+      console.error('backup:list failed:', error);
+      return { success: false, error: error.message || String(error) };
     }
   });
 
-  ipcMain.handle(IPC_CHANNEL_KEYS.DELETE_BACKUP, async (event, backupId) => {
+  // Delete backup
+  ipcMain.handle('backup:delete', async (_event, backupId: string) => {
     try {
-      return await manager.deleteBackup(backupId);
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Failed to delete backup:', error.message);
-      } else {
-        console.error('Failed to delete backup:', error);
-      }
-      return false;
+      await manager.deleteBackup(backupId);
+      return { success: true };
+    } catch (error: any) {
+      console.error('backup:delete failed:', error);
+      return { success: false, error: error.message || String(error) };
     }
   });
 
-  ipcMain.handle(IPC_CHANNEL_KEYS.GET_BACKUP_STATS, async () => {
+  // Verify backup
+  ipcMain.handle('backup:verify', async (_event, backupId: string) => {
     try {
-      return await manager.getBackupStats();
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Failed to get backup stats:', error.message);
-      } else {
-        console.error('Failed to get backup stats:', error);
-      }
-      return null;
+      const result = await manager.verifyBackup(backupId);
+      return { success: true, data: result };
+    } catch (error: any) {
+      console.error('backup:verify failed:', error);
+      return { success: false, error: error.message || String(error) };
     }
   });
+
+  // Get stats
+  ipcMain.handle('backup:stats', async () => {
+    try {
+      const stats = await manager.getBackupStats();
+      return { success: true, data: stats };
+    } catch (error: any) {
+      console.error('backup:stats failed:', error);
+      return { success: false, error: error.message || String(error) };
+    }
+  });
+
+  // Export backup to user-chosen file
+  ipcMain.handle('backup:export', async (_event, backupId: string) => {
+    try {
+      const result = await manager.exportBackupToFile(backupId, mainWindow);
+      return result;
+    } catch (error: any) {
+      console.error('backup:export failed:', error);
+      return { success: false, error: error.message || String(error) };
+    }
+  });
+
+  // Import backup from user-chosen file
+  ipcMain.handle('backup:import', async () => {
+    try {
+      const result = await manager.importBackupFromFile(mainWindow);
+      if (result.success) {
+        const backups = await manager.getBackupList();
+        const imported = backups.find((b) => b.id === result.backupId);
+        if (imported) mainWindow.webContents.send('backup:created', imported);
+      }
+      return result;
+    } catch (error: any) {
+      console.error('backup:import failed:', error);
+      return { success: false, error: error.message || String(error) };
+    }
+  });
+
+  // Setup auto-backup schedule
+  setupBackupSystem().catch(console.error);
 }

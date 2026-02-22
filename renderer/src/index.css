@@ -35,6 +35,11 @@
   --chart-primary: 0 0% 9%;
   --chart-secondary: 145 80% 42%;
   --chart-grid: 0 0% 92%;
+
+  /* Scrollbar palette */
+  --scrollbar-thumb: 145 65% 42%;
+  --scrollbar-thumb-hover: 145 70% 36%;
+  --scrollbar-track: 145 24% 92%;
 }
 
 .dark {
@@ -84,6 +89,11 @@
   --chart-primary: 0 0% 95%;
   --chart-secondary: 145 80% 48%;
   --chart-grid: 0 0% 25%;
+
+  /* Scrollbar palette */
+  --scrollbar-thumb: 145 55% 44%;
+  --scrollbar-thumb-hover: 145 62% 50%;
+  --scrollbar-track: 0 0% 14%;
 }
 
 @layer base {
@@ -100,6 +110,38 @@
     background-color: hsl(var(--background)) !important;
     color: hsl(var(--foreground)) !important;
     @apply antialiased;
+
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--scrollbar-thumb)) hsl(var(--scrollbar-track));
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--scrollbar-thumb)) hsl(var(--scrollbar-track));
+  }
+
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: hsl(var(--scrollbar-track));
+    border-radius: 999px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: hsl(var(--scrollbar-thumb));
+    border-radius: 999px;
+    border: 2px solid hsl(var(--scrollbar-track));
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--scrollbar-thumb-hover));
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: hsl(var(--scrollbar-track));
   }
 
   /* 3. Force Cards/Popups to have solid backgrounds */
@@ -140,5 +182,17 @@
   .custom-range::-moz-range-thumb {
     @apply h-4 w-4 rounded-full border-0;
     background-color: hsl(var(--primary));
+  }
+
+  .high-contrast-mode {
+    --border: 0 0% 35%;
+    --muted-foreground: 0 0% 25%;
+    --ring: 145 90% 45%;
+  }
+
+  .dark.high-contrast-mode {
+    --border: 0 0% 55%;
+    --muted-foreground: 0 0% 78%;
+    --ring: 145 85% 55%;
   }
 }

@@ -1,13 +1,20 @@
 module.exports = {
   packagerConfig: {
-    asar: true
+    asar: true,
+    name: 'Progress OS',
+    appBundleId: 'com.progressos.app',
+    icon: './build/POS-ICON'
   },
 
   makers: [
     {
       name: '@electron-forge/maker-squirrel',
       config: {
-        name: 'personalos'
+        name: 'Progress OS',
+        authors: 'Progress OS',
+        exe: 'Progress OS.exe',
+        setupExe: 'Progress OS Setup.exe',
+        setupMsi: 'Progress OS Setup.msi'
       }
     },
     {
@@ -24,6 +31,7 @@ module.exports = {
         devServer: {
           liveReload: false,
           hot: false,
+          client: false,
         },
         renderer: {
           config: './webpack.renderer.config.js',

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Card,
@@ -30,22 +30,24 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import {
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs'
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import {
   Plus,
-  MoreVertical,
   Calendar,
   Flame,
   TrendingUp,
@@ -53,33 +55,151 @@ import {
   Edit,
   CheckCircle,
   X,
-  Archive
+  Archive,
+  AlertCircle
 } from 'lucide-react'
-import { format, startOfMonth, endOfMonth, eachDayOfInterval } from 'date-fns'
+import { format, startOfDay, startOfMonth, endOfMonth, eachDayOfInterval, isAfter, parseISO, subDays, startOfWeek, endOfWeek } from 'date-fns'
 import { useToaster } from '@/hooks/use-toaster'
 import { useElectron } from '@/hooks/use-electron'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
-import { database, CreateHabitDTO, UpdateHabitDTO } from '@/lib/database'
-import { Habit } from '@/types'
+import { database, CreateHabitDTO, UpdateHabitDTO, getLocalDateString } from '@/lib/database'
+import { 
+  calculateHabitAnalytics, 
+  calculateHabitDueMetricsForDay,
+  calculateHabitDueSeries,
+  getDateRange, 
+  calculateCurrentHabitStreak,
+  calculateLongestHabitStreak,
+  calculateCheckInsStats
+} from '@/lib/progress'
+import { Habit, HabitCompletion } from '@/types'
+import { validateHabitForm } from '@/lib/habit-logic'
+import { calculateHabitStreaks, countHabitCompletedPeriods, countHabitTotalPeriods } from '@/lib/habit-streaks'
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend,
+} from 'recharts'
+import { ContextTipsDialog } from '@/components/context-tips-dialog'
+
+const DueHabitTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload || payload.length === 0) return null
+
+  const point = payload?.[0]?.payload || {}
+  const dueHabits = Number(point.dueHabits ?? 0)
+  const completedDueHabits = Number(point.completedDueHabits ?? 0)
+  const missedHabits = Math.max(dueHabits - completedDueHabits, 0)
+  const completionRate = dueHabits > 0 ? Math.round((completedDueHabits / dueHabits) * 100) : 0
+  const displayDate = point.fullDate
+    ? format(parseISO(`${point.fullDate}T00:00:00`), 'EEE, MMM d, yyyy')
+    : label
+  const dueTitles: string[] = Array.isArray(point.dueHabitTitles) ? point.dueHabitTitles : []
+  const completedTitles: string[] = Array.isArray(point.completedDueHabitTitles) ? point.completedDueHabitTitles : []
+
+  return (
+    <div className="rounded-lg border bg-popover p-3 shadow-lg">
+      <p className="font-semibold text-sm mb-2">{displayDate}</p>
+      <div className="space-y-1 text-sm">
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-muted-foreground">Due Habits:</span>
+          <span className="font-semibold text-purple-500">{dueHabits}</span>
+        </div>
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-muted-foreground">Completed:</span>
+          <span className="font-semibold text-green-500">{completedDueHabits}</span>
+        </div>
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-muted-foreground">Missed:</span>
+          <span className="font-semibold text-red-500">{missedHabits}</span>
+        </div>
+        <div className="flex items-center justify-between gap-4 border-t border-border/50 pt-1 mt-1">
+          <span className="text-muted-foreground">Consistency:</span>
+          <span className="font-semibold">{completionRate}%</span>
+        </div>
+      </div>
+      {(dueTitles.length > 0 || completedTitles.length > 0) && (
+        <div className="mt-2 pt-2 border-t border-border/50 space-y-1 text-xs">
+          {dueTitles.length > 0 && (
+            <p className="text-muted-foreground truncate" title={`Due: ${dueTitles.join(', ')}`}>
+              Due: {dueTitles.join(', ')}
+            </p>
+          )}
+          {completedTitles.length > 0 && (
+            <p className="text-muted-foreground truncate" title={`Completed: ${completedTitles.join(', ')}`}>
+              Completed: {completedTitles.join(', ')}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 interface HabitFormData {
   title: string
   description: string
-  frequency: Habit['frequency']
+  frequency: Habit['frequency'] | '' // Allow empty string for "not selected" state
   schedule: string[]
   goal_id: string
+  tags: string[]
 }
 
 interface HabitStats {
+  // Structure: Static habit counts
   total: number
   daily: number
   weekly: number
   monthly: number
+  
+  // Today: Daily feedback
+  todayCompletedCount: number
+  todayExpectedCount: number
+  todayCompletionPercentage: number
+  
+  // Momentum: Current & Longest Streaks
+  currentStreak: number
+  longestStreak: number
   activeStreaks: number
+  
+  // Reliability: Long-term consistency
   averageConsistency: number
-  totalCompletions30d: number
+  
+  // Volume: 30-day completions
+  checkInsCompleted: number
+  checkInsTotal: number
 }
+
+const HABIT_TIPS_SECTIONS = [
+  {
+    title: 'Habit Purpose and Consistency',
+    points: [
+      'Habits turn repeated actions into stable systems, reducing reliance on motivation swings.',
+      'Consistency score reflects reliability over time, not one-time intensity.',
+      'Aim for steady completions instead of all-or-nothing streak pressure.',
+    ],
+  },
+  {
+    title: 'Streak Logic',
+    points: [
+      'Streaks follow frequency rules: daily checks daily, weekly checks within the current week, monthly within the current month.',
+      'Missing expected periods lowers momentum and consistency metrics.',
+      'Recover quickly after misses; long streaks are built by fast restarts.',
+    ],
+  },
+  {
+    title: 'Best Practices by Frequency',
+    points: [
+      'Daily: keep actions small and clear so completion is realistic every day.',
+      'Weekly: assign a fixed weekday anchor to avoid last-minute catch-up.',
+      'Monthly: schedule checkpoint dates early in the month to prevent end-of-month overload.',
+    ],
+  },
+] as const
 
 export default function Habits() {
   const electron = useElectron()
@@ -96,22 +216,34 @@ export default function Habits() {
   const [formData, setFormData] = useState<HabitFormData>({
     title: '',
     description: '',
-    frequency: 'daily',
-    schedule: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+    frequency: '', // Empty by default - user must select
+    schedule: [],
     goal_id: '',
+    tags: [],
   })
+  const [formErrors, setFormErrors] = useState<{ [key: string]: string }>({})  
+  const [newTag, setNewTag] = useState('')
   const [selectedMonth, setSelectedMonth] = useState(new Date())
+  const [habitPendingUndoneConfirm, setHabitPendingUndoneConfirm] = useState<Habit | null>(null)
 
-  // Days of week for schedule selection
-  const daysOfWeek = [
-    { value: 'monday', label: 'Monday' },
-    { value: 'tuesday', label: 'Tuesday' },
-    { value: 'wednesday', label: 'Wednesday' },
-    { value: 'thursday', label: 'Thursday' },
-    { value: 'friday', label: 'Friday' },
-    { value: 'saturday', label: 'Saturday' },
-    { value: 'sunday', label: 'Sunday' },
-  ]
+  useEffect(() => {
+    const openCreateHabit = () => {
+      setIsEditing(null)
+      setFormData({
+        title: '',
+        description: '',
+        frequency: '',
+        schedule: [],
+        goal_id: '',
+        tags: [],
+      })
+      setNewTag('')
+      setIsCreating(true)
+    }
+
+    window.addEventListener('app:new-habit', openCreateHabit as EventListener)
+    return () => window.removeEventListener('app:new-habit', openCreateHabit as EventListener)
+  }, [])
 
   const filteredHabits = useMemo(() => habits.filter((habit: Habit) => {
     const matchesSearch = searchQuery === '' ||
@@ -139,18 +271,27 @@ export default function Habits() {
     }
   }), [habits, searchQuery, selectedFrequency, selectedGoal, sortBy])
 
-  // Calculate statistics
-  const stats: HabitStats = useMemo(() => ({
-    total: habits.length,
-    daily: habits.filter(h => h.frequency === 'daily').length,
-    weekly: habits.filter(h => h.frequency === 'weekly').length,
-    monthly: habits.filter(h => h.frequency === 'monthly').length,
-    activeStreaks: habits.filter(h => h.streak_current >= 7).length,
-    averageConsistency: habits.length
-      ? Math.round(habits.reduce((sum: number, h: Habit) => sum + (h.consistency_score || 0), 0) / habits.length)
-      : 0,
-    totalCompletions30d: habits.reduce((sum: number, h: Habit) => sum + (h.consistency_score || 0), 0), // This is likely wrong, but I'll fix it later if needed
-  }), [habits])
+  // Fetch ALL completions (for streak calculations)
+  const { data: allCompletions = [] } = useQuery({
+    queryKey: ['habit-completions-all'],
+    queryFn: async () => {
+      if (!electron.isReady) return []
+      
+      const result = await electron.executeQuery<any[]>(`
+        SELECT habit_id, date, completed
+        FROM habit_completions 
+        ORDER BY date ASC
+      `)
+      
+      return Array.isArray(result) ? result.map(r => ({
+        habit_id: r.habit_id,
+        date: r.date,
+        completed: Boolean(r.completed)
+      })) : []
+    },
+    enabled: electron.isReady,
+    refetchOnWindowFocus: true,
+  })
 
   // Generate calendar days for the selected month
   const calendarDays = eachDayOfInterval({
@@ -158,16 +299,310 @@ export default function Habits() {
     end: endOfMonth(selectedMonth),
   })
 
-  // Fetch completions for the selected month (and include today's month for accurate status)
+  // Use LOCAL date string consistently - critical for correct habit tracking
+  const todayStr = getLocalDateString(new Date())
+  
+  // Fetch completions for TODAY specifically (for instant button state updates)
+  const { data: todayCompletions = [] } = useQuery({
+    queryKey: ['habit-completions-today', todayStr],
+    queryFn: async () => {
+      if (!electron.isReady) return []
+      
+      const result = await electron.executeQuery(`
+        SELECT habit_id, date 
+        FROM habit_completions 
+        WHERE date = ? 
+        AND completed = 1
+      `, [todayStr])
+      return Array.isArray(result) ? result : []
+    },
+    enabled: electron.isReady,
+    refetchOnWindowFocus: true,
+    refetchInterval: 5000, // Refetch every 5 seconds for instant updates
+    staleTime: 0, // Always treat as stale to ensure fresh data
+  })
+
+  // Calculate statistics using centralized habit analytics (match Analytics → Habits)
+  const habitDateRange = useMemo(() => getDateRange('month'), [todayStr])
+  const typedAllCompletions = useMemo(() => (Array.isArray(allCompletions) ? allCompletions as HabitCompletion[] : []), [allCompletions])
+  const habitAnalytics = useMemo(
+    () => calculateHabitAnalytics(habits, habitDateRange, typedAllCompletions),
+    [habits, habitDateRange, typedAllCompletions]
+  )
+
+  const dueTodayMetrics = useMemo(
+    () => calculateHabitDueMetricsForDay(habits, typedAllCompletions, new Date(), 'short'),
+    [habits, typedAllCompletions]
+  )
+
+  const habitComputedMetrics = useMemo(() => {
+    const metrics = new Map<string, { streakCurrent: number; streakLongest: number; consistency: number }>()
+
+    habits.forEach((habit) => {
+      const streaks = calculateHabitStreaks(habit, typedAllCompletions)
+      const completedPeriods = countHabitCompletedPeriods(habit, typedAllCompletions)
+      const totalPeriods = countHabitTotalPeriods(habit)
+      const consistency = totalPeriods > 0 ? Math.round((completedPeriods / totalPeriods) * 100) : 0
+
+      metrics.set(habit.id, {
+        streakCurrent: streaks.current,
+        streakLongest: streaks.longest,
+        consistency,
+      })
+    })
+
+    return metrics
+  }, [habits, typedAllCompletions])
+
+  const stats: HabitStats = useMemo(() => {
+    const activeHabits = [
+      ...habitAnalytics.byFrequency.daily,
+      ...habitAnalytics.byFrequency.weekly,
+      ...habitAnalytics.byFrequency.monthly
+    ]
+    // Calculate today's completion from due habits only
+    const todayCompletedCount = dueTodayMetrics.completedDueHabits
+    const todayExpectedCount = dueTodayMetrics.dueHabits
+    
+    // Calculate streaks using all active habits (respects frequency rules)
+    const currentStreak = calculateCurrentHabitStreak(activeHabits, typedAllCompletions)
+    const longestStreak = calculateLongestHabitStreak(activeHabits, typedAllCompletions)
+    
+    // Calculate check-ins (all-time period totals)
+    const checkInsStats = calculateCheckInsStats(activeHabits, typedAllCompletions)
+    
+    return {
+      total: habitAnalytics.total,
+      daily: habitAnalytics.byFrequency.daily.length,
+      weekly: habitAnalytics.byFrequency.weekly.length,
+      monthly: habitAnalytics.byFrequency.monthly.length,
+      todayCompletedCount,
+      todayExpectedCount,
+      todayCompletionPercentage: todayExpectedCount > 0 
+        ? Math.round((todayCompletedCount / todayExpectedCount) * 100) 
+        : 0,
+      currentStreak,
+      longestStreak,
+      activeStreaks: activeHabits.filter(h => (habitComputedMetrics.get(h.id)?.streakCurrent || 0) >= 7).length,
+      averageConsistency: habitAnalytics.avgConsistency,
+      checkInsCompleted: checkInsStats.completed,
+      checkInsTotal: checkInsStats.total,
+    }
+  }, [habitAnalytics, typedAllCompletions, habitComputedMetrics, dueTodayMetrics])
+
+  const selectedMonthDueSeries = useMemo(() => {
+    const today = startOfDay(new Date())
+    const monthStart = startOfMonth(selectedMonth)
+    const rawMonthEnd = endOfMonth(selectedMonth)
+    const monthEnd = rawMonthEnd > today ? today : rawMonthEnd
+
+    if (monthStart > monthEnd) {
+      return []
+    }
+
+    const completionDatesByHabit = new Map<string, string[]>()
+    typedAllCompletions
+      .filter((completion) => completion.completed)
+      .forEach((completion) => {
+        const key = completion.habit_id
+        const dateKey = completion.date.slice(0, 10)
+        if (!completionDatesByHabit.has(key)) {
+          completionDatesByHabit.set(key, [])
+        }
+        completionDatesByHabit.get(key)!.push(dateKey)
+      })
+
+    const hasCompletionBetween = (habitId: string, startKey: string, endKey: string) => {
+      const dates = completionDatesByHabit.get(habitId) || []
+      return dates.some((dateKey) => dateKey >= startKey && dateKey <= endKey)
+    }
+
+    const getMonthlyDueDay = (habit: Habit, referenceDay: Date): number => {
+      const rawSchedule = (habit as any)?.schedule
+      const parsedSchedule = Array.isArray(rawSchedule)
+        ? rawSchedule
+        : typeof rawSchedule === 'string'
+          ? (() => {
+              try {
+                const parsed = JSON.parse(rawSchedule)
+                return Array.isArray(parsed) ? parsed : []
+              } catch {
+                return []
+              }
+            })()
+          : []
+
+      const scheduledDate = parsedSchedule
+        .map((value: any) => Number.parseInt(String(value), 10))
+        .find((value: number) => Number.isFinite(value) && value >= 1 && value <= 31)
+
+      const daysInMonth = new Date(referenceDay.getFullYear(), referenceDay.getMonth() + 1, 0).getDate()
+      if (scheduledDate && Number.isFinite(scheduledDate)) {
+        return Math.min(scheduledDate, daysInMonth)
+      }
+      return daysInMonth
+    }
+
+    const getDueMetaForDate = (dayKey: string) => {
+      const referenceDate = startOfDay(parseISO(`${dayKey}T00:00:00`))
+      const dueHabitTitles: string[] = []
+      const completedDueHabitTitles: string[] = []
+
+      habits.forEach((habit) => {
+        if (!habit || habit.deleted_at) return
+        const createdAt = startOfDay(parseISO(habit.created_at))
+        if (createdAt > referenceDate) return
+
+        if (habit.frequency === 'daily') {
+          dueHabitTitles.push(habit.title)
+          if (hasCompletionBetween(habit.id, dayKey, dayKey)) {
+            completedDueHabitTitles.push(habit.title)
+          }
+          return
+        }
+
+        if (habit.frequency === 'weekly') {
+          if (referenceDate.getDay() !== 0) return
+          const periodStart = getLocalDateString(startOfWeek(referenceDate, { weekStartsOn: 1 }))
+          dueHabitTitles.push(habit.title)
+          if (hasCompletionBetween(habit.id, periodStart, dayKey)) {
+            completedDueHabitTitles.push(habit.title)
+          }
+          return
+        }
+
+        if (habit.frequency === 'monthly') {
+          const dueDay = getMonthlyDueDay(habit, referenceDate)
+          if (referenceDate.getDate() !== dueDay) return
+          const periodStart = getLocalDateString(startOfMonth(referenceDate))
+          dueHabitTitles.push(habit.title)
+          if (hasCompletionBetween(habit.id, periodStart, dayKey)) {
+            completedDueHabitTitles.push(habit.title)
+          }
+        }
+      })
+
+      return {
+        dueHabitTitles,
+        completedDueHabitTitles,
+      }
+    }
+
+    return calculateHabitDueSeries(habits, typedAllCompletions, { start: monthStart, end: monthEnd }, 'short').map((point) => {
+      const dueMeta = getDueMetaForDate(point.fullDate)
+      return {
+      date: point.date,
+      fullDate: point.fullDate,
+      dueHabits: point.dueHabits,
+      completedDueHabits: point.completedDueHabits,
+      earlyCompletedHabits: point.earlyCompletedHabits,
+      dueHabitTitles: dueMeta.dueHabitTitles,
+      completedDueHabitTitles: dueMeta.completedDueHabitTitles,
+    }
+    })
+  }, [habits, selectedMonth, typedAllCompletions])
+
+  const selectedMonthEarlyCompletions = useMemo(
+    () => {
+      if (!Array.isArray(typedAllCompletions) || typedAllCompletions.length === 0) return 0
+
+      const today = startOfDay(new Date())
+      const monthStart = startOfMonth(selectedMonth)
+      const rawMonthEnd = endOfMonth(selectedMonth)
+      const monthEnd = rawMonthEnd > today ? today : rawMonthEnd
+
+      if (monthStart > monthEnd) return 0
+
+      const getMonthlyDueDay = (habit: Habit, referenceDay: Date): number => {
+        const rawSchedule = (habit as any)?.schedule
+        const parsedSchedule = Array.isArray(rawSchedule)
+          ? rawSchedule
+          : typeof rawSchedule === 'string'
+            ? (() => {
+                try {
+                  const parsed = JSON.parse(rawSchedule)
+                  return Array.isArray(parsed) ? parsed : []
+                } catch {
+                  return []
+                }
+              })()
+            : []
+
+        const scheduledDate = parsedSchedule
+          .map((value: any) => Number.parseInt(String(value), 10))
+          .find((value: number) => Number.isFinite(value) && value >= 1 && value <= 31)
+
+        const daysInMonth = new Date(referenceDay.getFullYear(), referenceDay.getMonth() + 1, 0).getDate()
+        if (scheduledDate && Number.isFinite(scheduledDate)) {
+          return Math.min(scheduledDate, daysInMonth)
+        }
+        return daysInMonth
+      }
+
+      const completedByHabit = new Map<string, Date[]>()
+      typedAllCompletions
+        .filter((completion) => completion.completed)
+        .forEach((completion) => {
+          const dateOnly = completion.date.slice(0, 10)
+          const completedDate = startOfDay(parseISO(`${dateOnly}T00:00:00`))
+          if (completedDate < monthStart || completedDate > monthEnd) return
+          if (!completedByHabit.has(completion.habit_id)) {
+            completedByHabit.set(completion.habit_id, [])
+          }
+          completedByHabit.get(completion.habit_id)!.push(completedDate)
+        })
+
+      let earlyCount = 0
+
+      habits.forEach((habit) => {
+        if (!habit || habit.deleted_at || habit.frequency === 'daily') return
+        const createdAt = startOfDay(parseISO(habit.created_at))
+        const completionDates = completedByHabit.get(habit.id) || []
+        if (completionDates.length === 0) return
+
+        if (habit.frequency === 'weekly') {
+          let weekStart = startOfWeek(monthStart, { weekStartsOn: 1 })
+          while (weekStart <= monthEnd) {
+            const dueDate = endOfWeek(weekStart, { weekStartsOn: 1 })
+            if (dueDate >= monthStart && dueDate <= monthEnd && dueDate >= createdAt) {
+              const effectiveStart = weekStart > createdAt ? weekStart : createdAt
+              const earlyHit = completionDates.some((date) => date >= effectiveStart && date < dueDate)
+              if (earlyHit) {
+                earlyCount += 1
+              }
+            }
+            weekStart = startOfWeek(new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 7), { weekStartsOn: 1 })
+          }
+          return
+        }
+
+        if (habit.frequency === 'monthly') {
+          const dueDay = getMonthlyDueDay(habit, monthStart)
+          const dueDate = startOfDay(new Date(monthStart.getFullYear(), monthStart.getMonth(), dueDay))
+          if (dueDate < monthStart || dueDate > monthEnd || dueDate < createdAt) return
+          const effectiveStart = createdAt > monthStart ? createdAt : monthStart
+          const earlyHit = completionDates.some((date) => date >= effectiveStart && date < dueDate)
+          if (earlyHit) {
+            earlyCount += 1
+          }
+        }
+      })
+
+      return earlyCount
+    },
+    [habits, selectedMonth, typedAllCompletions]
+  )
+
+  // Fetch completions for the selected month (for monthly overview)
   const { data: completions = [] } = useQuery({
     queryKey: ['habit-completions', format(selectedMonth, 'yyyy-MM')],
     queryFn: async () => {
-      const today = new Date()
-      const rangeStart = selectedMonth < today ? selectedMonth : today
-      const rangeEnd = selectedMonth < today ? today : selectedMonth
-      const start = format(startOfMonth(rangeStart), 'yyyy-MM-dd')
-      const end = format(endOfMonth(rangeEnd), 'yyyy-MM-dd')
+      const todayDate = new Date()
+      const start = getLocalDateString(startOfMonth(selectedMonth < todayDate ? selectedMonth : todayDate))
+      const end = getLocalDateString(endOfMonth(selectedMonth > todayDate ? selectedMonth : todayDate))
+      
       if (!electron.isReady) return []
+      
       const result = await electron.executeQuery(`
         SELECT habit_id, date 
         FROM habit_completions 
@@ -177,6 +612,9 @@ export default function Habits() {
       return Array.isArray(result) ? result : []
     },
     enabled: electron.isReady,
+    refetchOnWindowFocus: true, // Refetch when returning to app to catch any date changes
+    refetchInterval: 30000, // Refetch every 30 seconds for quicker sync
+    staleTime: 0, // Always treat as stale to ensure fresh data
   })
 
   // Create habit mutation
@@ -189,6 +627,9 @@ export default function Habits() {
     onSuccess: (newHabit) => {
         if(newHabit) {
             addHabit(newHabit)
+            // Invalidate dashboard and analytics queries
+            queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+            queryClient.invalidateQueries({ queryKey: ['analytics'] })
             success('Habit created successfully')
             setIsCreating(false)
             resetForm()
@@ -212,6 +653,9 @@ export default function Habits() {
     onSuccess: (updatedHabit) => {
         if (updatedHabit) {
             updateHabit(updatedHabit)
+            // Invalidate dashboard and analytics queries
+            queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+            queryClient.invalidateQueries({ queryKey: ['analytics'] })
             success('Habit updated successfully')
             setIsEditing(null)
             resetForm()
@@ -238,14 +682,24 @@ export default function Habits() {
     },
     onMutate: async ({ habitId, date, completed }) => {
       const monthKey = format(selectedMonth, 'yyyy-MM')
-      const dateStr = format(date, 'yyyy-MM-dd')
+      // Use local date string for consistency with database storage
+      const dateStr = getLocalDateString(date)
       const queryKey = ['habit-completions', monthKey]
+      const todayQueryKey = ['habit-completions-today', todayStr]
+      const allQueryKey = ['habit-completions-all']
 
+      // Cancel ongoing queries to prevent race conditions
       await queryClient.cancelQueries({ queryKey })
-      const previous = queryClient.getQueryData<any[]>(queryKey)
+      await queryClient.cancelQueries({ queryKey: todayQueryKey })
+      await queryClient.cancelQueries({ queryKey: allQueryKey })
+      
+      const previousMonthly = queryClient.getQueryData<any[]>(queryKey)
+      const previousToday = queryClient.getQueryData<any[]>(todayQueryKey)
+      const previousAll = queryClient.getQueryData<any[]>(allQueryKey)
 
-      if (Array.isArray(previous)) {
-        const withoutTarget = previous.filter((c) => !(c.habit_id === habitId && (c.date === dateStr || c.date?.startsWith(dateStr))))
+      // Optimistic update for monthly completions
+      if (Array.isArray(previousMonthly)) {
+        const withoutTarget = previousMonthly.filter((c) => !(c.habit_id === habitId && (c.date === dateStr || c.date?.startsWith(dateStr))))
         const next = completed
           ? [...withoutTarget, { habit_id: habitId, date: dateStr }]
           : withoutTarget
@@ -253,21 +707,88 @@ export default function Habits() {
         queryClient.setQueryData(queryKey, next)
       }
 
-      return { previous, queryKey }
+      // Optimistic update for today's completions if this is today
+      if (dateStr === todayStr && Array.isArray(previousToday)) {
+        const withoutTarget = previousToday.filter((c) => !(c.habit_id === habitId && (c.date === dateStr || c.date?.startsWith(dateStr))))
+        const next = completed
+          ? [...withoutTarget, { habit_id: habitId, date: dateStr }]
+          : withoutTarget
+
+        queryClient.setQueryData(todayQueryKey, next)
+      }
+
+      // Optimistic update for all completions (drives streaks/check-ins/card completion state)
+      if (Array.isArray(previousAll)) {
+        const withoutTarget = previousAll.filter((c) => !(c.habit_id === habitId && (c.date === dateStr || c.date?.startsWith(dateStr))))
+        const next = completed
+          ? [...withoutTarget, { habit_id: habitId, date: dateStr, completed: true }]
+          : withoutTarget
+
+        queryClient.setQueryData(allQueryKey, next)
+      }
+
+      return { previousMonthly, previousToday, previousAll, queryKey, todayQueryKey, allQueryKey, dateStr }
     },
     onError: (error, _variables, context) => {
       console.error('Failed to toggle habit completion:', error)
       toastError('Failed to update habit')
-      if (context?.previous && context.queryKey) {
-        queryClient.setQueryData(context.queryKey, context.previous)
+      // Rollback both optimistic updates
+      if (context?.previousMonthly && context.queryKey) {
+        queryClient.setQueryData(context.queryKey, context.previousMonthly)
+      }
+      if (context?.previousToday && context.todayQueryKey) {
+        queryClient.setQueryData(context.todayQueryKey, context.previousToday)
+      }
+      if (context?.previousAll && context.allQueryKey) {
+        queryClient.setQueryData(context.allQueryKey, context.previousAll)
       }
     },
-    onSuccess: (updatedHabit, variables) => {
+    onSuccess: async (updatedHabit, variables) => {
       if (updatedHabit) {
         updateHabit(updatedHabit)
-        queryClient.invalidateQueries({ queryKey: ['habit-completions'] })
+        
+        const currentMonthKey = format(new Date(), 'yyyy-MM')
+        const selectedMonthKey = format(selectedMonth, 'yyyy-MM')
+        const currentTodayKey = getLocalDateString(new Date())
+        
+        // Refetch TODAY's completions FIRST and WAIT for it (critical for button state)
+        await queryClient.refetchQueries({ 
+          queryKey: ['habit-completions-today', currentTodayKey]
+        })
+        
+        // Then refetch the monthly views in parallel
+        const monthlyRefetches = []
+        
+        monthlyRefetches.push(
+          queryClient.refetchQueries({ 
+            queryKey: ['habit-completions', currentMonthKey]
+          })
+        )
+        
+        if (selectedMonthKey !== currentMonthKey) {
+          monthlyRefetches.push(
+            queryClient.refetchQueries({ 
+              queryKey: ['habit-completions', selectedMonthKey]
+            })
+          )
+        }
+        
+        monthlyRefetches.push(
+          queryClient.refetchQueries({ queryKey: ['habit-completions-30d'] })
+        )
+
+        monthlyRefetches.push(
+          queryClient.refetchQueries({ queryKey: ['habit-completions-all'] })
+        )
+        
+        await Promise.all(monthlyRefetches)
+        
+        // Invalidate remaining queries for consistency across the app
         queryClient.invalidateQueries({ queryKey: ['dashboard'] })
         queryClient.invalidateQueries({ queryKey: ['analytics'] })
+        queryClient.invalidateQueries({ queryKey: ['review-insights'] })
+        queryClient.invalidateQueries({ queryKey: ['habits'] })
+        
         if (variables.completed) {
           success('Habit marked as complete')
         } else {
@@ -289,6 +810,7 @@ export default function Habits() {
       queryClient.invalidateQueries({ queryKey: ['archive'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['review-insights'] })
       success('Habit archived. Completion history preserved.')
     },
     onError: (error) => {
@@ -301,10 +823,13 @@ export default function Habits() {
     setFormData({
       title: '',
       description: '',
-      frequency: 'daily',
-      schedule: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+      frequency: '', // Empty by default - user must select
+      schedule: [],
       goal_id: '',
+      tags: [],
     })
+    setFormErrors({})
+    setNewTag('')
   }
 
   const handleEdit = (habit: Habit) => {
@@ -313,14 +838,41 @@ export default function Habits() {
       title: habit.title,
       description: habit.description || '',
       frequency: habit.frequency,
-      schedule: habit.schedule,
+      schedule: [],
       goal_id: habit.goal_id || '',
+      tags: (habit as any).tags || [],
     })
+    setIsCreating(true)
   }
 
   const handleSubmit = () => {
+    // Clear previous errors
+    setFormErrors({})
+    
+    // Manual validation for Title and Frequency
+    const errors: { [key: string]: string } = {}
+    
     if (!formData.title.trim()) {
-      toastError('Please enter a habit title')
+      errors.title = 'Habit title is required'
+    }
+    
+    if (!formData.frequency) {
+      errors.frequency = 'Please select a frequency'
+    }
+    
+    // Use comprehensive validation utility for additional checks
+    const validation = validateHabitForm(formData)
+    
+    if (!validation.isValid) {
+      Object.assign(errors, validation.errors)
+    }
+    
+    // If there are errors, display them and return
+    if (Object.keys(errors).length > 0) {
+      setFormErrors(errors)
+      // Show toast with first error
+      const firstError = Object.values(errors)[0]
+      if (firstError) toastError(firstError)
       return
     }
 
@@ -329,14 +881,103 @@ export default function Habits() {
         id: isEditing,
         updates: {
           ...formData,
+          frequency: formData.frequency as Habit['frequency'],
         },
       })
     } else {
-      createHabitMutation.mutate(formData)
+      createHabitMutation.mutate({
+        ...formData,
+        frequency: formData.frequency as Habit['frequency'],
+      })
     }
   }
 
-  const handleToggleCompletion = (habitId: string, date: Date, currentlyCompleted: boolean) => {
+  const isMonthlyOverviewDateMarkable = (date: Date, habitCreatedAt?: string) => {
+    if (!habitCreatedAt) return false
+
+    const today = startOfDay(new Date())
+    const yesterday = startOfDay(subDays(today, 1))
+    const candidate = startOfDay(date)
+    const createdDay = startOfDay(parseISO(habitCreatedAt))
+
+    if (candidate.getTime() > today.getTime()) return false
+    if (candidate.getTime() < createdDay.getTime()) return false
+
+    if (candidate.getTime() !== today.getTime() && candidate.getTime() !== yesterday.getTime()) {
+      return false
+    }
+
+    if (createdDay.getTime() === today.getTime() && candidate.getTime() === yesterday.getTime()) {
+      return false
+    }
+
+    return true
+  }
+
+  const getPeriodCompletionDate = (habit: Habit, anchorDate: Date): Date | null => {
+    const targetDay = startOfDay(anchorDate)
+
+    if (habit.frequency === 'daily') {
+      const targetKey = getLocalDateString(targetDay)
+      const isCompleted = typedAllCompletions.some((completion) => (
+        completion.completed &&
+        completion.habit_id === habit.id &&
+        completion.date.slice(0, 10) === targetKey
+      ))
+      return isCompleted ? targetDay : null
+    }
+
+    const start = habit.frequency === 'weekly'
+      ? startOfWeek(targetDay, { weekStartsOn: 1 })
+      : startOfMonth(targetDay)
+    const end = habit.frequency === 'weekly'
+      ? endOfWeek(targetDay, { weekStartsOn: 1 })
+      : endOfMonth(targetDay)
+
+    const candidate = typedAllCompletions.find((completion) => {
+      if (!completion.completed || completion.habit_id !== habit.id) return false
+      const completionDate = startOfDay(parseISO(completion.date))
+      return completionDate >= start && completionDate <= end
+    })
+
+    if (!candidate) return null
+    return startOfDay(parseISO(candidate.date))
+  }
+
+  /**
+   * Handles toggling habit completion with proper validation.
+   */
+  const handleToggleCompletion = (
+    habitId: string,
+    date: Date,
+    currentlyCompleted: boolean,
+    habitCreatedAt?: string,
+    enforceMonthlyOverviewWindow: boolean = false
+  ) => {
+    const dateStr = getLocalDateString(date)
+    const todayLocal = getLocalDateString(new Date())
+    
+    // Prevent future dates
+    if (dateStr > todayLocal) {
+      console.warn('[HABIT] Cannot mark future date as completed')
+      return
+    }
+    
+    // Prevent marking dates before habit creation
+    if (habitCreatedAt) {
+      const creationDate = getLocalDateString(parseISO(habitCreatedAt))
+      if (dateStr < creationDate) {
+        console.warn('[HABIT] Cannot mark date before habit creation:', dateStr, 'created:', creationDate)
+        return
+      }
+
+      // Monthly overview restriction: only today and one day back can be toggled
+      if (enforceMonthlyOverviewWindow && !isMonthlyOverviewDateMarkable(date, habitCreatedAt)) {
+        console.warn('[HABIT] Date not markable by monthly overview rule:', dateStr)
+        return
+      }
+    }
+    
     toggleHabitCompletionMutation.mutate({
       habitId,
       date,
@@ -344,129 +985,218 @@ export default function Habits() {
     })
   }
 
-  const toggleDayInSchedule = (day: string) => {
-    setFormData(prev => ({
-      ...prev,
-      schedule: prev.schedule.includes(day)
-        ? prev.schedule.filter(d => d !== day)
-        : [...prev.schedule, day]
-    }))
-  }
-
+  /**
+   * Returns whether a habit is completed for a given day.
+   * Uses todayCompletions query for today (more frequently refreshed)
+   * and completions query for other days in the month.
+   */
   const getHabitCompletionForDay = (habitId: string, date: Date) => {
+    const dateStr = getLocalDateString(date)
+    const isToday = dateStr === todayStr
+    
+    // For TODAY, always use todayCompletions query (single source of truth for button state)
+    if (isToday) {
+      if (!Array.isArray(todayCompletions) || todayCompletions.length === 0) return false
+      return todayCompletions.some((c: any) => c.habit_id === habitId && c.date && (c.date === dateStr || c.date.startsWith(dateStr)))
+    }
+    
+    // For past/future dates, use the monthly completions
     if (!Array.isArray(completions) || completions.length === 0) return false
-    const dateStr = format(date, 'yyyy-MM-dd')
     return completions.some((c: any) => c.habit_id === habitId && c.date && (c.date === dateStr || c.date.startsWith(dateStr)))
   }
 
   const renderHabitCard = (habit: Habit) => {
-    const today = new Date()
-    const isCompletedToday = getHabitCompletionForDay(habit.id, today)
+    const todayDate = new Date()
+    const completionDateForPeriod = getPeriodCompletionDate(habit, todayDate)
+    const isCompletedForAction = completionDateForPeriod !== null
+    const computedMetric = habitComputedMetrics.get(habit.id)
+    const streakCurrent = computedMetric?.streakCurrent ?? 0
+    const streakLongest = computedMetric?.streakLongest ?? 0
+    const consistencyScore = computedMetric?.consistency ?? 0
+    const habitTags = (habit as any).tags || []
+    
+    // Use habit.id and completion state as cache key to force re-render
+    const cardKey = `${habit.id}-${isCompletedForAction}`
+    
+    // Determine streak color intensity
+    const getStreakColor = (streak: number) => {
+      if (streak >= 30) return "text-orange-500 fill-orange-500"
+      if (streak >= 14) return "text-orange-400 fill-orange-400"
+      if (streak >= 7) return "text-yellow-500 fill-yellow-500"
+      return "text-muted-foreground"
+    }
+    
+    // Determine consistency color
+    const getConsistencyColor = (score: number) => {
+      if (score >= 80) return "text-green-500"
+      if (score >= 60) return "text-blue-500"
+      if (score >= 40) return "text-yellow-500"
+      return "text-gray-500"
+    }
 
     return (
-    <Card key={habit.id} interactive className="card-hover">
-      <CardHeader>
+    <Card 
+      key={cardKey} 
+      className={cn(
+        "overflow-hidden transition-all duration-300 group",
+        "bg-gradient-to-br from-card to-card/80",
+        "border-0 shadow-md hover:shadow-lg",
+        isCompletedForAction && "ring-2 ring-green-500/30"
+      )}
+    >
+      <CardHeader className="pb-2">
         <div className="flex items-start justify-between">
           <div className="flex-1 min-w-0">
-            <CardTitle className="truncate">{habit.title}</CardTitle>
-            <CardDescription className="truncate">
-              {habit.description || 'No description'}
+            <CardTitle className="truncate text-base flex items-center gap-2">
+              {habit.title}
+              {isCompletedForAction && (
+                <CheckCircle className="h-4 w-4 text-green-500 flex-shrink-0" />
+              )}
+            </CardTitle>
+            <CardDescription className="truncate text-xs">
+              {habit.description || 'Build this habit consistently'}
             </CardDescription>
+            <div className="mt-1 text-xs text-muted-foreground">
+              Created: {format(parseISO(habit.created_at), 'MMM d, yyyy, h:mm a')}
+            </div>
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8">
-                <MoreVertical className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>Actions</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleEdit(habit)}>
-                <Edit className="mr-2 h-4 w-4" />
-                Edit
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-orange-600"
-                onClick={() => deleteHabitMutation.mutate(habit.id)}
-              >
-                <Archive className="mr-2 h-4 w-4" />
-                Archive
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* Direct Action Icons */}
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              className="h-7 w-7 hover:bg-primary/10"
+              onClick={() => handleEdit(habit)}
+            >
+              <Edit className="h-3.5 w-3.5" />
+            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  className="h-7 w-7 hover:bg-orange-500/10 text-orange-500"
+                >
+                  <Archive className="h-3.5 w-3.5" />
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent className="bg-white dark:bg-card border border-border shadow-lg">
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Archive Habit</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This habit will be moved to the Archive. You can restore it later from the Archive section.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction 
+                    onClick={() => deleteHabitMutation.mutate(habit.id)}
+                    className="bg-orange-500 text-white hover:bg-orange-600"
+                  >
+                    Archive
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Badge variant="outline">
+        
+        {/* Badges */}
+        <div className="flex items-center gap-1.5 flex-wrap mt-2">
+          <Badge 
+            className={cn(
+              "text-[10px] px-2 py-1 h-5 font-medium border-0",
+              habit.frequency === 'daily' && "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+              habit.frequency === 'weekly' && "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
+              habit.frequency === 'monthly' && "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+            )}
+          >
             {habit.frequency}
           </Badge>
           {habit.goal_id && (
-            <Badge variant="secondary">
+            <Badge 
+              className="text-[10px] px-2 py-1 h-5 font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 border-0"
+            >
               <Target className="mr-1 h-3 w-3" />
-              {goals.find(g => g.id === habit.goal_id)?.title}
+              {goals.find(g => g.id === habit.goal_id)?.title?.slice(0, 15)}...
             </Badge>
           )}
+          {habitTags.slice(0, 2).map((tag: string) => (
+            <Badge 
+              key={tag} 
+              className="text-[10px] px-2 py-1 h-5 font-medium bg-slate-200 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300 border-0"
+            >
+              {tag}
+            </Badge>
+          ))}
         </div>
       </CardHeader>
 
-      <CardContent>
-        <div className="space-y-4">
-          {/* Streak and Consistency */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <Flame className={cn(
-                  "h-5 w-5",
-                  habit.streak_current >= 7 ? "text-orange-500 animate-pulse" : "text-muted-foreground"
-                )} />
-                <div>
-                  <div className="text-2xl font-bold">{habit.streak_current}</div>
-                  <div className="text-xs text-muted-foreground">Current Streak</div>
-                </div>
+      <CardContent className="pb-3">
+        {/* Stats with Colored Icons */}
+        <div className="grid grid-cols-2 gap-3">
+          {/* Streak */}
+          <div className={cn(
+            "p-3 rounded-lg",
+            "bg-gradient-to-br from-orange-500/5 to-orange-500/10"
+          )}>
+            <div className="flex items-center gap-2">
+              <Flame className={cn("h-6 w-6", getStreakColor(streakCurrent))} />
+              <div>
+                <div className="text-xl font-bold">{streakCurrent}</div>
+                <div className="text-[10px] text-muted-foreground">Current Streak</div>
               </div>
-              {habit.streak_longest > habit.streak_current && (
-                <div className="text-xs text-muted-foreground">
-                  Best: {habit.streak_longest} days
-                </div>
-              )}
             </div>
+            {streakLongest > streakCurrent && (
+              <div className="text-[10px] text-muted-foreground mt-1">
+                Best: {streakLongest} days
+              </div>
+            )}
+          </div>
 
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <TrendingUp className="h-5 w-5 text-muted-foreground" />
-                <div>
-                  <div className="text-2xl font-bold">
-                    {Math.round(habit.consistency_score)}%
-                  </div>
-                  <div className="text-xs text-muted-foreground">Consistency</div>
+          {/* Consistency */}
+          <div className={cn(
+            "p-3 rounded-lg",
+            "bg-gradient-to-br from-blue-500/5 to-blue-500/10"
+          )}>
+            <div className="flex items-center gap-2">
+              <TrendingUp className={cn("h-6 w-6", getConsistencyColor(consistencyScore))} />
+              <div>
+                <div className={cn("text-xl font-bold", getConsistencyColor(consistencyScore))}>
+                  {Math.round(consistencyScore)}%
                 </div>
+                <div className="text-[10px] text-muted-foreground">Consistency</div>
               </div>
-              <Progress value={habit.consistency_score} className="h-2" />
             </div>
+            <Progress 
+              value={consistencyScore} 
+              className="h-1.5 mt-2"
+            />
           </div>
         </div>
       </CardContent>
 
-      <CardFooter>
+      <CardFooter className="pt-0">
         <Button
-          variant="secondary"
+          variant="outline"
           size="sm"
           className={cn(
-            "w-full shadow-none",
-            isCompletedToday 
-              ? "bg-muted/50 hover:bg-muted text-muted-foreground border-transparent" 
-              : "bg-green-500/15 hover:bg-green-500/25 text-green-500 border border-green-500/30"
+            "w-full bg-transparent dark:bg-transparent transition-all duration-200",
+            isCompletedForAction 
+              ? "bg-green-500/10 text-green-600 border-green-500/30 hover:bg-red-500/10 hover:text-red-600 hover:border-red-500/30 dark:bg-transparent dark:text-green-300 dark:border-green-500/35 dark:hover:bg-red-500/20 dark:hover:text-red-200 dark:hover:border-red-500/45" 
+              : "text-foreground border-secondary hover:bg-green-500/10 hover:text-green-600 hover:border-green-500/30 dark:bg-transparent dark:text-zinc-100 dark:border-zinc-700/70 dark:hover:bg-green-500/20 dark:hover:text-green-200 dark:hover:border-green-500/45"
           )}
+          disabled={toggleHabitCompletionMutation.isPending}
           onClick={() => {
-            handleToggleCompletion(
-              habit.id,
-              today,
-              isCompletedToday
-            )
+            if (isCompletedForAction) {
+              setHabitPendingUndoneConfirm(habit)
+              return
+            }
+
+            handleToggleCompletion(habit.id, todayDate, false, habit.created_at)
           }}
         >
-          {isCompletedToday ? (
+          {isCompletedForAction ? (
             <>
               <X className="mr-2 h-4 w-4" />
               Mark as Undone
@@ -474,7 +1204,7 @@ export default function Habits() {
           ) : (
             <>
               <CheckCircle className="mr-2 h-4 w-4" />
-              Mark Today as Complete
+              Mark as Done
             </>
           )}
         </Button>
@@ -487,7 +1217,15 @@ export default function Habits() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Habits</h1>
+          <div className="flex items-baseline gap-1.5">
+            <h1 className="text-3xl font-bold">Habits</h1>
+            <ContextTipsDialog
+              title="Habit Tab Tips"
+              description="Understand habit purpose, consistency, streak behavior, and how to use each frequency effectively."
+              sections={HABIT_TIPS_SECTIONS}
+              triggerLabel="Open habit tips"
+            />
+          </div>
           <p className="text-muted-foreground">
             Build consistency through daily practices
           </p>
@@ -510,13 +1248,32 @@ export default function Habits() {
             <div className="flex-1 overflow-y-auto pr-2 -mr-2 scroll-smooth">
               <div className="space-y-4 py-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Habit Title</label>
+                  <label className="text-sm font-medium">
+                    Habit Title
+                    <span className="text-red-500 ml-1">*</span>
+                  </label>
                   <Input
                     placeholder="What habit do you want to build?"
                     value={formData.title}
-                    onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                    className="bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15"
+                    onChange={(e) => {
+                      setFormData({ ...formData, title: e.target.value })
+                      // Clear error when user starts typing
+                      if (formErrors.title) {
+                        setFormErrors({ ...formErrors, title: '' })
+                      }
+                    }}
+                    className={`bg-secondary/50 focus-visible:ring-green-500/50 dark:border-green-500/15 ${
+                      formErrors.title
+                        ? 'border-red-500/50 focus-visible:ring-red-500/50'
+                        : 'border-green-500/20'
+                    }`}
                   />
+                  {formErrors.title && (
+                    <p className="text-xs text-red-500 flex items-center gap-1">
+                      <AlertCircle className="h-3 w-3" />
+                      {formErrors.title}
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-2">
@@ -532,15 +1289,28 @@ export default function Habits() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Frequency</label>
+                    <label className="text-sm font-medium">
+                      Frequency
+                      <span className="text-red-500 ml-1">*</span>
+                    </label>
                     <Select
-                      value={formData.frequency}
-                      onValueChange={(value: Habit['frequency']) =>
-                        setFormData({ ...formData, frequency: value })
-                      }
+                      value={formData.frequency || undefined}
+                      onValueChange={(value: any) => {
+                        // When changing frequency, clear schedule if not weekly
+                        const newSchedule = value === 'weekly' ? formData.schedule : []
+                        setFormData({ ...formData, frequency: value, schedule: newSchedule })
+                        // Clear error when user selects
+                        if (formErrors.frequency) {
+                          setFormErrors({ ...formErrors, frequency: '' })
+                        }
+                      }}
                     >
-                      <SelectTrigger className="bg-secondary/50 border-green-500/20 focus:ring-green-500/50 dark:border-green-500/15">
-                        <SelectValue />
+                      <SelectTrigger className={`bg-secondary/50 focus:ring-green-500/50 dark:border-green-500/15 ${
+                        formErrors.frequency
+                          ? 'border-red-500/50 focus:ring-red-500/50'
+                          : 'border-green-500/20'
+                      }`}>
+                        <SelectValue placeholder="Select frequency" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="daily">Daily</SelectItem>
@@ -548,6 +1318,12 @@ export default function Habits() {
                         <SelectItem value="monthly">Monthly</SelectItem>
                       </SelectContent>
                     </Select>
+                    {formErrors.frequency && (
+                      <p className="text-xs text-red-500 flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3" />
+                        {formErrors.frequency}
+                      </p>
+                    )}
                   </div>
 
                   <div className="space-y-2">
@@ -573,33 +1349,54 @@ export default function Habits() {
                   </div>
                 </div>
 
-                {formData.frequency === 'weekly' && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Schedule</label>
-                    <div className="flex flex-wrap gap-2">
-                      {daysOfWeek.map(day => (
-                        <Button
-                          key={day.value}
-                          type="button"
-                          variant={formData.schedule.includes(day.value) ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => toggleDayInSchedule(day.value)}
-                        >
-                          {day.label.slice(0, 3)}
-                        </Button>
+                {/* Tags Section with Add Button */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Tags</label>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Add a tag (e.g., health, productivity)"
+                      value={newTag}
+                      onChange={(e) => setNewTag(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          if (newTag.trim() && !formData.tags.includes(newTag.trim())) {
+                            setFormData({ ...formData, tags: [...formData.tags, newTag.trim()] })
+                            setNewTag('')
+                          }
+                        }
+                      }}
+                      className="bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15"
+                    />
+                    <Button 
+                      type="button" 
+                      variant="secondary"
+                      onClick={() => {
+                        if (newTag.trim() && !formData.tags.includes(newTag.trim())) {
+                          setFormData({ ...formData, tags: [...formData.tags, newTag.trim()] })
+                          setNewTag('')
+                        }
+                      }}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                  {formData.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {formData.tags.map(tag => (
+                        <Badge key={tag} variant="secondary" className="gap-1">
+                          {tag}
+                          <button 
+                            type="button" 
+                            onClick={() => setFormData({ ...formData, tags: formData.tags.filter(t => t !== tag) })}
+                            className="ml-1 hover:text-destructive"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </Badge>
                       ))}
                     </div>
-                  </div>
-                )}
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Tag (Optional)</label>
-                  <Input
-                    placeholder="e.g., health, productivity, wellness"
-                    value={(formData as any).tag || ''}
-                    onChange={(e) => setFormData({ ...formData, tag: e.target.value } as any)}
-                    className="bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15"
-                  />
+                  )}
                 </div>
               </div>
             </div>
@@ -609,7 +1406,8 @@ export default function Habits() {
                 setIsCreating(false)
                 setIsEditing(null)
                 resetForm()
-              }}>
+                setFormErrors({})
+              }} className="bg-transparent dark:bg-transparent border-green-500/30 text-green-600 dark:text-green-300 hover:bg-green-500/10 hover:border-green-500/50 transition-colors duration-200">
                 Cancel
               </Button>
               <Button
@@ -624,65 +1422,97 @@ export default function Habits() {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        {/* Structure: Total Habits */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Habits</CardTitle>
-            <Calendar className="h-4 w-4 text-muted-foreground" />
+            <Calendar className="h-4 w-4 text-purple-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.total}</div>
-            <p className="text-xs text-muted-foreground">
+            <div className="text-2xl font-bold text-purple-500">{stats.total}</div>
+            <p className="text-xs text-muted-foreground mt-1">
               {stats.daily} daily, {stats.weekly} weekly, {stats.monthly} monthly
             </p>
           </CardContent>
         </Card>
 
+        {/* Today: Daily Feedback - DAILY HABITS ONLY */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Active Streaks</CardTitle>
-            <Flame className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Today's Progress</CardTitle>
+            <Target className="h-4 w-4 text-cyan-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.activeStreaks}</div>
-            <Progress value={stats.total > 0 ? (stats.activeStreaks / stats.total) * 100 : 0} className="mt-2" />
+            <div className="text-2xl font-bold text-cyan-500">{stats.todayCompletionPercentage}%</div>
             <p className="text-xs text-muted-foreground mt-1">
-              7+ day streaks
+              {stats.todayCompletedCount} / {stats.todayExpectedCount} due habits
             </p>
+            <Progress value={stats.todayCompletionPercentage} className="mt-2" />
           </CardContent>
         </Card>
 
+        {/* Current Streak */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Current Streak</CardTitle>
+            <Flame className="h-4 w-4 text-orange-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-orange-500">{stats.currentStreak}</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {stats.currentStreak} days
+            </p>
+            {stats.longestStreak > 0 && (
+              <p className="text-xs text-orange-600 mt-1 font-medium">
+                Longest: {stats.longestStreak} days
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Reliability: Avg Consistency */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Avg Consistency</CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
+            <TrendingUp className="h-4 w-4 text-blue-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.averageConsistency}%</div>
+            <div className="text-2xl font-bold text-blue-500">{stats.averageConsistency}%</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Last 30 days
+            </p>
             <Progress value={stats.averageConsistency} className="mt-2" />
           </CardContent>
         </Card>
 
+        {/* Check-ins */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Completions (30d)</CardTitle>
-            <CheckCircle className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Check-ins</CardTitle>
+            <CheckCircle className="h-4 w-4 text-green-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.totalCompletions30d}</div>
-            <p className="text-xs text-muted-foreground">
-              {Math.round(stats.totalCompletions30d / 30)} per day
+            <div className="text-2xl font-bold text-green-500">
+              {stats.checkInsCompleted}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              out of {stats.checkInsTotal}
             </p>
+            <Progress
+              value={stats.checkInsTotal > 0 ? Math.round((stats.checkInsCompleted / stats.checkInsTotal) * 100) : 0}
+              className="mt-2"
+            />
           </CardContent>
         </Card>
       </div>
 
       {/* Habits List */}
       <Tabs defaultValue="all">
-        <TabsList>
+        <TabsList className="bg-secondary/30 dark:bg-secondary/20">
           <TabsTrigger value="all">All Habits ({filteredHabits.length})</TabsTrigger>
           <TabsTrigger value="streaks">Active Streaks ({stats.activeStreaks})</TabsTrigger>
-          <TabsTrigger value="consistency">High Consistency</TabsTrigger>
+          <TabsTrigger value="consistency">Consistency (80%+)</TabsTrigger>
         </TabsList>
 
         <TabsContent value="all" className="mt-6">
@@ -713,7 +1543,7 @@ export default function Habits() {
 
         <TabsContent value="streaks" className="mt-6">
           {(() => {
-            const streakHabits = filteredHabits.filter(h => h.streak_current >= 7);
+            const streakHabits = filteredHabits.filter(h => (habitComputedMetrics.get(h.id)?.streakCurrent || 0) >= 7);
             if (streakHabits.length === 0) {
               return (
                 <Card>
@@ -788,7 +1618,7 @@ export default function Habits() {
             </div>
           </div>
           <CardDescription>
-            Track your habit completion for {format(selectedMonth, 'MMMM yyyy')}
+            Track daily habit completion for {format(selectedMonth, 'MMMM yyyy')}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -796,15 +1626,30 @@ export default function Habits() {
             <table className="w-full border-separate border-spacing-0">
               <thead>
                 <tr>
-                  <th className="text-left p-2 min-w-[120px] text-sm font-medium text-muted-foreground bg-muted/30 rounded-tl-lg rounded-bl-lg">Habit</th>
-                  {calendarDays.map(day => (
-                    <th key={day.toISOString()} className="text-center p-1 min-w-[24px] bg-muted/30 first:rounded-l-none last:rounded-r-lg">
-                      <div className="flex flex-col items-center gap-0.5">
-                        <span className="text-xs font-medium">{format(day, 'd')}</span>
-                        <span className="text-[10px] text-muted-foreground uppercase">{format(day, 'EEEEE')}</span>
-                      </div>
-                    </th>
-                  ))}
+                  <th className="text-left p-2 min-w-[120px] text-base font-medium text-muted-foreground bg-muted/30 rounded-tl-lg rounded-bl-lg">Habit</th>
+                  {calendarDays.map(day => {
+                    const isToday = format(day, 'yyyy-MM-dd') === format(new Date(), 'yyyy-MM-dd')
+                    return (
+                      <th 
+                        key={day.toISOString()} 
+                        className="text-center p-1 min-w-[24px] bg-muted/30"
+                      >
+                        <div className={cn(
+                          "flex flex-col items-center gap-0.5",
+                          isToday && "font-bold"
+                        )}>
+                          <span className={cn(
+                            "text-sm font-medium",
+                            isToday && "text-primary"
+                          )}>{format(day, 'd')}</span>
+                          <span className={cn(
+                            "text-xs uppercase",
+                            isToday ? "text-primary font-semibold" : "text-muted-foreground"
+                          )}>{format(day, 'EEEEE')}</span>
+                        </div>
+                      </th>
+                    )
+                  })}
                   <th className="text-center p-2 min-w-[40px] text-sm font-medium text-muted-foreground">
                     <Flame className="h-4 w-4 mx-auto text-orange-500" />
                   </th>
@@ -814,47 +1659,106 @@ export default function Habits() {
                 </tr>
               </thead>
               <tbody>
-                {filteredHabits.slice(0, 10).map((habit: Habit) => (
+                {filteredHabits.filter((habit: Habit) => habit.frequency === 'daily').slice(0, 10).map((habit: Habit) => (
                   <tr key={habit.id} className="group transition-colors">
                     <td className="p-2 bg-muted/30 rounded-l-lg rounded-r-none my-1">
                       <div className="flex items-center gap-2">
-                        {getHabitCompletionForDay(habit.id, new Date()) && (
-                          <Flame className="h-3 w-3 text-orange-500 flex-shrink-0 fill-orange-500" />
-                        )}
-                        <div className="font-medium text-sm truncate max-w-[120px]" title={habit.title}>{habit.title}</div>
+                        <div className="font-medium text-base truncate max-w-[120px]" title={habit.title}>{habit.title}</div>
                       </div>
                     </td>
                     {calendarDays.map(day => {
                       const isCompleted = getHabitCompletionForDay(habit.id, day)
+                      const isFuture = isAfter(day, startOfDay(new Date()))
+                      const dayStr = getLocalDateString(day)
+                      const isToday = dayStr === todayStr
+                      const isMarkable = isMonthlyOverviewDateMarkable(day, habit.created_at)
+                      const isDisabled = isFuture || !isMarkable
 
                       return (
-                        <td key={day.toISOString()} className="text-center p-0.5">
+                        <td 
+                          key={day.toISOString()} 
+                          className="text-center p-0.5 transition-colors"
+                        >
                           <button
-                            onClick={() => handleToggleCompletion(habit.id, day, isCompleted)}
+                            onClick={() => {
+                              if (!isDisabled) {
+                                handleToggleCompletion(habit.id, day, isCompleted, habit.created_at, true)
+                              }
+                            }}
+                            disabled={isDisabled}
                             className={cn(
                               "h-6 w-6 rounded-md flex items-center justify-center mx-auto transition-all duration-200",
                               isCompleted
                                 ? "text-orange-500"
-                                : "hover:bg-muted/10"
+                                : isToday
+                                ? "text-primary"
+                                : "hover:bg-muted/20 text-muted-foreground",
+                              isDisabled && !isCompleted && "opacity-40 cursor-not-allowed",
+                              !isDisabled && !isCompleted && "cursor-pointer hover:scale-110"
                             )}
-                            title={format(day, 'MMM d, yyyy')}
+                            title={
+                              isFuture 
+                                ? `${format(day, 'MMM d, yyyy')} - Future date` 
+                                : !isMarkable
+                                ? `${format(day, 'MMM d, yyyy')} - Only today and one day back are clickable` 
+                                : `${format(day, 'MMM d, yyyy')} - Click to mark as ${isCompleted ? 'undone' : 'done'}`
+                            }
                           >
-                            {isCompleted && <Flame className="h-4 w-4 fill-orange-500 pointer-events-none select-none" />}
+                            {isCompleted && <Flame className="h-4 w-4 text-orange-500 fill-orange-500 pointer-events-none select-none" />}
+                            {!isCompleted && isToday && <div className="h-1.5 w-1.5 rounded-full bg-primary mx-auto" />}
                           </button>
                         </td>
                       )
                     })}
-                    <td className="text-center p-2">
+                    <td className="text-center p-2 rounded-none">
+                      {(() => {
+                        const streakCurrent = habitComputedMetrics.get(habit.id)?.streakCurrent || 0
+                        return (
                       <div className="flex items-center justify-center pointer-events-none select-none">
-                        <span className="font-semibold text-sm">{habit.streak_current}</span>
+                        {streakCurrent > 0 && (
+                          <Flame className={cn(
+                            "h-4 w-4 mr-1",
+                            streakCurrent >= 30 && "text-orange-500 fill-orange-500",
+                            streakCurrent >= 14 && streakCurrent < 30 && "text-orange-400 fill-orange-400",
+                            streakCurrent >= 7 && streakCurrent < 14 && "text-yellow-500 fill-yellow-500",
+                            streakCurrent < 7 && "text-muted-foreground"
+                          )} />
+                        )}
+                        <span className={cn(
+                          "font-semibold text-base",
+                          streakCurrent >= 30 && "text-orange-500",
+                          streakCurrent >= 14 && streakCurrent < 30 && "text-orange-400",
+                          streakCurrent >= 7 && streakCurrent < 14 && "text-yellow-500",
+                          streakCurrent < 7 && "text-muted-foreground"
+                        )}>{streakCurrent}</span>
                       </div>
+                        )
+                      })()}
                     </td>
-                    <td className="text-center p-2">
+                    <td className="text-center p-2 rounded-r-lg rounded-l-none">
+                      {(() => {
+                        const consistency = habitComputedMetrics.get(habit.id)?.consistency || 0
+                        return (
                       <div className="flex items-center justify-center">
-                        <span className="text-sm font-medium">
-                          {Math.round(habit.consistency_score)}%
+                        <TrendingUp className={cn(
+                          "h-4 w-4 mr-1",
+                          consistency >= 80 && "text-green-500",
+                          consistency >= 60 && consistency < 80 && "text-blue-500",
+                          consistency >= 40 && consistency < 60 && "text-yellow-500",
+                          consistency < 40 && "text-gray-500"
+                        )} />
+                        <span className={cn(
+                          "text-base font-medium",
+                          consistency >= 80 && "text-green-500",
+                          consistency >= 60 && consistency < 80 && "text-blue-500",
+                          consistency >= 40 && consistency < 60 && "text-yellow-500",
+                          consistency < 40 && "text-gray-500"
+                        )}>
+                          {Math.round(consistency)}%
                         </span>
                       </div>
+                        )
+                      })()}
                     </td>
                   </tr>
                 ))}
@@ -863,6 +1767,104 @@ export default function Habits() {
           </div>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Due Habit Graph</CardTitle>
+          <CardDescription>
+            Completed Today / Due Today · Only due habits affect today&apos;s score.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="h-72">
+            {selectedMonthDueSeries.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={selectedMonthDueSeries}>
+                  <defs>
+                    <linearGradient id="dueHabitsGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.8}/>
+                      <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
+                    </linearGradient>
+                    <linearGradient id="completedDueGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#22c55e" stopOpacity={0.8}/>
+                      <stop offset="95%" stopColor="#22c55e" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                  <Tooltip content={<DueHabitTooltip />} />
+                  <Legend />
+                  <Area
+                    type="monotone"
+                    dataKey="dueHabits"
+                    name="Due Habits"
+                    stroke="#8b5cf6"
+                    fill="url(#dueHabitsGradient)"
+                    strokeWidth={2}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="completedDueHabits"
+                    name="Completed Due"
+                    stroke="#22c55e"
+                    fill="url(#completedDueGradient)"
+                    strokeWidth={2}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-muted-foreground">
+                No due-habit data available
+              </div>
+            )}
+          </div>
+          {selectedMonthEarlyCompletions > 0 && (
+            <div className="mt-3 text-xs text-muted-foreground">Completed Early ✓ {selectedMonthEarlyCompletions}</div>
+          )}
+        </CardContent>
+      </Card>
+
+      <AlertDialog
+        open={habitPendingUndoneConfirm !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setHabitPendingUndoneConfirm(null)
+          }
+        }}
+      >
+        <AlertDialogContent className="bg-white dark:bg-card border border-border shadow-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Mark habit as undone?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove the current completion for {habitPendingUndoneConfirm?.title || 'this habit'}.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (!habitPendingUndoneConfirm) return
+                const completionDate = getPeriodCompletionDate(habitPendingUndoneConfirm, new Date())
+                if (!completionDate) {
+                  setHabitPendingUndoneConfirm(null)
+                  return
+                }
+
+                handleToggleCompletion(
+                  habitPendingUndoneConfirm.id,
+                  completionDate,
+                  true,
+                  habitPendingUndoneConfirm.created_at
+                )
+                setHabitPendingUndoneConfirm(null)
+              }}
+              className="bg-red-600 text-white hover:bg-red-700"
+            >
+              Mark as Undone
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

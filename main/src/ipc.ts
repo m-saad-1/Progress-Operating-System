@@ -2,13 +2,54 @@ import { ipcMain, dialog, app, BrowserWindow } from 'electron';
 import path from 'path';
 import fs from 'fs-extra';
 import { getDatabase } from './database';
-import { getBackupManager } from './backup';
 import { getSyncManager } from '../../sync';
 import { getCommandManager } from '../../undo';
 import { IPC_CHANNEL_KEYS } from '../../shared/constants';
-// import { mainWindow } from './index'; // Remove this line
+import {
+  submitFeedback,
+  retryFailedFeedbackQueue,
+  getFeedbackQueueCount,
+  verifyFeedbackConfig,
+  initFeedbackAutoRetry,
+} from './feedback-service';
 
-export function initializeIpcMain(mainWindow: BrowserWindow) { // Renamed and added mainWindow argument
+export function initializeIpcMain(mainWindow: BrowserWindow) {
+  const syncManager = getSyncManager()
+
+  // Initialize feedback auto-retry (queued items from previous sessions)
+  initFeedbackAutoRetry();
+
+  const emitSyncUpdate = (payload: any) => {
+    if (!mainWindow?.isDestroyed()) {
+      mainWindow.webContents.send('sync:update', payload)
+    }
+  }
+
+  syncManager.on('statusChange', (status: any) => {
+    emitSyncUpdate({
+      status: status.error ? 'error' : status.isSyncing ? 'syncing' : 'idle',
+      error: status.error,
+      progress: status.progress || 0,
+      lastSync: status.lastSyncTime ? new Date(status.lastSyncTime).toISOString() : undefined,
+    })
+  })
+
+  syncManager.on('syncComplete', (details: any) => {
+    emitSyncUpdate({
+      status: 'success',
+      progress: 100,
+      lastSync: details?.timestamp ? new Date(details.timestamp).toISOString() : new Date().toISOString(),
+      stats: details?.stats || { uploaded: 0, downloaded: 0, conflicts: 0 },
+    })
+  })
+
+  syncManager.on('error', (err: any) => {
+    emitSyncUpdate({
+      status: 'error',
+      error: err instanceof Error ? err.message : String(err),
+    })
+  })
+
   // Database operations
   ipcMain.handle('database:execute', async (event, query: string, params?: any[]) => {
     try {
@@ -101,71 +142,6 @@ export function initializeIpcMain(mainWindow: BrowserWindow) { // Renamed and ad
         return { success: false, error: error.message };
       } else {
         console.error('Delete failed:', error);
-        return { success: false, error: String(error) };
-      }
-    }
-  });
-
-  // Backup operations
-  ipcMain.handle('backup:create', async () => {
-    try {
-      const backupManager = getBackupManager();
-      const backupId = await backupManager.createIncrementalBackup();
-      return { success: true, backupId };
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Backup creation failed:', error.message);
-        return { success: false, error: error.message };
-      } else {
-        console.error('Backup creation failed:', error);
-        return { success: false, error: String(error) };
-      }
-    }
-  });
-
-  ipcMain.handle('backup:restore', async (event, backupId: string) => {
-    try {
-      const backupManager = getBackupManager();
-      const success = await backupManager.restoreFromBackup(backupId);
-      return { success };
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Backup restore failed:', error.message);
-        return { success: false, error: error.message };
-      } else {
-        console.error('Backup restore failed:', error);
-        return { success: false, error: String(error) };
-      }
-    }
-  });
-
-  ipcMain.handle('backup:list', async () => {
-    try {
-      const backupManager = getBackupManager();
-      const backups = await backupManager.getBackupList();
-      return { success: true, backups };
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Backup list failed:', error.message);
-        return { success: false, error: error.message };
-      } else {
-        console.error('Backup list failed:', error);
-        return { success: false, error: String(error) };
-      }
-    }
-  });
-
-  ipcMain.handle('backup:delete', async (event, backupId: string) => {
-    try {
-      const backupManager = getBackupManager();
-      await backupManager.deleteBackup(backupId);
-      return { success: true };
-    } catch (error) {
-      if (error instanceof Error) {
-        console.error('Backup delete failed:', error.message);
-        return { success: false, error: error.message };
-      } else {
-        console.error('Backup delete failed:', error);
         return { success: false, error: String(error) };
       }
     }
@@ -269,7 +245,9 @@ export function initializeIpcMain(mainWindow: BrowserWindow) { // Renamed and ad
   // Sync operations
   ipcMain.handle('sync:start', async () => {
     try {
-      const syncManager = getSyncManager();
+      if (!syncManager.isEnabled()) {
+        syncManager.enable();
+      }
       await syncManager.start();
       return { success: true };
     } catch (error) {
@@ -573,5 +551,127 @@ export function initializeIpcMain(mainWindow: BrowserWindow) { // Renamed and ad
       }
       return { success: false, error: String(error) };
     }
+  });
+
+  // Reset all application data
+  ipcMain.handle('app:resetAllData', async () => {
+    try {
+      console.log('Starting complete application data reset...');
+      
+      const userData = app.getPath('userData');
+      const dbPath = path.join(userData, 'progress.db');
+      const dbShmPath = path.join(userData, 'progress.db-shm');
+      const dbWalPath = path.join(userData, 'progress.db-wal');
+      const syncConfigPath = path.join(userData, 'sync-config.json');
+      const encryptionKeyPath = path.join(userData, 'encryption.key');
+      const legacyJsonPath = path.join(userData, 'progress-data.json');
+      const backupDir = path.join(userData, 'backups');
+
+      // Clear Chromium session storage/caches (renderer localStorage is cleared in renderer code)
+      try {
+        await mainWindow.webContents.session.clearStorageData({
+          storages: [
+            'cookies',
+            'filesystem',
+            'indexdb',
+            'localstorage',
+            'shadercache',
+            'serviceworkers',
+            'cachestorage',
+          ],
+        });
+        await mainWindow.webContents.session.clearCache();
+      } catch (err) {
+        console.warn('Reset: failed to clear session storage/cache (continuing):', err);
+      }
+
+      // Stop sync (best-effort) to prevent background writes during wipe
+      try {
+        const sync = getSyncManager();
+        await sync.stop();
+      } catch (err) {
+        console.warn('Reset: failed to stop sync manager (continuing):', err);
+      }
+      
+      // Close database connection before deletion
+      const db = getDatabase();
+      if (db && typeof db.close === 'function') {
+        db.close();
+      }
+      
+      // Delete database files
+      const filesToDelete = [
+        dbPath,
+        dbShmPath,
+        dbWalPath,
+        syncConfigPath,
+        encryptionKeyPath,
+        legacyJsonPath,
+      ];
+      
+      for (const filePath of filesToDelete) {
+        if (await fs.pathExists(filePath)) {
+          await fs.remove(filePath);
+          console.log(`Deleted: ${filePath}`);
+        }
+      }
+
+      // Remove legacy SQLite backup snapshots produced by older/duplicate systems.
+      // These are full DB copies and would cause "ghost data" after erase.
+      try {
+        if (await fs.pathExists(backupDir)) {
+          const entries = await fs.readdir(backupDir);
+          for (const name of entries) {
+            if (name.startsWith('backup-') && name.endsWith('.db')) {
+              await fs.remove(path.join(backupDir, name));
+              console.log(`Deleted legacy DB backup: ${name}`);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Reset: failed to remove legacy .db backups (continuing):', err);
+      }
+      
+      console.log('All application data has been reset successfully');
+      
+      // Wait a moment to ensure all file operations complete
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Relaunch the app to reinitialize with fresh state
+      app.relaunch();
+      app.exit(0);
+      
+      return { success: true };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Reset all data failed:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // ─── Feedback via Nodemailer SMTP (main-process) ──────────────────────────────
+
+  ipcMain.handle('feedback:submit', async (_event, payload) => {
+    return submitFeedback(payload);
+  });
+
+  ipcMain.handle('feedback:retryFailed', async () => {
+    try {
+      const result = await retryFailedFeedbackQueue();
+      return { success: true, ...result };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, error: message };
+    }
+  });
+
+  ipcMain.handle('feedback:queueCount', async () => {
+    return getFeedbackQueueCount();
+  });
+
+  ipcMain.handle('feedback:verifyConfig', async () => {
+    return verifyFeedbackConfig();
   });
 }

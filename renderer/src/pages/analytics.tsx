@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -11,7 +12,6 @@ import {
   TrendingDown,
   Calendar, 
   Target,
-  Download,
   Filter,
   CheckCircle,
   Clock,
@@ -22,8 +22,12 @@ import {
   Repeat,
   Timer
 } from 'lucide-react'
-import { format, parseISO } from 'date-fns'
+import { format, parseISO, startOfWeek, startOfMonth, addMonths } from 'date-fns'
 import { useStore } from '@/store'
+import { useElectron } from '@/hooks/use-electron'
+import { useSharedTimer } from '@/hooks/use-shared-timer'
+import { database } from '@/lib/database'
+import { ContextTipsDialog } from '@/components/context-tips-dialog'
 import { 
   AreaChart,
   Area,
@@ -40,20 +44,56 @@ import {
   Cell
 } from 'recharts'
 import {
-  getDateRange,
-  calculateTaskAnalytics,
   calculateHabitAnalytics,
+  calculateHabitDueMetricsForDay,
+  calculateHabitDueSeries,
+  getDateRange,
   calculateGoalAnalytics,
   calculateTimeAnalytics,
-  calculateProductivityScore,
-  calculateTrendData,
-  PRIORITY_WEIGHTS,
   type TimeRange,
   type GoalWithProgress
 } from '@/lib/progress'
+import type { HabitCompletion } from '@/types'
+import type { TaskRangeAnalyticsSnapshot, TaskTabStatsSnapshot } from '@/lib/database'
 
 // Color palette for charts
 const COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899']
+const PRODUCTIVE_TIME_FILTER_SQL = `
+          AND (
+            notes IS NULL
+            OR (
+              notes NOT LIKE 'shortBreak session%'
+              AND notes NOT LIKE 'longBreak session%'
+            )
+          )
+`
+
+const ANALYTICS_TIPS_SECTIONS = [
+  {
+    title: 'How to Read Analytics',
+    points: [
+      'Use time ranges to compare behavior patterns, not just one-day outcomes.',
+      'Weighted task progress shows impact quality, while simple completion shows quantity.',
+      'Habit consistency highlights reliability over time rather than isolated wins.',
+    ],
+  },
+  {
+    title: 'Interpretation Best Practices',
+    points: [
+      'Look for repeat trends across weeks before changing your system.',
+      'Use dips as diagnostics (scope, energy, schedule) instead of self-judgment.',
+      'Compare task, habit, and time metrics together to find true bottlenecks.',
+    ],
+  },
+  {
+    title: 'Actionable Follow-Through',
+    points: [
+      'Turn weak metrics into one concrete adjustment for the next cycle.',
+      'Review overdue and skipped signals early to avoid compounding backlog.',
+      'Re-check after one week to confirm whether the adjustment actually helped.',
+    ],
+  },
+] as const
 
 // Custom Tooltip component for charts
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -81,104 +121,478 @@ const CustomTooltip = ({ active, payload, label }: any) => {
 
 export default function Analytics() {
   const { tasks, habits, goals } = useStore()
+  const { timerMode, timerRunning, elapsedMs } = useSharedTimer()
+  const electron = useElectron()
   const [timeRange, setTimeRange] = useState<TimeRange>('month')
+  const isProductiveTimerMode = timerMode === 'pomodoro' || timerMode === 'custom'
   
-  // Get date range based on selected time range
+  // Strict rolling windows from today
   const dateRange = useMemo(() => getDateRange(timeRange), [timeRange])
-  
-  // ============================================
-  // USE CENTRALIZED ANALYTICS (Single Source of Truth)
-  // ============================================
-  const taskAnalytics = useMemo(() => 
-    calculateTaskAnalytics(tasks, dateRange), 
-    [tasks, dateRange]
-  )
-  
-  const habitAnalytics = useMemo(() => 
-    calculateHabitAnalytics(habits), 
-    [habits]
-  )
+  const taskDateRange = dateRange
+  const habitDateRange = dateRange
   
   const goalAnalytics = useMemo(() => 
-    calculateGoalAnalytics(goals, tasks, habits), 
-    [goals, tasks, habits]
+    calculateGoalAnalytics(goals, tasks, habits, dateRange), 
+    [goals, tasks, habits, dateRange]
   )
   
   const timeAnalytics = useMemo(() => 
     calculateTimeAnalytics(tasks, dateRange), 
     [tasks, dateRange]
   )
-  
-  const productivityScore = useMemo(() => 
-    calculateProductivityScore(taskAnalytics, habitAnalytics), 
-    [taskAnalytics, habitAnalytics]
+
+  // Fetch complete habit completion history once, then apply range logic in shared analytics
+  const { data: allHabitCompletions = [] } = useQuery<HabitCompletion[]>({
+    queryKey: ['habit-completions-all'],
+    queryFn: async () => {
+      if (!electron.isReady) return []
+      const earliestHabitDate = habits.length > 0
+        ? habits
+            .map((habit) => format(parseISO(habit.created_at), 'yyyy-MM-dd'))
+            .sort()[0]
+        : format(new Date(), 'yyyy-MM-dd')
+      const today = format(new Date(), 'yyyy-MM-dd')
+      return await database.getHabitCompletions(earliestHabitDate, today)
+    },
+    enabled: electron.isReady,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+    refetchInterval: 30000,
+  })
+
+  const habitAnalytics = useMemo(() =>
+    calculateHabitAnalytics(habits, habitDateRange, allHabitCompletions),
+    [allHabitCompletions, habitDateRange, habits]
   )
+
+  const { data: taskTabStatsSnapshot } = useQuery<TaskTabStatsSnapshot>({
+    queryKey: ['task-stats', 'analytics-day-sync'],
+    queryFn: () => database.getTaskTabStats(),
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+  })
+
+  const { data: taskRangeSnapshotData } = useQuery<TaskRangeAnalyticsSnapshot>({
+    queryKey: ['task-range-snapshot', format(taskDateRange.start, 'yyyy-MM-dd'), format(taskDateRange.end, 'yyyy-MM-dd')],
+    queryFn: () => database.getTaskRangeAnalyticsSnapshot(
+      format(taskDateRange.start, 'yyyy-MM-dd'),
+      format(taskDateRange.end, 'yyyy-MM-dd')
+    ),
+    enabled: electron.isReady,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+    refetchInterval: 30000,
+  })
+
+  const taskRangeSnapshot = useMemo<TaskRangeAnalyticsSnapshot>(() => {
+    return taskRangeSnapshotData ?? {
+      startDate: format(taskDateRange.start, 'yyyy-MM-dd'),
+      endDate: format(taskDateRange.end, 'yyyy-MM-dd'),
+      summary: {
+        total: 0,
+        completed: 0,
+        partially: 0,
+        skipped: 0,
+        plannedWeight: 0,
+        earnedWeight: 0,
+        weightedProgress: 0,
+      },
+      overdue: 0,
+      byPriority: {
+        high: { total: 0, completed: 0, plannedWeight: 0, earnedWeight: 0 },
+        medium: { total: 0, completed: 0, plannedWeight: 0, earnedWeight: 0 },
+        low: { total: 0, completed: 0, plannedWeight: 0, earnedWeight: 0 },
+      },
+      daily: [],
+    }
+  }, [taskDateRange.end, taskDateRange.start, taskRangeSnapshotData])
+
+  const taskAnalytics = useMemo(() => {
+    const isDayRange = timeRange === 'day'
+    const daySummary = taskTabStatsSnapshot?.today
+    const summary = taskRangeSnapshot.summary
+
+    const total = isDayRange && daySummary ? daySummary.total : summary.total
+    const completed = isDayRange && daySummary ? daySummary.completed : summary.completed
+    const partially = isDayRange && daySummary ? daySummary.partially : summary.partially
+    const skipped = isDayRange && daySummary ? daySummary.skipped : summary.skipped
+    const plannedWeight = isDayRange && daySummary ? daySummary.plannedWeight : summary.plannedWeight
+    const earnedWeight = isDayRange && daySummary ? daySummary.earnedWeight : summary.earnedWeight
+    const weightedProgress = isDayRange && daySummary ? daySummary.weightedProgress : summary.weightedProgress
+
+    const pending = Math.max(total - completed - partially - skipped, 0)
+
+    return {
+      total,
+      completed,
+      partiallyCompleted: partially,
+      skipped,
+      inProgress: partially,
+      pending,
+      blocked: 0,
+      overdue: isDayRange ? 0 : taskRangeSnapshot.overdue,
+      earnedWeight,
+      totalWeight: plannedWeight,
+      weightedCompletionRate: weightedProgress,
+      simpleCompletionRate: total > 0 ? Math.round((completed / total) * 100) : 0,
+      byPriority: {
+        high: taskRangeSnapshot.byPriority.high,
+        medium: taskRangeSnapshot.byPriority.medium,
+        low: taskRangeSnapshot.byPriority.low,
+      },
+      completedByPriority: {
+        high: taskRangeSnapshot.byPriority.high.completed,
+        medium: taskRangeSnapshot.byPriority.medium.completed,
+        low: taskRangeSnapshot.byPriority.low.completed,
+      },
+    }
+  }, [taskRangeSnapshot, taskTabStatsSnapshot?.today, timeRange])
+
+  const productivityScore = useMemo(() => {
+    const taskProgress = taskAnalytics.weightedCompletionRate
+    const habitConsistency = habitAnalytics.avgConsistency
+    return {
+      overall: Math.round((taskProgress + habitConsistency) / 2),
+      taskProgress,
+      habitConsistency,
+    }
+  }, [habitAnalytics.avgConsistency, taskAnalytics.weightedCompletionRate])
+
+  // Fetch time_blocks data for the Analytics Time tab — tightly connected to Time page
+  const { data: timeBlocksAnalytics } = useQuery({
+    queryKey: ['time-analytics', timeRange, dateRange.start.toISOString(), dateRange.end.toISOString()],
+    queryFn: async () => {
+      if (!electron.isReady) return null
+      const startStr = dateRange.start.toISOString()
+      const endStr = dateRange.end.toISOString()
+
+      const [totals, dailyBreakdown] = await Promise.all([
+        electron.executeQuery(`
+          SELECT 
+            COALESCE(SUM(duration), 0) as total_time,
+            COUNT(*) as total_sessions,
+            COALESCE(SUM(CASE WHEN notes LIKE '%(complete)%' THEN 1 ELSE 0 END), 0) as completed_sessions,
+            COUNT(DISTINCT DATE(start_time, 'localtime')) as active_days
+          FROM time_blocks
+          WHERE DATETIME(start_time) BETWEEN DATETIME(?) AND DATETIME(?)
+          AND deleted_at IS NULL
+          ${PRODUCTIVE_TIME_FILTER_SQL}
+        `, [startStr, endStr]),
+
+        electron.executeQuery(`
+          SELECT 
+            DATE(start_time, 'localtime') as date,
+            COALESCE(SUM(duration), 0) as daily_total
+          FROM time_blocks
+          WHERE DATETIME(start_time) BETWEEN DATETIME(?) AND DATETIME(?)
+          AND deleted_at IS NULL
+          ${PRODUCTIVE_TIME_FILTER_SQL}
+          GROUP BY DATE(start_time, 'localtime')
+          ORDER BY date ASC
+        `, [startStr, endStr]),
+      ])
+
+      const totalsRow = Array.isArray(totals) ? totals[0] : { total_time: 0, total_sessions: 0, completed_sessions: 0, active_days: 0 }
+      const days = Array.isArray(dailyBreakdown) ? dailyBreakdown : []
+
+      const totalTimeSeconds = totalsRow?.total_time || 0
+      const activeDays = totalsRow?.active_days || 0
+      const totalSessions = totalsRow?.total_sessions || 0
+      const completedSessions = totalsRow?.completed_sessions || 0
+
+      // Calculate days in range
+      const msPerDay = 86400000
+      const daysInRange = Math.max(1, Math.ceil((dateRange.end.getTime() - dateRange.start.getTime()) / msPerDay) + 1)
+      
+      // Productivity: average daily time vs 6h target
+      const avgDailySeconds = activeDays > 0 ? totalTimeSeconds / activeDays : 0
+      const targetSeconds = 6 * 3600
+      const productivity = Math.min(Math.round((avgDailySeconds / targetSeconds) * 100), 100)
+
+      return {
+        totalTimeSeconds,
+        totalSessions,
+        completedSessions,
+        activeDays,
+        daysInRange,
+        productivity,
+        avgDailySeconds,
+        dailyBreakdown: days,
+      }
+    },
+    enabled: electron.isReady,
+  })
+
+  const liveElapsedSeconds = useMemo(() => {
+    if (!timerRunning || !isProductiveTimerMode || elapsedMs <= 0) return 0
+    return Math.floor(elapsedMs / 1000)
+  }, [elapsedMs, timerRunning, isProductiveTimerMode])
+
+  const liveTimeBlocksAnalytics = useMemo(() => {
+    if (!timeBlocksAnalytics) return null
+    if (liveElapsedSeconds <= 0) return timeBlocksAnalytics
+
+    const today = new Date()
+    const rangeIncludesToday = dateRange.start <= today && dateRange.end >= today
+    if (!rangeIncludesToday) return timeBlocksAnalytics
+
+    const todayKey = format(today, 'yyyy-MM-dd')
+    const baseBreakdown = Array.isArray(timeBlocksAnalytics.dailyBreakdown)
+      ? [...timeBlocksAnalytics.dailyBreakdown]
+      : []
+
+    const todayIndex = baseBreakdown.findIndex((entry: any) => entry.date === todayKey)
+    const hadTodayActivity = todayIndex !== -1 && (baseBreakdown[todayIndex]?.daily_total || 0) > 0
+
+    if (todayIndex >= 0) {
+      baseBreakdown[todayIndex] = {
+        ...baseBreakdown[todayIndex],
+        daily_total: (baseBreakdown[todayIndex]?.daily_total || 0) + liveElapsedSeconds,
+      }
+    } else {
+      baseBreakdown.push({
+        date: todayKey,
+        daily_total: liveElapsedSeconds,
+      })
+      baseBreakdown.sort((a: any, b: any) => a.date.localeCompare(b.date))
+    }
+
+    const totalTimeSeconds = (timeBlocksAnalytics.totalTimeSeconds || 0) + liveElapsedSeconds
+    const activeDays = hadTodayActivity
+      ? timeBlocksAnalytics.activeDays || 0
+      : Math.min((timeBlocksAnalytics.activeDays || 0) + 1, timeBlocksAnalytics.daysInRange || 1)
+    const avgDailySeconds = activeDays > 0 ? totalTimeSeconds / activeDays : 0
+    const targetSeconds = 6 * 3600
+    const productivity = Math.min(Math.round((avgDailySeconds / targetSeconds) * 100), 100)
+
+    return {
+      ...timeBlocksAnalytics,
+      totalTimeSeconds,
+      activeDays,
+      avgDailySeconds,
+      productivity,
+      dailyBreakdown: baseBreakdown,
+    }
+  }, [dateRange.end, dateRange.start, liveElapsedSeconds, timeBlocksAnalytics])
   
-  // ============================================
-  // TREND DATA FOR CHARTS
-  // ============================================
-  const trendData = useMemo(() => 
-    calculateTrendData(
-      tasks, 
-      habits, 
-      dateRange, 
-      timeRange === 'week' ? 'short' : 'medium'
-    ), 
-    [tasks, habits, dateRange, timeRange]
+  const productivityDateRange = taskDateRange
+
+  const productivityHabitSeries = useMemo(
+    () => calculateHabitDueSeries(habits, allHabitCompletions, productivityDateRange, timeRange === 'week' ? 'short' : 'medium'),
+    [habits, allHabitCompletions, productivityDateRange, timeRange]
   )
-  
-  // Aggregate for year view (by month)
-  const aggregatedTrendData = useMemo(() => {
-    if (timeRange !== 'year') return trendData
-    
-    const monthlyData: Record<string, any> = {}
-    
-    trendData.forEach(day => {
-      const monthKey = format(parseISO(day.fullDate), 'MMM yyyy')
-      if (!monthlyData[monthKey]) {
-        monthlyData[monthKey] = {
-          date: format(parseISO(day.fullDate), 'MMM'),
-          fullDate: monthKey,
-          tasks: 0,
-          completed: 0,
-          weightedCompleted: 0,
-          habits: day.habits,
-          habitsCompleted: 0,
-          productivity: 0,
-          count: 0
+
+  const productivityChartData = useMemo(() => {
+    const habitByDate = new Map(
+      productivityHabitSeries.map((point) => [point.fullDate, point])
+    )
+
+    const daily = taskRangeSnapshot.daily
+      .filter((point) => point.dateKey <= format(productivityDateRange.end, 'yyyy-MM-dd'))
+      .map((point) => {
+        const habitPoint = habitByDate.get(point.dateKey)
+        const plannedWeight = point.plannedWeight + (habitPoint?.dueHabits || 0)
+        const earnedWeight = point.earnedWeight + (habitPoint?.completedDueHabits || 0)
+        const productivity = plannedWeight > 0
+          ? Math.round((earnedWeight / plannedWeight) * 100)
+          : 0
+
+        return {
+          date: point.date,
+          fullDate: point.dateKey,
+          plannedWeight,
+          earnedWeight,
+          productivity,
+        }
+      })
+
+    if (timeRange === 'day' || timeRange === 'week' || timeRange === 'month') {
+      return daily
+    }
+
+    if (timeRange === 'quarter') {
+      const byWeek = new Map<string, { plannedWeight: number; earnedWeight: number }>()
+
+      daily.forEach((point) => {
+        const pointDate = parseISO(point.fullDate)
+        const bucketStart = startOfWeek(pointDate, { weekStartsOn: 1 })
+        const bucketKey = format(bucketStart, 'yyyy-MM-dd')
+        const current = byWeek.get(bucketKey) || { plannedWeight: 0, earnedWeight: 0 }
+        current.plannedWeight += point.plannedWeight
+        current.earnedWeight += point.earnedWeight
+        byWeek.set(bucketKey, current)
+      })
+
+      return Array.from(byWeek.entries())
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([bucketKey, value]) => ({
+          date: format(parseISO(bucketKey), 'MMM d'),
+          fullDate: bucketKey,
+          plannedWeight: value.plannedWeight,
+          earnedWeight: value.earnedWeight,
+          productivity: value.plannedWeight > 0
+            ? Math.round((value.earnedWeight / value.plannedWeight) * 100)
+            : 0,
+        }))
+    }
+
+    const byMonth = new Map<string, { plannedWeight: number; earnedWeight: number }>()
+    daily.forEach((point) => {
+      const pointDate = parseISO(point.fullDate)
+      const bucketStart = startOfMonth(pointDate)
+      const bucketKey = format(bucketStart, 'yyyy-MM')
+      const current = byMonth.get(bucketKey) || { plannedWeight: 0, earnedWeight: 0 }
+      current.plannedWeight += point.plannedWeight
+      current.earnedWeight += point.earnedWeight
+      byMonth.set(bucketKey, current)
+    })
+
+    const monthBuckets: Array<{ date: string; fullDate: string; plannedWeight: number; earnedWeight: number; productivity: number }> = []
+    let monthCursor = startOfMonth(productivityDateRange.start)
+    const monthEndKey = format(startOfMonth(productivityDateRange.end), 'yyyy-MM')
+
+    while (format(monthCursor, 'yyyy-MM') <= monthEndKey) {
+      const bucketKey = format(monthCursor, 'yyyy-MM')
+      const value = byMonth.get(bucketKey) || { plannedWeight: 0, earnedWeight: 0 }
+      monthBuckets.push({
+        date: format(monthCursor, 'MMM'),
+        fullDate: bucketKey,
+        plannedWeight: value.plannedWeight,
+        earnedWeight: value.earnedWeight,
+        productivity: value.plannedWeight > 0
+          ? Math.round((value.earnedWeight / value.plannedWeight) * 100)
+          : 0,
+      })
+      monthCursor = addMonths(monthCursor, 1)
+    }
+
+    return monthBuckets
+  }, [productivityDateRange.end, productivityHabitSeries, taskRangeSnapshot.daily, timeRange])
+
+  const habitDueSeries = useMemo(
+    () => calculateHabitDueSeries(
+      habits,
+      allHabitCompletions,
+      habitDateRange,
+      timeRange === 'day' || timeRange === 'week' ? 'short' : 'medium'
+    ),
+    [habits, allHabitCompletions, habitDateRange, timeRange]
+  )
+
+  const habitDueToday = useMemo(
+    () => calculateHabitDueMetricsForDay(habits, allHabitCompletions, new Date(), 'short'),
+    [habits, allHabitCompletions]
+  )
+
+  const habitDueChartData = useMemo(() => {
+    if (timeRange === 'day' || timeRange === 'week' || timeRange === 'month') {
+      return habitDueSeries.map((point) => ({
+        date: point.date,
+        fullDate: point.fullDate,
+        dueHabits: point.dueHabits,
+        completedDueHabits: point.completedDueHabits,
+        consistency: point.consistency,
+      }))
+    }
+
+    const aggregateBy = timeRange === 'quarter' ? 'week' : 'month'
+    const grouped: Record<string, { date: string; fullDate: string; dueHabits: number; completedDueHabits: number; consistency: number }> = {}
+
+    habitDueSeries.forEach((point) => {
+      const date = parseISO(point.fullDate)
+      const periodStart = aggregateBy === 'week'
+        ? startOfWeek(date, { weekStartsOn: 1 })
+        : startOfMonth(date)
+      const periodKey = format(periodStart, aggregateBy === 'week' ? 'yyyy-MM-dd' : 'yyyy-MM')
+
+      if (!grouped[periodKey]) {
+        grouped[periodKey] = {
+          date: aggregateBy === 'week' ? format(periodStart, 'MMM d') : format(periodStart, 'MMM'),
+          fullDate: periodKey,
+          dueHabits: 0,
+          completedDueHabits: 0,
+          consistency: 0,
         }
       }
-      monthlyData[monthKey].tasks += day.tasks
-      monthlyData[monthKey].completed += day.completed
-      monthlyData[monthKey].weightedCompleted += day.weightedCompleted
-      monthlyData[monthKey].habitsCompleted += day.habitsCompleted
-      monthlyData[monthKey].productivity += day.productivity
-      monthlyData[monthKey].count += 1
+
+      grouped[periodKey].dueHabits += point.dueHabits
+      grouped[periodKey].completedDueHabits += point.completedDueHabits
     })
-    
-    return Object.values(monthlyData).map((m: any) => ({
-      ...m,
-      productivity: Math.round(m.productivity / m.count)
+
+    return Object.values(grouped)
+      .sort((a, b) => a.fullDate.localeCompare(b.fullDate))
+      .map((group) => ({
+        ...group,
+        consistency: group.dueHabits > 0
+          ? Math.round((group.completedDueHabits / group.dueHabits) * 100)
+          : 0,
+      }))
+  }, [habitDueSeries, timeRange])
+
+  const taskChartData = useMemo(() => {
+    const daily = taskRangeSnapshot.daily.map((point) => ({
+      date: point.date,
+      fullDate: point.dateKey,
+      completed: point.completed,
+      partiallyCompleted: point.partially,
+      skipped: point.skipped,
     }))
-  }, [trendData, timeRange])
-  
-  const chartData = timeRange === 'year' ? aggregatedTrendData : trendData
+
+    if (timeRange === 'day') {
+      return [{
+        date: format(taskDateRange.start, 'MMM d'),
+        fullDate: format(taskDateRange.start, 'yyyy-MM-dd'),
+        completed: taskAnalytics.completed,
+        partiallyCompleted: taskAnalytics.partiallyCompleted,
+        skipped: taskAnalytics.skipped,
+      }]
+    }
+
+    if (timeRange === 'week' || timeRange === 'month') {
+      return daily
+    }
+
+    const aggregateBy = timeRange === 'quarter' ? 'week' : 'month'
+    const grouped: Record<string, { date: string; fullDate: string; completed: number; partiallyCompleted: number; skipped: number }> = {}
+
+    daily.forEach((point) => {
+      const date = parseISO(point.fullDate)
+      const periodStart = aggregateBy === 'week'
+        ? startOfWeek(date, { weekStartsOn: 1 })
+        : startOfMonth(date)
+      const periodKey = format(periodStart, aggregateBy === 'week' ? 'yyyy-MM-dd' : 'yyyy-MM')
+
+      if (!grouped[periodKey]) {
+        grouped[periodKey] = {
+          date: aggregateBy === 'week' ? format(periodStart, 'MMM d') : format(periodStart, 'MMM'),
+          fullDate: periodKey,
+          completed: 0,
+          partiallyCompleted: 0,
+          skipped: 0,
+        }
+      }
+
+      grouped[periodKey].completed += point.completed
+      grouped[periodKey].partiallyCompleted += point.partiallyCompleted
+      grouped[periodKey].skipped += point.skipped
+    })
+
+    return Object.values(grouped).sort((a, b) => a.fullDate.localeCompare(b.fullDate))
+  }, [taskAnalytics.completed, taskAnalytics.partiallyCompleted, taskAnalytics.skipped, taskDateRange.start, taskRangeSnapshot.daily, timeRange])
   
   // ============================================
   // PIE CHART DATA
   // ============================================
   const taskStatusPieData = [
     { name: 'Completed', value: taskAnalytics.completed, color: '#22c55e' },
-    { name: 'In Progress', value: taskAnalytics.inProgress, color: '#3b82f6' },
-    { name: 'Pending', value: taskAnalytics.pending, color: '#f59e0b' },
-    { name: 'Blocked', value: taskAnalytics.blocked, color: '#ef4444' }
+    { name: 'Partially', value: taskAnalytics.partiallyCompleted, color: '#3b82f6' },
+    { name: 'Skipped/Overdue', value: taskAnalytics.skipped + taskAnalytics.overdue, color: '#94a3b8' }
   ].filter(item => item.value > 0)
   
   const taskPriorityPieData = [
-    { name: 'Critical', value: taskAnalytics.byPriority.critical.length, color: '#ef4444' },
-    { name: 'High', value: taskAnalytics.byPriority.high.length, color: '#f59e0b' },
-    { name: 'Medium', value: taskAnalytics.byPriority.medium.length, color: '#3b82f6' },
-    { name: 'Low', value: taskAnalytics.byPriority.low.length, color: '#22c55e' }
+    { name: 'High', value: taskAnalytics.byPriority.high.total, color: '#ef4444' },
+    { name: 'Medium', value: taskAnalytics.byPriority.medium.total, color: '#f59e0b' },
+    { name: 'Low', value: taskAnalytics.byPriority.low.total, color: '#22c55e' }
   ].filter(item => item.value > 0)
   
   const goalCategoryPieData = [
@@ -196,44 +610,24 @@ export default function Analytics() {
     { name: 'Monthly', value: habitAnalytics.byFrequency.monthly.length, color: '#f59e0b' }
   ].filter(item => item.value > 0)
 
-  const exportAnalytics = () => {
-    const data = {
-      timeRange,
-      dateRange: {
-        start: format(dateRange.start, 'yyyy-MM-dd'),
-        end: format(dateRange.end, 'yyyy-MM-dd')
-      },
-      taskAnalytics,
-      habitAnalytics,
-      goalAnalytics,
-      timeAnalytics,
-      productivityScore
-    }
-    
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `analytics-${format(new Date(), 'yyyy-MM-dd')}.json`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
   return (
     <div className="space-y-6 p-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Analytics</h1>
+          <div className="flex items-baseline gap-1.5">
+            <h1 className="text-3xl font-bold">Analytics</h1>
+            <ContextTipsDialog
+              title="Analytics Tab Tips"
+              description="Use analytics as a decision tool for planning, focus, and improvement."
+              sections={ANALYTICS_TIPS_SECTIONS}
+              triggerLabel="Open analytics tips"
+              onboardingKey="analytics-tab-tips"
+            />
+          </div>
           <p className="text-muted-foreground">
             Insights and trends from your progress data
           </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={exportAnalytics}>
-            <Download className="mr-2 h-4 w-4" />
-            Export
-          </Button>
         </div>
       </div>
 
@@ -249,15 +643,17 @@ export default function Analytics() {
               </span>
             </div>
             <div className="flex gap-2">
-              {(['week', 'month', 'quarter', 'year'] as const).map(range => (
+              {(['day', 'week', 'month', 'quarter', 'year'] as const).map(range => (
                 <Button
                   key={range}
-                  variant={timeRange === range ? "default" : "secondary"}
+                  variant="ghost"
                   size="sm"
                   onClick={() => setTimeRange(range)}
                   className={cn(
-                    "shadow-none border-transparent",
-                    timeRange !== range && "bg-secondary/50 hover:bg-secondary/80 dark:bg-secondary/30 dark:hover:bg-secondary/50"
+                    "shadow-none transition-all duration-200",
+                    timeRange === range
+                      ? "bg-green-500 text-white hover:bg-green-600 dark:bg-green-500 dark:text-zinc-950 dark:hover:bg-green-400"
+                      : "bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-zinc-800/70 dark:text-zinc-100 dark:hover:bg-green-500/20"
                   )}
                 >
                   {range.charAt(0).toUpperCase() + range.slice(1)}
@@ -270,7 +666,7 @@ export default function Analytics() {
 
       {/* Category Tabs */}
       <Tabs defaultValue="overview">
-        <TabsList className="w-full">
+        <TabsList className="w-full bg-secondary/30 dark:bg-secondary/20 p-1 h-12 border-transparent">
           <TabsTrigger value="overview" className="flex-1">
             <BarChart3 className="mr-2 h-4 w-4" />
             Overview
@@ -308,21 +704,21 @@ export default function Analytics() {
                 <div className="text-2xl font-bold">{productivityScore.overall}%</div>
                 <Progress value={productivityScore.overall} className="mt-2" />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Tasks ({taskAnalytics.weightedCompletionRate}%) + Habits ({habitAnalytics.avgConsistency}%)
+                  Task Progress ({productivityScore.taskProgress}%) + Habits ({productivityScore.habitConsistency}%)
                 </p>
               </CardContent>
             </Card>
             
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Task Completion</CardTitle>
+                <CardTitle className="text-sm font-medium">Task Progress</CardTitle>
                 <CheckCircle className="h-4 w-4 text-green-500" />
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{taskAnalytics.weightedCompletionRate}%</div>
                 <Progress value={taskAnalytics.weightedCompletionRate} className="mt-2" />
                 <p className="text-xs text-muted-foreground mt-1">
-                  {taskAnalytics.completed}/{taskAnalytics.total} tasks (weighted)
+                  Earned {taskAnalytics.earnedWeight} / Planned {taskAnalytics.totalWeight}
                 </p>
               </CardContent>
             </Card>
@@ -363,33 +759,27 @@ export default function Analytics() {
           {/* Trend Chart */}
           <Card>
             <CardHeader>
-              <CardTitle>Progress Trends</CardTitle>
-              <CardDescription>Task completion and productivity over time</CardDescription>
+              <CardTitle>Productivity Over Time</CardTitle>
+              <CardDescription>Weighted productivity by selected period (task weight + due habits)</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="h-80">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData}>
+                  <AreaChart data={productivityChartData}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                     <XAxis dataKey="date" className="text-xs" />
-                    <YAxis className="text-xs" />
+                    <YAxis domain={[0, 100]} label={{ value: '%', angle: -90, position: 'insideLeft' }} className="text-xs" />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend />
                     <Area 
                       type="monotone" 
-                      dataKey="completed" 
-                      name="Completed Tasks"
-                      stroke="#22c55e" 
-                      fill="#22c55e" 
-                      fillOpacity={0.3} 
-                    />
-                    <Area 
-                      type="monotone" 
-                      dataKey="tasks" 
-                      name="Total Tasks"
-                      stroke="#3b82f6" 
-                      fill="#3b82f6" 
-                      fillOpacity={0.1} 
+                      dataKey="productivity" 
+                      name="Productivity Score"
+                      stroke="#f59e0b" 
+                      fill="#f59e0b" 
+                      fillOpacity={0.4}
+                      connectNulls={true}
+                      isAnimationActive={true}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -406,7 +796,7 @@ export default function Analytics() {
               <CardContent className="space-y-3">
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-muted-foreground">Task Weight Completed</span>
-                  <span className="font-bold">{taskAnalytics.completedWeight}/{taskAnalytics.totalWeight}</span>
+                  <span className="font-bold">{taskAnalytics.earnedWeight}/{taskAnalytics.totalWeight}</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-muted-foreground">Habit Weight (Streaks)</span>
@@ -415,7 +805,7 @@ export default function Analytics() {
                 <div className="flex justify-between items-center border-t pt-2">
                   <span className="text-sm font-medium">Total Effort</span>
                   <span className="font-bold text-green-500">
-                    {taskAnalytics.completedWeight + habitAnalytics.totalHabitWeight}
+                    {taskAnalytics.earnedWeight + habitAnalytics.totalHabitWeight}
                   </span>
                 </div>
               </CardContent>
@@ -427,16 +817,24 @@ export default function Analytics() {
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="flex justify-between items-center">
-                  <span className="text-sm text-muted-foreground">Days Active</span>
+                  <span className="text-sm text-muted-foreground">Task Completion</span>
+                  <span className="font-bold">{taskAnalytics.weightedCompletionRate}%</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Habit Consistency</span>
+                  <span className="font-bold">{habitAnalytics.avgConsistency}%</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Active Goals</span>
+                  <span className="font-bold">{goalAnalytics.active}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Goals Completed</span>
+                  <span className="font-bold">{goalAnalytics.completedInRange || 0}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Activity Days</span>
                   <span className="font-bold">{timeAnalytics.daysWithActivity}/{timeAnalytics.daysInRange}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-muted-foreground">Activity Rate</span>
-                  <span className="font-bold">{timeAnalytics.activityRate}%</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-muted-foreground">Best Streak</span>
-                  <span className="font-bold">{habitAnalytics.maxStreak} days</span>
                 </div>
               </CardContent>
             </Card>
@@ -474,6 +872,18 @@ export default function Analytics() {
                     <span className="text-sm">{taskAnalytics.overdue} tasks overdue</span>
                   </div>
                 )}
+                {goalAnalytics.overdue > 0 && (
+                  <div className="flex items-center gap-2 text-red-500">
+                    <Target className="h-4 w-4" />
+                    <span className="text-sm">{goalAnalytics.overdue} goals overdue</span>
+                  </div>
+                )}
+                {timeAnalytics.activityRate > 0 && (
+                  <div className="flex items-center gap-2 text-blue-500">
+                    <Calendar className="h-4 w-4" />
+                    <span className="text-sm">Active on {timeAnalytics.activityRate}% of days</span>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -494,7 +904,7 @@ export default function Analytics() {
                 <div className="text-2xl font-bold">{taskAnalytics.weightedCompletionRate}%</div>
                 <Progress value={taskAnalytics.weightedCompletionRate} className="mt-2" />
                 <p className="text-xs text-muted-foreground mt-1">
-                  {taskAnalytics.completedWeight}/{taskAnalytics.totalWeight} weight
+                  {taskAnalytics.earnedWeight}/{taskAnalytics.totalWeight} weight
                 </p>
               </CardContent>
             </Card>
@@ -515,13 +925,13 @@ export default function Analytics() {
             
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">In Progress</CardTitle>
-                <Activity className="h-4 w-4 text-blue-500" />
+                <CardTitle className="text-sm font-medium">Partially Completed</CardTitle>
+                <Activity className="h-4 w-4 text-purple-500" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{taskAnalytics.inProgress}</div>
+                <div className="text-2xl font-bold">{taskAnalytics.partiallyCompleted}</div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  {taskAnalytics.pending} pending, {taskAnalytics.blocked} blocked
+                  Tasks with 25%-75% progress
                 </p>
               </CardContent>
             </Card>
@@ -583,7 +993,7 @@ export default function Analytics() {
               <CardHeader>
                 <CardTitle>Priority Breakdown</CardTitle>
                 <CardDescription>
-                  Weight: Critical(4) · High(3) · Medium(2) · Low(1)
+                  Weight: High(3) · Medium(2) · Low(1)
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -592,28 +1002,22 @@ export default function Analytics() {
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={[
                         { 
-                          name: 'Critical', 
-                          total: taskAnalytics.byPriority.critical.length,
-                          completed: taskAnalytics.completedByPriority.critical,
-                          weight: taskAnalytics.byPriority.critical.length * PRIORITY_WEIGHTS.critical
-                        },
-                        { 
                           name: 'High', 
-                          total: taskAnalytics.byPriority.high.length,
+                          total: taskAnalytics.byPriority.high.total,
                           completed: taskAnalytics.completedByPriority.high,
-                          weight: taskAnalytics.byPriority.high.length * PRIORITY_WEIGHTS.high
+                          weight: taskAnalytics.byPriority.high.plannedWeight
                         },
                         { 
                           name: 'Medium', 
-                          total: taskAnalytics.byPriority.medium.length,
+                          total: taskAnalytics.byPriority.medium.total,
                           completed: taskAnalytics.completedByPriority.medium,
-                          weight: taskAnalytics.byPriority.medium.length * PRIORITY_WEIGHTS.medium
+                          weight: taskAnalytics.byPriority.medium.plannedWeight
                         },
                         { 
                           name: 'Low', 
-                          total: taskAnalytics.byPriority.low.length,
+                          total: taskAnalytics.byPriority.low.total,
                           completed: taskAnalytics.completedByPriority.low,
-                          weight: taskAnalytics.byPriority.low.length * PRIORITY_WEIGHTS.low
+                          weight: taskAnalytics.byPriority.low.plannedWeight
                         }
                       ]} layout="vertical">
                         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -643,15 +1047,15 @@ export default function Analytics() {
             <CardContent>
               <div className="h-80">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData}>
+                  <BarChart data={taskChartData}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                     <XAxis dataKey="date" className="text-xs" />
                     <YAxis className="text-xs" />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend />
-                    <Bar dataKey="tasks" name="Due Tasks" fill="#94a3b8" radius={[4, 4, 0, 0]} />
                     <Bar dataKey="completed" name="Completed" fill="#22c55e" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="weightedCompleted" name="Weighted" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="partiallyCompleted" name="Partially Completed" fill="#a855f7" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="skipped" name="Skipped" fill="#94a3b8" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -837,9 +1241,10 @@ export default function Analytics() {
               <CardContent>
                 <div className="text-2xl font-bold">{habitAnalytics.avgConsistency}%</div>
                 <Progress value={habitAnalytics.avgConsistency} className="mt-2" />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Across all habits
-                </p>
+               
+                {habitDueToday.earlyCompletedHabits > 0 && (
+                  <div className="mt-2 text-xs text-muted-foreground">Completed Early : {habitDueToday.earlyCompletedHabits}</div>
+                )}
               </CardContent>
             </Card>
             
@@ -939,6 +1344,34 @@ export default function Analytics() {
             </Card>
           </div>
 
+          <Card>
+            <CardHeader>
+              <CardTitle>Due Habit Consistency Trend</CardTitle>
+              <CardDescription>Only due habits affect today&apos;s score · Completed Today / Due Today</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="h-72">
+                {habitDueChartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={habitDueChartData}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis dataKey="date" className="text-xs" />
+                      <YAxis className="text-xs" />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Legend />
+                      <Bar dataKey="dueHabits" name="Due Habits" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="completedDueHabits" name="Completed Due" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-muted-foreground">
+                    No due-habit data available
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Top & Struggling Habits */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <Card>
@@ -1007,7 +1440,7 @@ export default function Analytics() {
         </TabsContent>
 
         {/* ============================================ */}
-        {/* TIME TAB */}
+        {/* TIME TAB — data from time_blocks (same source as Time page) */}
         {/* ============================================ */}
         <TabsContent value="time" className="mt-6 space-y-6">
           {/* Time Metrics */}
@@ -1019,26 +1452,31 @@ export default function Analytics() {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">
-                  {Math.floor(timeAnalytics.totalActualTime / 60)}h {timeAnalytics.totalActualTime % 60}m
+                  {(() => {
+                    const sec = liveTimeBlocksAnalytics?.totalTimeSeconds || 0
+                    const h = Math.floor(sec / 3600)
+                    const m = Math.floor((sec % 3600) / 60)
+                    return `${h}h ${m}m`
+                  })()}
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  From completed tasks
+                  {liveTimeBlocksAnalytics?.totalSessions || 0} sessions • {liveTimeBlocksAnalytics?.completedSessions || 0} completed in this period
                 </p>
               </CardContent>
             </Card>
             
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Time Efficiency</CardTitle>
+                <CardTitle className="text-sm font-medium">Productivity</CardTitle>
                 <Zap className="h-4 w-4 text-yellow-500" />
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">
-                  {timeAnalytics.timeEfficiency}%
+                  {liveTimeBlocksAnalytics?.productivity || 0}%
                 </div>
-                <Progress value={Math.min(timeAnalytics.timeEfficiency, 100)} className="mt-2" />
+                <Progress value={Math.min(liveTimeBlocksAnalytics?.productivity || 0, 100)} className="mt-2" />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Estimated vs Actual
+                  vs 6h daily target
                 </p>
               </CardContent>
             </Card>
@@ -1049,13 +1487,13 @@ export default function Analytics() {
                 <Calendar className="h-4 w-4 text-green-500" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{timeAnalytics.daysWithActivity}</div>
+                <div className="text-2xl font-bold">{liveTimeBlocksAnalytics?.activeDays || 0}</div>
                 <Progress 
-                  value={timeAnalytics.activityRate} 
+                  value={liveTimeBlocksAnalytics?.daysInRange ? Math.round(((liveTimeBlocksAnalytics?.activeDays || 0) / liveTimeBlocksAnalytics.daysInRange) * 100) : 0} 
                   className="mt-2" 
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  {timeAnalytics.activityRate}% of {timeAnalytics.daysInRange} days
+                  {liveTimeBlocksAnalytics?.daysInRange ? Math.round(((liveTimeBlocksAnalytics?.activeDays || 0) / liveTimeBlocksAnalytics.daysInRange) * 100) : 0}% of {liveTimeBlocksAnalytics?.daysInRange || 0} days
                 </p>
               </CardContent>
             </Card>
@@ -1067,7 +1505,12 @@ export default function Analytics() {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">
-                  {Math.floor(timeAnalytics.avgDailyTime / 60)}h {timeAnalytics.avgDailyTime % 60}m
+                  {(() => {
+                    const sec = liveTimeBlocksAnalytics?.avgDailySeconds || 0
+                    const h = Math.floor(sec / 3600)
+                    const m = Math.floor((sec % 3600) / 60)
+                    return `${h}h ${m}m`
+                  })()}
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">
                   Per active day
@@ -1076,45 +1519,37 @@ export default function Analytics() {
             </Card>
           </div>
 
-          {/* Time Comparison */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Time Estimate Accuracy</CardTitle>
-              <CardDescription>Comparing estimated vs actual time spent</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="h-80">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={[
-                    { 
-                      name: 'Estimated', 
-                      value: timeAnalytics.totalEstimatedTime,
-                      fill: '#3b82f6'
-                    },
-                    { 
-                      name: 'Actual', 
-                      value: timeAnalytics.totalActualTime,
-                      fill: '#22c55e'
-                    }
-                  ]}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis dataKey="name" />
-                    <YAxis label={{ value: 'Minutes', angle: -90, position: 'insideLeft' }} />
-                    <Tooltip 
-                      formatter={(value) => {
-                        const num = Number(value) || 0
-                        return [`${Math.floor(num / 60)}h ${num % 60}m`, 'Time']
-                      }}
-                    />
-                    <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                      <Cell fill="#3b82f6" />
-                      <Cell fill="#22c55e" />
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
+          {/* Daily Time Distribution Chart */}
+          {liveTimeBlocksAnalytics?.dailyBreakdown && liveTimeBlocksAnalytics.dailyBreakdown.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Time Distribution</CardTitle>
+                <CardDescription>Daily tracked time across the selected period</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="h-80">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={liveTimeBlocksAnalytics.dailyBreakdown.map((d: any) => ({
+                      date: format(parseISO(d.date), timeRange === 'day' ? 'HH:mm' : timeRange === 'year' ? 'MMM' : 'MMM d'),
+                      hours: Math.round((d.daily_total / 3600) * 100) / 100,
+                    }))}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis dataKey="date" className="text-xs" />
+                      <YAxis label={{ value: 'Hours', angle: -90, position: 'insideLeft' }} className="text-xs" />
+                      <Tooltip 
+                        formatter={(value: any) => {
+                          const h = Math.floor(Number(value))
+                          const m = Math.round((Number(value) - h) * 60)
+                          return [`${h}h ${m}m`, 'Time']
+                        }}
+                      />
+                      <Bar dataKey="hours" name="Time Tracked" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Activity Summary */}
           <Card>
@@ -1125,32 +1560,37 @@ export default function Analytics() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="p-4 rounded-lg bg-secondary/50 text-center">
                   <div className="text-3xl font-bold text-blue-500">
-                    {Math.floor(timeAnalytics.totalEstimatedTime / 60)}h
+                    {(() => {
+                      const sec = liveTimeBlocksAnalytics?.totalTimeSeconds || 0
+                      return `${Math.floor(sec / 3600)}h`
+                    })()}
                   </div>
-                  <p className="text-sm text-muted-foreground">Estimated</p>
+                  <p className="text-sm text-muted-foreground">Total Tracked</p>
                 </div>
                 <div className="p-4 rounded-lg bg-secondary/50 text-center">
                   <div className="text-3xl font-bold text-green-500">
-                    {Math.floor(timeAnalytics.totalActualTime / 60)}h
-                  </div>
-                  <p className="text-sm text-muted-foreground">Actual</p>
-                </div>
-                <div className="p-4 rounded-lg bg-secondary/50 text-center">
-                  <div className="text-3xl font-bold text-purple-500">
-                    {timeAnalytics.daysWithActivity}
+                    {liveTimeBlocksAnalytics?.activeDays || 0}
                   </div>
                   <p className="text-sm text-muted-foreground">Active Days</p>
                 </div>
                 <div className="p-4 rounded-lg bg-secondary/50 text-center">
-                  <div className="text-3xl font-bold text-yellow-500">
-                    {timeAnalytics.timeEfficiency > 100 ? '⚡' : timeAnalytics.timeEfficiency >= 80 ? '✓' : '⚠'}
+                  <div className="text-3xl font-bold text-purple-500">
+                    {liveTimeBlocksAnalytics?.totalSessions || 0}
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    {timeAnalytics.timeEfficiency > 100 
-                      ? 'Under budget!' 
-                      : timeAnalytics.timeEfficiency >= 80 
-                      ? 'On track' 
-                      : 'Over budget'}
+                    Total Sessions ({liveTimeBlocksAnalytics?.completedSessions || 0} completed)
+                  </p>
+                </div>
+                <div className="p-4 rounded-lg bg-secondary/50 text-center">
+                  <div className="text-3xl font-bold text-yellow-500">
+                    {liveTimeBlocksAnalytics?.productivity 
+                      ? (liveTimeBlocksAnalytics.productivity > 80 ? '\u26a1' : liveTimeBlocksAnalytics.productivity >= 50 ? '\u2713' : '\u26a0')
+                      : '\u26a0'}
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {liveTimeBlocksAnalytics?.productivity 
+                      ? (liveTimeBlocksAnalytics.productivity > 80 ? 'Great pace!' : liveTimeBlocksAnalytics.productivity >= 50 ? 'On track' : 'Below target')
+                      : 'No data'}
                   </p>
                 </div>
               </div>

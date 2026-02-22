@@ -1,11 +1,23 @@
 // Shared type definitions
 
-export type Priority = 'low' | 'medium' | 'high' | 'critical';
+// 3-tier priority system with weights: HIGH=3, MEDIUM=2, LOW=1
+export type Priority = 'low' | 'medium' | 'high';
 
-export type TaskStatus = 'pending' | 'in-progress' | 'blocked' | 'completed';
+// Task status: 'skipped' replaces 'not started' in UI
+export type TaskStatus = 'pending' | 'in-progress' | 'skipped' | 'blocked' | 'completed';
+
+// Task duration type: today-only or continuous/multi-day
+export type TaskDurationType = 'today' | 'continuous';
 
 // Progressive completion levels (0, 25, 50, 75, 100)
 export type TaskProgress = 0 | 25 | 50 | 75 | 100;
+
+export interface DailyTaskState {
+  progress: TaskProgress;
+  status: TaskStatus;
+  recorded_at: string; // ISO timestamp when entry was stored
+  source: 'user' | 'rollover' | 'reset' | 'restore' | 'paused';
+}
 
 export interface Task {
   id: string;
@@ -14,7 +26,12 @@ export interface Task {
   status: TaskStatus;
   priority: Priority;
   progress: TaskProgress; // Progressive completion (0-100 in 25% increments)
-  daily_progress?: Record<string, number>;
+  duration_type: TaskDurationType; // 'today' = today only, 'continuous' = multi-day
+  // Daily ledger keyed by YYYY-MM-DD capturing status + progress
+  daily_progress?: Record<string, DailyTaskState>;
+  is_paused?: boolean; // Whether continuous task is paused
+  paused_at?: string; // When the task was paused
+  last_reset_date?: string; // YYYY-MM-DD when task last reset for continuous flows
   due_date?: string;
   estimated_time?: number;
   actual_time?: number;
@@ -89,4 +106,14 @@ export interface Habit {
   created_at: string;
   updated_at: string;
   deleted_at?: string;
+}
+
+export interface HabitCompletion {
+  id: string;
+  habit_id: string;
+  date: string;
+  completed: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
 }

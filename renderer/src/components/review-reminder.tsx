@@ -50,8 +50,8 @@ const REVIEW_CONFIGS: Record<ReviewType, ReviewTypeConfig> = {
     bgColor: 'bg-purple-500/10',
     checkDue: () => {
       const today = getDay(new Date())
-      // Due on weekends (Saturday = 6, Sunday = 0)
-      return today === 0 || today === 6
+      // Due only on Sunday (Sunday = 0)
+      return today === 0
     },
     getPeriod: () => ({
       start: startOfWeek(new Date(), { weekStartsOn: 1 }).toISOString(),
@@ -67,9 +67,8 @@ const REVIEW_CONFIGS: Record<ReviewType, ReviewTypeConfig> = {
     checkDue: () => {
       const today = new Date()
       const endOfMo = endOfMonth(today)
-      const daysRemaining = endOfMo.getDate() - today.getDate()
-      // Due in last 3 days of month
-      return daysRemaining <= 3
+      // Due only on the last day of month
+      return today.getDate() === endOfMo.getDate()
     },
     getPeriod: () => ({
       start: startOfMonth(new Date()).toISOString(),

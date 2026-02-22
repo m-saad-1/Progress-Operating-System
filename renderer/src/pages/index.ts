@@ -16,6 +16,8 @@ export interface Task {
   updated_at: string;
   completed_at?: string;
   deleted_at?: string;
+  is_paused?: boolean;
+  paused_at?: string;
 }
 
 export type GoalCategory = 'career' | 'health' | 'learning' | 'finance' | 'personal' | 'custom';
