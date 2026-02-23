@@ -31,6 +31,12 @@
   --status-paused: 45 90% 50%;
   --status-active: 210 90% 50%;
   
+  /* Priority colors */
+  --priority-low: 142.1 76.2% 36.3%;
+  --priority-medium: 47.9 95.8% 53.1%;
+  --priority-high: 25 95% 53.1%;
+  --priority-critical: 0 84.2% 60.2%;
+  
   /* Chart colors */
   --chart-primary: 0 0% 9%;
   --chart-secondary: 145 80% 42%;
@@ -84,6 +90,12 @@
   --status-completed: 145 75% 50%;
   --status-paused: 45 90% 55%;
   --status-active: 210 90% 55%;
+  
+  /* Priority colors for dark mode */
+  --priority-low: 142.1 76.2% 36.3%;
+  --priority-medium: 47.9 95.8% 53.1%;
+  --priority-high: 25 95% 53.1%;
+  --priority-critical: 0 62.8% 30.6%;
   
   /* Chart colors for dark mode */
   --chart-primary: 0 0% 95%;

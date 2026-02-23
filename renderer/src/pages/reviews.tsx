@@ -1184,10 +1184,12 @@ function ReviewEditor({
 }
 
 // Review Card for History
-function ReviewCard({ review, onEdit, onDelete }: { 
+function ReviewCard({ review, isLatest, onEdit, onDelete, onView }: { 
   review: Review
+  isLatest: boolean
   onEdit: (review: Review) => void
   onDelete: (id: string) => void
+  onView: (review: Review) => void
 }) {
   const config = REVIEW_TYPES[review.type as ReviewType]
   const Icon = config.icon
@@ -1212,7 +1214,7 @@ function ReviewCard({ review, onEdit, onDelete }: {
       "hover:shadow-md transition-all cursor-pointer",
       config.borderColor,
       review.status === 'draft' && "border-dashed"
-    )}>
+    )} onClick={() => onView(review)}>
       <CardHeader className="pb-2">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
@@ -1241,10 +1243,12 @@ function ReviewCard({ review, onEdit, onDelete }: {
               </CardDescription>
             </div>
           </div>
-          <div className="flex gap-1">
-            <Button variant="ghost" size="icon" onClick={() => onEdit(review)}>
-              <Edit3 className="h-4 w-4" />
-            </Button>
+          <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+            {isLatest && (
+              <Button variant="ghost" size="icon" onClick={() => onEdit(review)}>
+                <Edit3 className="h-4 w-4" />
+              </Button>
+            )}
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="ghost" size="icon">
@@ -1311,6 +1315,117 @@ function ReviewCard({ review, onEdit, onDelete }: {
   )
 }
 
+// Review Detail Modal
+function ReviewDetailModal({ review, open, onClose }: {
+  review: Review | null
+  open: boolean
+  onClose: () => void
+}) {
+  if (!review) return null
+  
+  const config = REVIEW_TYPES[review.type as ReviewType]
+  const Icon = config.icon
+  const sentimentConfig = review.mood ? SENTIMENTS[review.mood as Sentiment] : null
+  const SentimentIcon = sentimentConfig?.icon
+
+  const responses = review.responses as Record<string, unknown> || {}
+  
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="max-w-3xl max-h-[95vh] bg-white dark:bg-slate-950 border-0 shadow-xl flex flex-col gap-0 m-2 p-6 overflow-hidden">
+        <DialogHeader className="flex-shrink-0 border-b border-gray-200 dark:border-gray-800 pb-4">
+          <div className="flex items-start justify-between">
+            <div className="flex-1">
+              <DialogTitle className="text-2xl font-bold flex items-center gap-3">
+                <div className={cn("p-2 rounded-lg", config.bgColor)}>
+                  <Icon className={cn("h-5 w-5", config.color)} />
+                </div>
+                {formatPeriodLabel(review.type as ReviewType, review.period_start, review.period_end)}
+              </DialogTitle>
+              <div className="flex items-center gap-2 mt-3">
+                <Badge variant={review.status === 'completed' ? 'default' : 'secondary'} className="border-0">
+                  {review.status}
+                </Badge>
+                {sentimentConfig && SentimentIcon && (
+                  <Badge className={cn("border-0 px-3", sentimentConfig.color)}>
+                    <SentimentIcon className="h-3.5 w-3.5 mr-2" />
+                    {sentimentConfig.label}
+                  </Badge>
+                )}
+              </div>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto pr-2 -mr-2">
+          <div className="space-y-6 py-4">
+            {/* Stats Section */}
+            {review.insights && (
+              <div>
+                <h3 className="font-semibold text-lg text-foreground mb-3">Summary</h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="p-4 rounded-lg bg-gradient-to-br from-green-500/10 to-transparent border border-green-200/50 dark:border-green-900/50">
+                    <div className="text-sm text-muted-foreground mb-1">Tasks Completed</div>
+                    <div className="text-2xl font-bold text-green-600 dark:text-green-400">{review.insights.tasksCompleted}</div>
+                  </div>
+                  <div className="p-4 rounded-lg bg-gradient-to-br from-orange-500/10 to-transparent border border-orange-200/50 dark:border-orange-900/50">
+                    <div className="text-sm text-muted-foreground mb-1">Habit Consistency</div>
+                    <div className="text-2xl font-bold text-orange-600 dark:text-orange-400">{review.insights.habitConsistencyRate}%</div>
+                  </div>
+                  <div className="p-4 rounded-lg bg-gradient-to-br from-blue-500/10 to-transparent border border-blue-200/50 dark:border-blue-900/50">
+                    <div className="text-sm text-muted-foreground mb-1">Goals Completed</div>
+                    <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">{review.insights.goalsCompletedThisPeriod || 0}</div>
+                  </div>
+                  <div className="p-4 rounded-lg bg-gradient-to-br from-violet-500/10 to-transparent border border-violet-200/50 dark:border-violet-900/50">
+                    <div className="text-sm text-muted-foreground mb-1">Trend</div>
+                    <div className="flex items-center gap-1 mt-1">
+                      {review.insights.productivityTrend === 'improving' && (
+                        <><TrendingUp className="h-5 w-5 text-green-600 dark:text-green-400" /><span className="font-semibold text-green-600 dark:text-green-400">Improving</span></>
+                      )}
+                      {review.insights.productivityTrend === 'declining' && (
+                        <><TrendingDown className="h-5 w-5 text-red-600 dark:text-red-400" /><span className="font-semibold text-red-600 dark:text-red-400">Declining</span></>
+                      )}
+                      {review.insights.productivityTrend === 'stable' && (
+                        <><Minus className="h-5 w-5 text-muted-foreground" /><span className="font-semibold text-muted-foreground">Stable</span></>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Responses Section */}
+            {Object.keys(responses).length > 0 && (
+              <div>
+                <h3 className="font-semibold text-lg text-foreground mb-3">Responses</h3>
+                <div className="space-y-3">
+                  {Object.entries(responses).map(([key, value], index) => (
+                    <div key={index} className="p-4 rounded-lg bg-gray-50/50 dark:bg-gray-900/50 border border-gray-200/50 dark:border-gray-800/50">
+                      <div className="text-sm font-medium text-foreground mb-1 capitalize">
+                        {key.replace(/_/g, ' ')}
+                      </div>
+                      <div className="text-sm text-muted-foreground leading-relaxed">
+                        {typeof value === 'string' ? value : typeof value === 'number' ? `${value}` : 'No response'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Metadata */}
+            <div className="pt-4 border-t border-gray-200 dark:border-gray-800">
+              <p className="text-xs text-muted-foreground">
+                Created: {format(parseISO(review.created_at), 'PPP · h:mm a')}
+              </p>
+            </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // Main Reviews Page Component
 export default function Reviews() {
   const { toast } = useToaster()
@@ -1319,6 +1434,7 @@ export default function Reviews() {
   const [activeTab, setActiveTab] = useState<ReviewType>('daily')
   const [isEditing, setIsEditing] = useState(false)
   const [editingReview, setEditingReview] = useState<Review | null>(null)
+  const [selectedReview, setSelectedReview] = useState<Review | null>(null)
   const [currentPeriod, setCurrentPeriod] = useState(getPeriodDates('daily'))
   
   // Get custom questions from store
@@ -1941,10 +2057,12 @@ export default function Reviews() {
                     </Card>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
-                      {reviews.map((review) => (
+                      {reviews.map((review, index) => (
                         <ReviewCard
                           key={review.id}
                           review={review}
+                          isLatest={index === 0}
+                          onView={setSelectedReview}
                           onEdit={handleEditReview}
                           onDelete={(id) => deleteMutation.mutate(id)}
                         />
@@ -1957,6 +2075,13 @@ export default function Reviews() {
           </TabsContent>
         ))}
       </Tabs>
+
+      {/* Review Detail Modal */}
+      <ReviewDetailModal 
+        review={selectedReview} 
+        open={!!selectedReview} 
+        onClose={() => setSelectedReview(null)} 
+      />
     </div>
   )
 }

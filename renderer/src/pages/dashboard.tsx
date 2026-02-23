@@ -243,7 +243,7 @@ export default function Dashboard() {
   const [newTag, setNewTag] = useState('')
   
   // Use local date string consistently to avoid timezone issues
-  const todayStr = getLocalDateString(today)
+  const todayStr = useMemo(() => getLocalDateString(today), [today])
 
   // Get TODAY's tasks using daily reset logic
   // - Shows today-only tasks created today
@@ -751,18 +751,12 @@ export default function Dashboard() {
       return isTaskSkippedOrOverdueForDay(task, dueKey, todayKey)
     }).length
 
-    return [
+    const metrics = [
       {
         key: 'task-progress',
         title: 'Today Task Progress',
         value: `${taskProgressStats.weightedProgress}%`,
         subtitle: `${taskProgressStats.completed}/${taskProgressStats.total} completed`,
-      },
-      {
-        key: 'overdue-tasks',
-        title: 'Yesterday Overdue',
-        value: `${yesterdayOverdueTasks}`,
-        subtitle: 'Tasks missed yesterday',
       },
       {
         key: 'habit-checkins',
@@ -777,6 +771,18 @@ export default function Dashboard() {
         subtitle: `${dailyOverallProgress.tasks.completed + dailyOverallProgress.habits.completed} checks completed today`,
       },
     ]
+
+    // Only show overdue-tasks if there are actually overdue tasks
+    if (yesterdayOverdueTasks > 0) {
+      metrics.splice(1, 0, {
+        key: 'overdue-tasks',
+        title: 'Yesterday Overdue',
+        value: `${yesterdayOverdueTasks}`,
+        subtitle: 'Tasks missed yesterday',
+      })
+    }
+
+    return metrics
   }, [
     taskProgressStats,
     tasks,
@@ -1212,7 +1218,7 @@ export default function Dashboard() {
               <div className="flex items-center justify-between">
                 <CardTitle className="flex items-center space-x-2">
                   <ListTodo className="h-5 w-5" />
-                  <span>All Tasks</span>
+                  <span>Today's Tasks</span>
                 </CardTitle>
                 <div className="flex items-center gap-2">
                   <Badge variant="secondary" className="dark:bg-zinc-800 dark:text-zinc-100">
@@ -1229,7 +1235,7 @@ export default function Dashboard() {
                 </div>
               </div>
               <CardDescription>
-                All tasks from Tasks tab • Completed tasks stay visible
+                Today's tasks from Tasks tab • Completed tasks stay visible
               </CardDescription>
             </CardHeader>
             <CardContent>

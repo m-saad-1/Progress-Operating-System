@@ -80,7 +80,7 @@ export const TaskList: React.FC<TaskListProps> = ({
                   <div className="mt-1">
                     <AnimatedProgressBar 
                       value={task.progress || 0} 
-                      height="sm" 
+                      height="md" 
                     />
                   </div>
                 )}

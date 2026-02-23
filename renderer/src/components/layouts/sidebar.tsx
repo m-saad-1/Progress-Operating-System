@@ -124,7 +124,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               to={path}
               className={({ isActive }) =>
                 cn(
-                  'group relative flex items-center rounded-lg transition-[background-color,color,transform] duration-200 ease-out transform-gpu',
+                  'group relative flex items-center rounded-lg transition-[background-color,color,transform] duration-200 ease-out transform-gpu shadow-none',
 
                   // background only — NO text color here
                   isActive
@@ -132,7 +132,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                       ? 'bg-transparent shadow-none'
                       : 'bg-green-500/15 shadow-sm shadow-green-500/10'
                     : collapsed
-                      ? 'hover:bg-transparent'
+                      ? 'hover:bg-transparent shadow-none'
                       : 'hover:bg-green-500/10',
 
                   !collapsed && 'h-10 w-full px-3 gap-3 justify-start text-sm font-medium',

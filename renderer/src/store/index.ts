@@ -241,6 +241,8 @@ const defaultKeyboardShortcuts: KeyboardShortcut[] = [
   { id: 'nav-notes', action: 'Go to Notes', keys: 'Ctrl+5', enabled: true, category: 'navigation' },
   { id: 'nav-reviews', action: 'Go to Reviews', keys: 'Ctrl+6', enabled: true, category: 'navigation' },
   { id: 'nav-analytics', action: 'Go to Analytics', keys: 'Ctrl+7', enabled: true, category: 'navigation' },
+  { id: 'nav-time', action: 'Go to Time', keys: 'Ctrl+8', enabled: true, category: 'navigation' },
+  { id: 'nav-settings', action: 'Go to Settings', keys: 'Ctrl+9', enabled: true, category: 'navigation' },
   { id: 'action-new', action: 'Create new item', keys: 'Ctrl+N', enabled: true, category: 'actions' },
   { id: 'action-save', action: 'Save changes', keys: 'Ctrl+S', enabled: true, category: 'actions' },
   { id: 'action-undo', action: 'Undo', keys: 'Ctrl+Z', enabled: true, category: 'actions' },
@@ -254,7 +256,7 @@ const defaultKeyboardShortcuts: KeyboardShortcut[] = [
   { id: 'prod-pomodoro', action: 'Toggle Pomodoro timer', keys: 'Ctrl+Shift+P', enabled: true, category: 'productivity' },
   { id: 'prod-quick-task', action: 'Quick task entry', keys: 'Ctrl+Shift+T', enabled: true, category: 'productivity' },
   { id: 'prod-journal', action: 'Quick journal entry', keys: 'Ctrl+Shift+J', enabled: true, category: 'productivity' },
-  { id: 'prod-review', action: 'Start daily review', keys: 'Ctrl+Shift+R', enabled: true, category: 'productivity' },
+  { id: 'prod-review', action: 'Start daily review', keys: 'Ctrl+Shift+I', enabled: true, category: 'productivity' },
 ]
 
 const defaultUserProfile: UserProfile = {

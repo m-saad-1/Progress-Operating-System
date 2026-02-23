@@ -217,6 +217,7 @@ export default function Settings() {
   })
   const [resetDialogOpen, setResetDialogOpen] = useState(false)
   const [resetConfirmation, setResetConfirmation] = useState('')
+  const [isClearingCaches, setIsClearingCaches] = useState(false)
   const [feedbackType, setFeedbackType] = useState<'bug-report' | 'suggestion' | 'feature-request' | 'general-feedback'>('general-feedback')
   const [feedbackMessage, setFeedbackMessage] = useState('')
   const [feedbackEmail, setFeedbackEmail] = useState(store.userProfile?.email || '')
@@ -354,32 +355,70 @@ export default function Settings() {
     }
   }
 
-  const handleClearPrivacyCaches = () => {
+  const handleClearPrivacyCaches = async () => {
     const confirmed = window.confirm(
       'Clear local notification history, reminder logs, and sync cache snapshots? This does not delete tasks, habits, goals, notes, or reviews.'
     )
 
     if (!confirmed) return
 
-    const keysToClear = [
-      'progress-os-reminder-log',
-      'progress-os-email-queue',
-      'progress-os-sync-snapshot',
-      'progress-os-analytics-queue',
-      'progress-os-analytics-buffer',
-      'progress-os-telemetry-queue',
-    ]
+    setIsClearingCaches(true)
 
-    keysToClear.forEach((key) => {
+    try {
+      info('Clearing caches...')
+      
+      // localStorage keys to clear
+      const localStorageKeys = [
+        'progress-os-reminder-log',
+        'progress-os-email-queue',
+        'progress-os-sync-snapshot',
+        'progress-os-analytics-queue',
+        'progress-os-analytics-buffer',
+        'progress-os-telemetry-queue',
+        'progress-os-cache',
+      ]
+
+      // Clear localStorage
+      localStorageKeys.forEach((key) => {
+        try {
+          localStorage.removeItem(key)
+        } catch {
+          // ignore storage failures
+        }
+      })
+
+      // Clear sessionStorage
       try {
-        localStorage.removeItem(key)
+        const sessionStorageKeys = Array.from(sessionStorage).map(([key]) => key)
+        sessionStorageKeys.forEach((key) => {
+          if (key.includes('cache') || key.includes('reminder') || key.includes('sync') || key.includes('queue')) {
+            sessionStorage.removeItem(key)
+          }
+        })
       } catch {
-        // ignore storage failures
+        // ignore session storage failures
       }
-    })
 
-    store.clearNotifications()
-    success('Local privacy caches cleared successfully')
+      // Clear in-app notifications
+      store.clearNotifications()
+
+      // Clear CacheStorage API (if available)
+      try {
+        if ('caches' in window) {
+          const cacheNames = await caches.keys()
+          await Promise.all(cacheNames.map((cacheName) => caches.delete(cacheName)))
+        }
+      } catch {
+        // ignore cache storage failures
+      }
+
+      success('Local privacy caches cleared successfully')
+    } catch (err) {
+      console.error('Error clearing privacy caches:', err)
+      error('Failed to clear privacy caches. Please try again.')
+    } finally {
+      setIsClearingCaches(false)
+    }
   }
 
   const handleShortcutUpdate = (id: string, keys: string) => {
@@ -1538,15 +1577,15 @@ export default function Settings() {
                       This will restart the app with a completely fresh state.
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <Badge className="bg-red-500/90 hover:bg-red-600 text-white border-none shadow-sm text-xs">
+                      <Badge className="bg-red-500/90 text-white border-none shadow-sm text-xs">
                         <AlertTriangle className="h-3 w-3 mr-1" />
                         Cannot be undone
                       </Badge>
-                      <Badge className="bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white border-none shadow-sm text-xs">
+                      <Badge className="bg-gradient-to-r from-orange-500 to-orange-600 text-white border-none shadow-sm text-xs">
                         <HardDrive className="h-3 w-3 mr-1" />
                         Deletes database
                       </Badge>
-                      <Badge className="bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white border-none shadow-sm text-xs">
+                      <Badge className="bg-gradient-to-r from-amber-500 to-amber-600 text-white border-none shadow-sm text-xs">
                         <RotateCcw className="h-3 w-3 mr-1" />
                         Auto-restarts app
                       </Badge>
@@ -1574,11 +1613,21 @@ export default function Settings() {
                   </div>
                   <Button 
                     variant="destructive"
-                    onClick={handleClearPrivacyCaches}
-                    className="flex-shrink-0 bg-gradient-to-br from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 shadow-md hover:shadow-lg text-white border-none transition-all"
+                    onClick={() => handleClearPrivacyCaches()}
+                    disabled={isClearingCaches}
+                    className="flex-shrink-0 bg-gradient-to-br from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 shadow-md hover:shadow-lg text-white border-none transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    Clear Local Caches
+                    {isClearingCaches ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Clearing...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Clear Local Caches
+                      </>
+                    )}
                   </Button>
                 </div>
               </div>

@@ -90,6 +90,7 @@ function createWindow(): void {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
+    mainWindow?.maximize();
 
     if (process.env.NODE_ENV === 'development') {
       mainWindow?.webContents.openDevTools({ mode: 'detach' });

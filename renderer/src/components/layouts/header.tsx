@@ -322,9 +322,9 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
       alerts.push({
         id: 'critical-overdue-tasks',
         title: 'Overdue Tasks',
-        message: `${overdueTasks.length} task${overdueTasks.length === 1 ? '' : 's'} overdue and need attention.`,
+        message: `${overdueTasks.length} task${overdueTasks.length === 1 ? '' : 's'} became overdue yesterday`,
         type: 'error',
-        time: 'Now',
+        time: 'Yesterday',
         read: false,
         priority: 'critical',
         category: 'tasks',

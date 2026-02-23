@@ -127,6 +127,16 @@ const getProgressLabel = (value: number) =>
 
 const TASK_TIPS_SECTIONS = [
   {
+    title: 'Avoid Multitasking & Burnout',
+    points: [
+      'Multitasking reduces focus and increases mistakes—concentrating on one task is more efficient.',
+      'Doing anything at 50% quality is better than spreading yourself thin across three tasks at 100% effort.',
+      'Prevention is key: protect your energy by saying no to non-essential work and setting realistic limits.',
+      'Risk of burnout rises when you juggle too many tasks—prioritize deeply meaningful work over quantity.',
+      'Single-tasking builds momentum and momentum builds confidence—both essential for sustainable productivity.',
+    ],
+  },
+  {
     title: 'Prioritization That Works',
     points: [
       'Use high priority only for truly time-critical items; keep most work in medium to reduce overload.',
@@ -164,17 +174,17 @@ const YESTERDAY_TIPS_SECTIONS = [
   {
     title: 'Purpose of Yesterday Section',
     points: [
-      'This area is only for correcting tasks that were missed or forgotten yesterday.',
-      'Use it to record accurate final status (Skipped, partial progress, or completed) for yesterday.',
-      'It is not intended for planning new work or editing older historical dates.',
+      'This section is ONLY for marking tasks that were completed but forgotten to mark yesterday.',
+      'Use it to record the accurate completion status for tasks you actually finished.',
+      'It is NOT for doing yesterday\'s missed tasks - focus on today\'s work instead.',
     ],
   },
   {
     title: 'How to Update Correctly',
     points: [
-      'Choose the progress level that best represents what actually happened yesterday.',
-      'If a task was paused yesterday, keep it unchanged and continue from Today when ready.',
-      'After updating Yesterday, continue tracking new effort in Today to keep analytics clean.',
+      'Mark tasks as complete (100%) if you finished them yesterday but forgot to update.',
+      'Update progress to reflect what you actually accomplished yesterday, not new work.',
+      'After correcting yesterday, continue your focus on today\'s tasks to maintain momentum.',
     ],
   },
 ] as const

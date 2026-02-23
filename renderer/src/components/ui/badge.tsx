@@ -23,10 +23,10 @@ const badgeVariants = cva(
         finance: "border-transparent bg-category-finance/10 text-category-finance hover:bg-category-finance/20",
         personal: "border-transparent bg-category-personal/10 text-category-personal hover:bg-category-personal/20",
         // Priority variants
-        low: "border-transparent bg-priority-low/10 text-priority-low hover:bg-priority-low/20",
-        medium: "border-transparent bg-priority-medium/10 text-priority-medium hover:bg-priority-medium/20",
-        high: "border-transparent bg-priority-high/10 text-priority-high hover:bg-priority-high/20",
-        critical: "border-transparent bg-priority-critical/10 text-priority-critical hover:bg-priority-critical/20",
+        low: "border-priority-low/30 bg-priority-low/15 text-priority-low hover:bg-priority-low/25 font-semibold shadow-sm",
+        medium: "border-priority-medium/30 bg-priority-medium/15 text-priority-medium hover:bg-priority-medium/25 font-semibold shadow-sm",
+        high: "border-priority-high/30 bg-priority-high/15 text-priority-high hover:bg-priority-high/25 font-semibold shadow-sm",
+        critical: "border-priority-critical/30 bg-priority-critical/15 text-priority-critical hover:bg-priority-critical/25 font-semibold shadow-sm",
       },
       size: {
         default: "px-2.5 py-0.5",

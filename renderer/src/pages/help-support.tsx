@@ -170,6 +170,21 @@ export default function HelpSupportPage() {
         </div>
       </div>
 
+      <Card className="border-none shadow-lg bg-gradient-to-br from-blue-50/50 to-cyan-50/30 dark:from-blue-950/20 dark:to-cyan-950/10">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <MessageSquare className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+            Team Contact
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground mb-2">For general inquiries, bug reports, and team support, reach out to us at:</p>
+          <a href="mailto:progressoshelp@gmail.com" className="text-blue-600 dark:text-blue-400 hover:underline font-medium text-sm">
+            progressoshelp@gmail.com
+          </a>
+        </CardContent>
+      </Card>
+
       <Card className="border-none shadow-lg bg-gradient-to-br from-card to-card/50">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">

@@ -88,50 +88,52 @@ import {
 import { ContextTipsDialog } from '@/components/context-tips-dialog'
 
 const DueHabitTooltip = ({ active, payload, label }: any) => {
-  if (!active || !payload || payload.length === 0) return null
+  if (!active || !payload || !Array.isArray(payload) || payload.length === 0) return null
 
-  const point = payload?.[0]?.payload || {}
+  const point = payload[0]?.payload
+  if (!point) return null
+
   const dueHabits = Number(point.dueHabits ?? 0)
   const completedDueHabits = Number(point.completedDueHabits ?? 0)
   const missedHabits = Math.max(dueHabits - completedDueHabits, 0)
   const completionRate = dueHabits > 0 ? Math.round((completedDueHabits / dueHabits) * 100) : 0
   const displayDate = point.fullDate
     ? format(parseISO(`${point.fullDate}T00:00:00`), 'EEE, MMM d, yyyy')
-    : label
+    : label || 'N/A'
   const dueTitles: string[] = Array.isArray(point.dueHabitTitles) ? point.dueHabitTitles : []
   const completedTitles: string[] = Array.isArray(point.completedDueHabitTitles) ? point.completedDueHabitTitles : []
 
   return (
-    <div className="rounded-lg border bg-popover p-3 shadow-lg">
-      <p className="font-semibold text-sm mb-2">{displayDate}</p>
-      <div className="space-y-1 text-sm">
+    <div className="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-slate-950 p-4 shadow-xl">
+      <p className="font-semibold text-sm mb-3 text-foreground">{displayDate}</p>
+      <div className="space-y-2 text-sm">
         <div className="flex items-center justify-between gap-4">
           <span className="text-muted-foreground">Due Habits:</span>
-          <span className="font-semibold text-purple-500">{dueHabits}</span>
+          <span className="font-semibold text-purple-600 dark:text-purple-400">{dueHabits}</span>
         </div>
         <div className="flex items-center justify-between gap-4">
           <span className="text-muted-foreground">Completed:</span>
-          <span className="font-semibold text-green-500">{completedDueHabits}</span>
+          <span className="font-semibold text-green-600 dark:text-green-400">{completedDueHabits}</span>
         </div>
         <div className="flex items-center justify-between gap-4">
           <span className="text-muted-foreground">Missed:</span>
-          <span className="font-semibold text-red-500">{missedHabits}</span>
+          <span className="font-semibold text-red-600 dark:text-red-400">{missedHabits}</span>
         </div>
-        <div className="flex items-center justify-between gap-4 border-t border-border/50 pt-1 mt-1">
+        <div className="flex items-center justify-between gap-4 border-t border-gray-200 dark:border-gray-800 pt-2 mt-2">
           <span className="text-muted-foreground">Consistency:</span>
-          <span className="font-semibold">{completionRate}%</span>
+          <span className="font-semibold text-foreground">{completionRate}%</span>
         </div>
       </div>
       {(dueTitles.length > 0 || completedTitles.length > 0) && (
-        <div className="mt-2 pt-2 border-t border-border/50 space-y-1 text-xs">
+        <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-800 space-y-1 text-xs">
           {dueTitles.length > 0 && (
             <p className="text-muted-foreground truncate" title={`Due: ${dueTitles.join(', ')}`}>
-              Due: {dueTitles.join(', ')}
+              <span className="font-medium">Due:</span> {dueTitles.join(', ')}
             </p>
           )}
           {completedTitles.length > 0 && (
             <p className="text-muted-foreground truncate" title={`Completed: ${completedTitles.join(', ')}`}>
-              Completed: {completedTitles.join(', ')}
+              <span className="font-medium">Completed:</span> {completedTitles.join(', ')}
             </p>
           )}
         </div>
@@ -211,6 +213,7 @@ export default function Habits() {
   const [selectedFrequency] = useState<Habit['frequency'] | 'all'>('all')
   const [selectedGoal] = useState<string | 'all'>('all')
   const [sortBy] = useState<'streak' | 'consistency' | 'created' | 'updated'>('streak')
+  const [activeTab, setActiveTab] = useState('all')
   const [isCreating, setIsCreating] = useState(false)
   const [isEditing, setIsEditing] = useState<string | null>(null)
   const [formData, setFormData] = useState<HabitFormData>({
@@ -245,6 +248,56 @@ export default function Habits() {
     return () => window.removeEventListener('app:new-habit', openCreateHabit as EventListener)
   }, [])
 
+  // Use LOCAL date string consistently - critical for correct habit tracking
+  // MUST be declared before getHabitCompletionForDay function that uses it
+  const todayStr = getLocalDateString(new Date())
+
+  // Fetch completions for TODAY specifically (for instant button state updates)
+  // MUST be before getHabitCompletionForDay function
+  const { data: todayCompletions = [] } = useQuery({
+    queryKey: ['habit-completions-today', todayStr],
+    queryFn: async () => {
+      if (!electron.isReady) return []
+      
+      const result = await electron.executeQuery(`
+        SELECT habit_id, date 
+        FROM habit_completions 
+        WHERE date = ? 
+        AND completed = 1
+      `, [todayStr])
+      return Array.isArray(result) ? result : []
+    },
+    enabled: electron.isReady,
+    refetchOnWindowFocus: true,
+    refetchInterval: 5000, // Refetch every 5 seconds for instant updates
+    staleTime: 0, // Always treat as stale to ensure fresh data
+  })
+
+  // Fetch completions for the selected month (for monthly overview)
+  // MUST be before getHabitCompletionForDay function
+  const { data: completions = [] } = useQuery({
+    queryKey: ['habit-completions', format(selectedMonth, 'yyyy-MM')],
+    queryFn: async () => {
+      const todayDate = new Date()
+      const start = getLocalDateString(startOfMonth(selectedMonth < todayDate ? selectedMonth : todayDate))
+      const end = getLocalDateString(endOfMonth(selectedMonth > todayDate ? selectedMonth : todayDate))
+      
+      if (!electron.isReady) return []
+      
+      const result = await electron.executeQuery(`
+        SELECT habit_id, date 
+        FROM habit_completions 
+        WHERE date BETWEEN ? AND ? 
+        AND completed = 1
+      `, [start, end])
+      return Array.isArray(result) ? result : []
+    },
+    enabled: electron.isReady,
+    refetchOnWindowFocus: true, // Refetch when returning to app to catch any date changes
+    refetchInterval: 30000, // Refetch every 30 seconds for quicker sync
+    staleTime: 0, // Always treat as stale to ensure fresh data
+  })
+
   const filteredHabits = useMemo(() => habits.filter((habit: Habit) => {
     const matchesSearch = searchQuery === '' ||
       habit.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -270,6 +323,48 @@ export default function Habits() {
         return 0
     }
   }), [habits, searchQuery, selectedFrequency, selectedGoal, sortBy])
+
+  /**
+   * Returns whether a habit is completed for a given day.
+   * Uses todayCompletions query for today (more frequently refreshed)
+   * and completions query for other days in the month.
+   */
+  const getHabitCompletionForDay = (habitId: string, date: Date) => {
+    const dateStr = getLocalDateString(date)
+    const isToday = dateStr === todayStr
+    
+    // For TODAY, always use todayCompletions query (single source of truth for button state)
+    if (isToday) {
+      if (!Array.isArray(todayCompletions) || todayCompletions.length === 0) return false
+      return todayCompletions.some((c: any) => c.habit_id === habitId && c.date && (c.date === dateStr || c.date.startsWith(dateStr)))
+    }
+    
+    // For past/future dates, use the monthly completions
+    if (!Array.isArray(completions) || completions.length === 0) return false
+    return completions.some((c: any) => c.habit_id === habitId && c.date && (c.date === dateStr || c.date.startsWith(dateStr)))
+  }
+
+  // Sort habits by frequency and completion status
+  // Unmarked habits first (grouped by frequency), then marked habits
+  // Only sorts when on the 'all' tab, updates when switching tabs
+  const sortedHabitsByFrequency = useMemo(() => {
+    if (activeTab !== 'all') return filteredHabits
+
+    const frequencyOrder = { daily: 0, weekly: 1, monthly: 2 }
+
+    return [...filteredHabits].sort((a, b) => {
+      // First, sort by frequency (daily, then weekly, then monthly)
+      const frequencyDiff = frequencyOrder[a.frequency as keyof typeof frequencyOrder] - frequencyOrder[b.frequency as keyof typeof frequencyOrder]
+      if (frequencyDiff !== 0) return frequencyDiff
+
+      // Within same frequency, sort unmarked (not completed today) first
+      const aCompleted = getHabitCompletionForDay(a.id, new Date())
+      const bCompleted = getHabitCompletionForDay(b.id, new Date())
+
+      // Unmarked (false) comes before marked (true)
+      return (aCompleted ? 1 : 0) - (bCompleted ? 1 : 0)
+    })
+  }, [filteredHabits, activeTab])
 
   // Fetch ALL completions (for streak calculations)
   const { data: allCompletions = [] } = useQuery({
@@ -298,30 +393,7 @@ export default function Habits() {
     start: startOfMonth(selectedMonth),
     end: endOfMonth(selectedMonth),
   })
-
-  // Use LOCAL date string consistently - critical for correct habit tracking
-  const todayStr = getLocalDateString(new Date())
   
-  // Fetch completions for TODAY specifically (for instant button state updates)
-  const { data: todayCompletions = [] } = useQuery({
-    queryKey: ['habit-completions-today', todayStr],
-    queryFn: async () => {
-      if (!electron.isReady) return []
-      
-      const result = await electron.executeQuery(`
-        SELECT habit_id, date 
-        FROM habit_completions 
-        WHERE date = ? 
-        AND completed = 1
-      `, [todayStr])
-      return Array.isArray(result) ? result : []
-    },
-    enabled: electron.isReady,
-    refetchOnWindowFocus: true,
-    refetchInterval: 5000, // Refetch every 5 seconds for instant updates
-    staleTime: 0, // Always treat as stale to ensure fresh data
-  })
-
   // Calculate statistics using centralized habit analytics (match Analytics → Habits)
   const habitDateRange = useMemo(() => getDateRange('month'), [todayStr])
   const typedAllCompletions = useMemo(() => (Array.isArray(allCompletions) ? allCompletions as HabitCompletion[] : []), [allCompletions])
@@ -592,30 +664,6 @@ export default function Habits() {
     },
     [habits, selectedMonth, typedAllCompletions]
   )
-
-  // Fetch completions for the selected month (for monthly overview)
-  const { data: completions = [] } = useQuery({
-    queryKey: ['habit-completions', format(selectedMonth, 'yyyy-MM')],
-    queryFn: async () => {
-      const todayDate = new Date()
-      const start = getLocalDateString(startOfMonth(selectedMonth < todayDate ? selectedMonth : todayDate))
-      const end = getLocalDateString(endOfMonth(selectedMonth > todayDate ? selectedMonth : todayDate))
-      
-      if (!electron.isReady) return []
-      
-      const result = await electron.executeQuery(`
-        SELECT habit_id, date 
-        FROM habit_completions 
-        WHERE date BETWEEN ? AND ? 
-        AND completed = 1
-      `, [start, end])
-      return Array.isArray(result) ? result : []
-    },
-    enabled: electron.isReady,
-    refetchOnWindowFocus: true, // Refetch when returning to app to catch any date changes
-    refetchInterval: 30000, // Refetch every 30 seconds for quicker sync
-    staleTime: 0, // Always treat as stale to ensure fresh data
-  })
 
   // Create habit mutation
   const createHabitMutation = useMutation({
@@ -983,26 +1031,6 @@ export default function Habits() {
       date,
       completed: !currentlyCompleted,
     })
-  }
-
-  /**
-   * Returns whether a habit is completed for a given day.
-   * Uses todayCompletions query for today (more frequently refreshed)
-   * and completions query for other days in the month.
-   */
-  const getHabitCompletionForDay = (habitId: string, date: Date) => {
-    const dateStr = getLocalDateString(date)
-    const isToday = dateStr === todayStr
-    
-    // For TODAY, always use todayCompletions query (single source of truth for button state)
-    if (isToday) {
-      if (!Array.isArray(todayCompletions) || todayCompletions.length === 0) return false
-      return todayCompletions.some((c: any) => c.habit_id === habitId && c.date && (c.date === dateStr || c.date.startsWith(dateStr)))
-    }
-    
-    // For past/future dates, use the monthly completions
-    if (!Array.isArray(completions) || completions.length === 0) return false
-    return completions.some((c: any) => c.habit_id === habitId && c.date && (c.date === dateStr || c.date.startsWith(dateStr)))
   }
 
   const renderHabitCard = (habit: Habit) => {
@@ -1508,7 +1536,7 @@ export default function Habits() {
       </div>
 
       {/* Habits List */}
-      <Tabs defaultValue="all">
+      <Tabs defaultValue="all" onValueChange={setActiveTab}>
         <TabsList className="bg-secondary/30 dark:bg-secondary/20">
           <TabsTrigger value="all">All Habits ({filteredHabits.length})</TabsTrigger>
           <TabsTrigger value="streaks">Active Streaks ({stats.activeStreaks})</TabsTrigger>
@@ -1535,8 +1563,20 @@ export default function Habits() {
               </CardContent>
             </Card>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredHabits.map(renderHabitCard)}
+            <div className="space-y-8">
+              {(['daily', 'weekly', 'monthly'] as const).map((frequency) => {
+                const habitsByFrequency = sortedHabitsByFrequency.filter(h => h.frequency === frequency)
+                if (habitsByFrequency.length === 0) return null
+
+                return (
+                  <div key={frequency}>
+                    <h3 className="text-lg font-semibold mb-4 capitalize text-foreground">{frequency} Habits</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {habitsByFrequency.map(renderHabitCard)}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           )}
         </TabsContent>
@@ -1792,7 +1832,11 @@ export default function Habits() {
                   </defs>
                   <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
                   <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                  <Tooltip content={<DueHabitTooltip />} />
+                  <Tooltip 
+                    content={DueHabitTooltip} 
+                    cursor={{ fill: 'rgba(139, 92, 246, 0.1)' }}
+                    wrapperStyle={{ outline: 'none' }}
+                  />
                   <Legend />
                   <Area
                     type="monotone"

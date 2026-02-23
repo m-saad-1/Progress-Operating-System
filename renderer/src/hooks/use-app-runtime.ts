@@ -559,6 +559,8 @@ export function useAppRuntime() {
       'nav-notes': () => navigate('/notes'),
       'nav-reviews': () => navigate('/reviews'),
       'nav-analytics': () => navigate('/analytics'),
+      'nav-time': () => navigate('/time'),
+      'nav-settings': () => navigate('/settings'),
       'action-new': () => {
         if (location.pathname.includes('/tasks')) {
           window.dispatchEvent(new CustomEvent('app:new-task'))
