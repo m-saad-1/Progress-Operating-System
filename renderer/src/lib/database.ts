@@ -294,6 +294,7 @@ export interface CreateNoteDTO {
   goal_id?: string;
   task_id?: string;
   tags?: string[];
+  pinned?: boolean;
 }
 
 export interface UpdateNoteDTO extends Partial<CreateNoteDTO> {}
@@ -1764,6 +1765,7 @@ export class DatabaseService {
     return results.map((note: any) => ({
       ...note,
       tags: Array.isArray(note.tags) ? note.tags : JSON.parse(typeof note.tags === 'string' ? note.tags : '[]'),
+      pinned: note.pinned === 1 || note.pinned === true,
     }));
   }
 
@@ -1783,6 +1785,7 @@ export class DatabaseService {
     return {
       ...note,
       tags: Array.isArray(note.tags) ? note.tags : JSON.parse(typeof note.tags === 'string' ? note.tags : '[]'),
+      pinned: note.pinned === 1 || note.pinned === true,
     };
   }
 
@@ -1793,9 +1796,9 @@ export class DatabaseService {
     await this.executeTransaction([{
       query: `
         INSERT INTO notes (
-          id, title, content, type, mood, goal_id, task_id, tags,
+          id, title, content, type, mood, goal_id, task_id, tags, pinned,
           created_at, updated_at, version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       `,
       params: [
         id,
@@ -1806,6 +1809,7 @@ export class DatabaseService {
         data.goal_id || null,
         data.task_id || null,
         JSON.stringify(data.tags || []),
+        data.pinned ? 1 : 0,
         now,
         now,
       ]
@@ -1821,7 +1825,7 @@ export class DatabaseService {
       query: `
         UPDATE notes 
         SET title = ?, content = ?, type = ?, mood = ?, 
-            goal_id = ?, task_id = ?, tags = ?, updated_at = ?, version = version + 1
+            goal_id = ?, task_id = ?, tags = ?, pinned = ?, updated_at = ?, version = version + 1
         WHERE id = ?
       `,
       params: [
@@ -1832,6 +1836,7 @@ export class DatabaseService {
         data.goal_id || null,
         data.task_id || null,
         JSON.stringify(data.tags || []),
+        data.pinned !== undefined ? (data.pinned ? 1 : 0) : 0,
         now,
         id,
       ]

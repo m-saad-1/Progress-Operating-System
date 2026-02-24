@@ -1166,15 +1166,15 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
               <DropdownMenuItem onClick={() => {
                 setSearchOpen(true)
                 searchInputRef.current?.focus()
-              }} className="rounded-xl border border-border/60 bg-white px-3 py-3 shadow-sm transition-all duration-200 hover:bg-green-500/5 hover:shadow-md focus:bg-green-500/8 dark:bg-zinc-900 dark:hover:bg-green-500/10">
+              }} className="rounded-xl bg-gradient-to-br from-green-50/50 to-emerald-50/40 px-3 py-3 shadow-none transition-all duration-200 hover:from-green-100/40 hover:to-emerald-50/60 hover:shadow-md focus:from-green-100/50 focus:to-emerald-100/40 dark:from-green-950/30 dark:to-emerald-950/20 dark:hover:from-green-900/40 dark:hover:to-emerald-900/30 dark:focus:from-green-900/50 dark:focus:to-emerald-900/40">
                 <div className="flex w-full items-start gap-3">
-                  <div className="mt-0.5 rounded-lg bg-green-500/12 p-1.5 text-green-600 dark:bg-green-500/20 dark:text-green-300">
+                  <div className="mt-0.5 rounded-lg bg-green-500/15 p-1.5 text-green-600 dark:bg-green-500/25 dark:text-green-400">
                     <Search className="h-4 w-4" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-slate-900 dark:text-zinc-100">Focus Search</span>
-                      <kbd className="inline-flex h-5 items-center rounded border border-green-500/25 bg-green-500/8 px-1.5 text-[10px] font-medium text-green-700 dark:text-green-300">⌘K</kbd>
+                      <span className="text-sm font-semibold text-slate-900 dark:text-zinc-50">Focus Search</span>
+                      <kbd className="inline-flex h-5 items-center rounded bg-green-500/12 px-1.5 text-[10px] font-medium text-green-700 dark:bg-green-500/15 dark:text-green-300">⌘K</kbd>
                     </div>
                     <span className="mt-0.5 block text-xs leading-relaxed text-slate-600 dark:text-zinc-400">Quickly find tasks, habits, goals, and notes with smart match highlighting.</span>
                   </div>

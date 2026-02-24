@@ -1415,6 +1415,24 @@ export const calculateTimeAnalytics = (
 // PRODUCTIVITY SCORE (Single Source of Truth)
 // ============================================
 
+const TASK_CATEGORY_WEIGHT = 20
+const HABIT_CATEGORY_WEIGHT = 4
+
+const calculateWeightedProductivity = (
+  taskCompletion: number,
+  habitCompletion: number,
+  hasHabits: boolean
+): number => {
+  if (!hasHabits) {
+    return Math.round(taskCompletion)
+  }
+
+  const totalCategoryWeight = TASK_CATEGORY_WEIGHT + HABIT_CATEGORY_WEIGHT
+  const taskContribution = taskCompletion * TASK_CATEGORY_WEIGHT
+  const habitContribution = habitCompletion * HABIT_CATEGORY_WEIGHT
+  return Math.round((taskContribution + habitContribution) / totalCategoryWeight)
+}
+
 export interface ProductivityScore {
   overall: number
   taskComponent: number
@@ -1424,42 +1442,72 @@ export interface ProductivityScore {
     habitConsistency: number
     taskWeight: number
     habitWeight: number
+    taskCategoryWeight: number
+    habitCategoryWeight: number
+    hasHabits: boolean
   }
   completedTasks?: number
   completedHabits?: number
 }
 
+export interface ProductivityTaskInput {
+  weightedCompletionRate: number
+  totalWeight: number
+}
+
+export interface ProductivityHabitInput {
+  avgConsistency: number
+  totalHabitWeight: number
+  total: number
+}
+
 /**
- * Calculates an overall productivity score combining task and habit metrics.
+ * Calculates an overall productivity score combining task and habit metrics with dynamic weighting.
  * 
  * Formula:
- * - Task Component: weighted completion rate (0-100)
- * - Habit Component: average consistency score (0-100)
- * - Overall: weighted average of both components (65% tasks, 35% habits)
+ * - Task Category Weight: 20 (contribution multiplier for task category)
+ * - Habit Category Weight: 4 (contribution multiplier for habit category)
+ * - Task Completion %: (earnedWeight / totalWeight) * 100
+ * - Habit Completion %: (completedPeriods / expectedPeriods) * 100
+ * 
+ * Dynamic Distribution:
+ * - If habits exist: overall = (taskComp% * 20 + habitComp% * 4) / (20 + 4)
+ * - If NO habits: overall = taskComp% (100% of score)
+ * - This ensures normalized scores reflect actual performance, not fixed category ratios
  * 
  * @param taskAnalytics - Task metrics from calculateTaskAnalytics
  * @param habitAnalytics - Habit metrics from calculateHabitAnalytics
- * @returns ProductivityScore with overall score and components
+ * @returns ProductivityScore with overall score, components, and dynamic weighting breakdown
  */
 export const calculateProductivityScore = (
-  taskAnalytics: TaskAnalytics,
-  habitAnalytics: HabitAnalytics
+  taskAnalytics: ProductivityTaskInput,
+  habitAnalytics: ProductivityHabitInput
 ): ProductivityScore => {
-  const taskComponent = taskAnalytics.weightedCompletionRate || 0
-  const habitComponent = habitAnalytics.avgConsistency || 0
-  
-  // Weighted average: 65% tasks, 35% habits
-  const overall = Math.round((taskComponent * 0.65) + (habitComponent * 0.35))
-  
+  // Calculate component completion percentages
+  const taskCompletion = taskAnalytics.weightedCompletionRate || 0
+  const habitCompletion = habitAnalytics.avgConsistency || 0
+
+  // Determine if habits exist in the data
+  const hasHabits = habitAnalytics.total > 0
+
+  // Calculate overall productivity score with dynamic weighting
+  // Dynamically weight based on category weights
+  // "Each category should calculate its own completion percentage relative to its own total weight
+  //  and then contribute proportionally to the final productivity score"
+  const overall = calculateWeightedProductivity(taskCompletion, habitCompletion, hasHabits)
+
   return {
     overall,
-    taskComponent,
-    habitComponent,
+    taskComponent: taskCompletion,
+    habitComponent: habitCompletion,
     breakdown: {
       weightedCompletion: taskAnalytics.weightedCompletionRate,
       habitConsistency: habitAnalytics.avgConsistency,
       taskWeight: taskAnalytics.totalWeight,
-      habitWeight: habitAnalytics.totalHabitWeight
+      habitWeight: habitAnalytics.totalHabitWeight,
+      taskCategoryWeight: TASK_CATEGORY_WEIGHT,
+      habitCategoryWeight: HABIT_CATEGORY_WEIGHT,
+      hasHabits
     }
   }
 }
@@ -1586,14 +1634,13 @@ export const calculateTrendData = (
     })
     
     // Productivity for the day (real data only)
-    const totalTaskWeight = dayPlannedWeight
-    const completedTaskWeight = earnedTaskWeight
-    const totalHabitWeight = dueHabits * HABIT_WEIGHT
-    const completedHabitWeight = habitsCompleted * HABIT_WEIGHT
-    const totalWeight = Math.max(totalTaskWeight + totalHabitWeight, completedTaskWeight + completedHabitWeight)
-    const productivity = totalWeight > 0
-      ? Math.round(((completedTaskWeight + completedHabitWeight) / totalWeight) * 100)
+    const taskCompletion = dayPlannedWeight > 0
+      ? (earnedTaskWeight / dayPlannedWeight) * 100
       : 0
+    const habitCompletion = dueHabits > 0
+      ? (habitsCompleted / dueHabits) * 100
+      : 0
+    const productivity = calculateWeightedProductivity(taskCompletion, habitCompletion, dueHabits > 0)
     
     return {
       date: displayDate,

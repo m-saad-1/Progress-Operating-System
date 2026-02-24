@@ -756,9 +756,9 @@ export const db = {
       const operations = [{
         query: `
           INSERT INTO notes (
-            id, title, content, type, mood, goal_id, task_id, tags,
+            id, title, content, type, mood, goal_id, task_id, tags, pinned,
             created_at, updated_at, version
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         `,
         params: [
           noteId,
@@ -769,6 +769,7 @@ export const db = {
           noteData.goal_id || null,
           noteData.task_id || null,
           JSON.stringify(noteData.tags || []),
+          noteData.pinned ? 1 : 0,
           now,
           now,
         ]
@@ -905,7 +906,7 @@ export const db = {
         query: `
           UPDATE notes 
           SET title = ?, content = ?, type = ?, mood = ?, 
-              goal_id = ?, task_id = ?, tags = ?, updated_at = ?, version = version + 1
+              goal_id = ?, task_id = ?, tags = ?, pinned = ?, updated_at = ?, version = version + 1
           WHERE id = ?
         `,
         params: [
@@ -916,6 +917,7 @@ export const db = {
           updates.goal_id,
           updates.task_id,
           JSON.stringify(updates.tags || []),
+          updates.pinned !== undefined ? (updates.pinned ? 1 : 0) : 0,
           new Date().toISOString(),
           id,
         ]

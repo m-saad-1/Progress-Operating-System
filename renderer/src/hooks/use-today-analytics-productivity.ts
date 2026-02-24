@@ -3,8 +3,8 @@ import { useQuery } from '@tanstack/react-query'
 import { format, parseISO } from 'date-fns'
 import { useStore } from '@/store'
 import { useElectron } from '@/hooks/use-electron'
-import { database, type TaskTabStatsSnapshot } from '@/lib/database'
-import { calculateHabitAnalytics, getDateRange } from '@/lib/progress'
+import { database } from '@/lib/database'
+import { calculateHabitAnalytics, calculateTaskAnalytics, calculateProductivityScore, getDateRange } from '@/lib/progress'
 import type { HabitCompletion } from '@/types'
 
 const clampPercent = (value: number) => Math.max(0, Math.min(100, Math.round(value || 0)))
@@ -17,6 +17,7 @@ export interface TodayAnalyticsProductivity {
 
 export const useTodayAnalyticsProductivity = (): TodayAnalyticsProductivity => {
   const electron = useElectron()
+  const tasks = useStore((state) => state.tasks)
   const habits = useStore((state) => state.habits)
   const todayRange = useMemo(() => getDateRange('day'), [])
 
@@ -38,25 +39,17 @@ export const useTodayAnalyticsProductivity = (): TodayAnalyticsProductivity => {
     refetchInterval: 30000,
   })
 
-  const { data: taskTabStatsSnapshot } = useQuery<TaskTabStatsSnapshot>({
-    queryKey: ['task-stats', 'analytics-day-sync'],
-    queryFn: () => database.getTaskTabStats(),
-    enabled: electron.isReady,
-    refetchOnWindowFocus: true,
-    staleTime: 0,
-    refetchInterval: 30000,
-  })
-
   return useMemo(() => {
+    const taskAnalytics = calculateTaskAnalytics(tasks, todayRange)
     const habitAnalytics = calculateHabitAnalytics(habits, todayRange, allHabitCompletions)
-    const taskProgress = clampPercent(taskTabStatsSnapshot?.today?.weightedProgress ?? 0)
+    const productivityScore = calculateProductivityScore(taskAnalytics, habitAnalytics)
+    const taskProgress = clampPercent(taskAnalytics.weightedCompletionRate)
     const habitConsistency = clampPercent(habitAnalytics.avgConsistency)
-    const overall = clampPercent((taskProgress + habitConsistency) / 2)
 
     return {
-      overall,
+      overall: productivityScore.overall,
       taskProgress,
       habitConsistency,
     }
-  }, [allHabitCompletions, habits, taskTabStatsSnapshot?.today?.weightedProgress, todayRange])
+  }, [allHabitCompletions, habits, tasks, todayRange])
 }

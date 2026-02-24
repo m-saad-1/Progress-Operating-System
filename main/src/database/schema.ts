@@ -108,6 +108,7 @@ export interface Note {
   goal_id: string | null;
   task_id: string | null;
   tags: string[];
+  pinned: boolean;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;

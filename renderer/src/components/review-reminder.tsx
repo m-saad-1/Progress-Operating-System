@@ -114,8 +114,55 @@ export function ReviewReminder({ compact = false, showAll = false, className }: 
     staleTime: 60000,
   })
 
+  // Check if there's actual content to review
+  const { data: hasReviewableContent } = useQuery({
+    queryKey: ['reviewable-content-check'],
+    queryFn: async () => {
+      try {
+        // Check for any tasks
+        const tasks = await database.getTasks({ status: undefined })
+        const activeTasks = tasks.filter(t => !t.deleted_at)
+        
+        // Check for any goals
+        const goals = await database.getGoals()
+        const activeGoals = goals.filter(g => !g.deleted_at)
+        
+        // Check for any habits
+        const habits = await database.getHabits()
+        const activeHabits = habits.filter(h => !h.deleted_at)
+        
+        // Check for any time blocks (activity indicator)
+        const todayStart = startOfDay(new Date()).toISOString()
+        const todayEnd = endOfDay(new Date()).toISOString()
+        const timeBlocks = await database.getTimeBlocks({ startDate: todayStart, endDate: todayEnd })
+        
+        // Check for any notes
+        const notes = await database.getNotes()
+        const activeNotes = notes.filter(n => !n.deleted_at)
+        
+        // Return true if there's any meaningful data
+        const hasContent = activeTasks.length > 0 || 
+                          activeGoals.length > 0 || 
+                          activeHabits.length > 0 || 
+                          timeBlocks.length > 0 ||
+                          activeNotes.length > 0
+        
+        return hasContent
+      } catch (error) {
+        console.error('Error checking reviewable content:', error)
+        return false
+      }
+    },
+    staleTime: 300000, // 5 minutes
+  })
+
   // Determine which reviews are due
   const dueReviews = useMemo(() => {
+    // Don't show any reviews if there's no content to review
+    if (!hasReviewableContent) {
+      return []
+    }
+
     const reviews: { type: ReviewType; config: ReviewTypeConfig; review: Review | null; isDue: boolean }[] = []
 
     // Check daily
@@ -135,7 +182,7 @@ export function ReviewReminder({ compact = false, showAll = false, className }: 
 
     if (showAll) return reviews
     return reviews.filter(r => r.isDue || r.review?.status === 'draft')
-  }, [dailyReview, weeklyReview, monthlyReview, showAll])
+  }, [dailyReview, weeklyReview, monthlyReview, showAll, hasReviewableContent])
 
   if (dueReviews.length === 0) {
     return null
@@ -264,9 +311,54 @@ export function ReviewBanner({ className }: { className?: string }) {
     staleTime: 60000,
   })
 
+  // Check if there's actual content to review
+  const { data: hasReviewableContent } = useQuery({
+    queryKey: ['reviewable-content-check'],
+    queryFn: async () => {
+      try {
+        // Check for any tasks
+        const tasks = await database.getTasks({ status: undefined })
+        const activeTasks = tasks.filter(t => !t.deleted_at)
+        
+        // Check for any goals
+        const goals = await database.getGoals()
+        const activeGoals = goals.filter(g => !g.deleted_at)
+        
+        // Check for any habits
+        const habits = await database.getHabits()
+        const activeHabits = habits.filter(h => !h.deleted_at)
+        
+        // Check for any time blocks (activity indicator)
+        const todayStart = startOfDay(new Date()).toISOString()
+        const todayEnd = endOfDay(new Date()).toISOString()
+        const timeBlocks = await database.getTimeBlocks({ startDate: todayStart, endDate: todayEnd })
+        
+        // Check for any notes
+        const notes = await database.getNotes()
+        const activeNotes = notes.filter(n => !n.deleted_at)
+        
+        // Return true if there's any meaningful data
+        const hasContent = activeTasks.length > 0 || 
+                          activeGoals.length > 0 || 
+                          activeHabits.length > 0 || 
+                          timeBlocks.length > 0 ||
+                          activeNotes.length > 0
+        
+        return hasContent
+      } catch (error) {
+        console.error('Error checking reviewable content:', error)
+        return false
+      }
+    },
+    staleTime: 300000, // 5 minutes
+  })
+
   const isDailyDue = !dailyReview || dailyReview.status !== 'completed'
 
-  if (!isDailyDue) {
+  // Don't show banner if:
+  // 1. Review is already completed
+  // 2. There's no reviewable content (fresh install or no activity)
+  if (!isDailyDue || !hasReviewableContent) {
     return null
   }
 

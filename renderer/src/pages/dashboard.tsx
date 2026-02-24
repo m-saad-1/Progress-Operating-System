@@ -414,6 +414,47 @@ export default function Dashboard() {
     enabled: electron.isReady,
   })
 
+  // Check if there's actual content to review before showing review alerts
+  const { data: hasReviewableContent } = useQuery({
+    queryKey: ['reviewable-content-check-dashboard'],
+    queryFn: async () => {
+      try {
+        // Check for any tasks
+        const tasksCheck = await database.getTasks({ status: undefined })
+        const activeTasks = tasksCheck.filter(t => !t.deleted_at)
+        
+        // Check for any goals
+        const goalsCheck = await database.getGoals()
+        const activeGoals = goalsCheck.filter(g => !g.deleted_at)
+        
+        // Check for any habits
+        const habitsCheck = await database.getHabits()
+        const activeHabits = habitsCheck.filter(h => !h.deleted_at)
+        
+        // Check for any notes
+        const notes = await database.getNotes()
+        const activeNotes = notes.filter(n => !n.deleted_at)
+        
+        // Check for any time blocks
+        const todayStart = startOfDay(today).toISOString()
+        const todayEnd = endOfDay(today).toISOString()
+        const timeBlocks = await database.getTimeBlocks({ startDate: todayStart, endDate: todayEnd })
+        
+        // Return true if there's any meaningful data
+        return activeTasks.length > 0 || 
+               activeGoals.length > 0 || 
+               activeHabits.length > 0 || 
+               timeBlocks.length > 0 ||
+               activeNotes.length > 0
+      } catch (error) {
+        console.error('Error checking reviewable content:', error)
+        return false
+      }
+    },
+    staleTime: 300000, // 5 minutes
+    enabled: electron.isReady,
+  })
+
   const habitCompletions = useMemo(
     () => (dashboardData as DashboardData | undefined)?.habitCompletions || [],
     [dashboardData]
@@ -698,6 +739,11 @@ export default function Dashboard() {
   }, [tasks, goals, habitCompletions, allHabitsForDashboard, today])
 
   const reviewDayAlerts = useMemo(() => {
+    // Don't show review alerts if there's no content to review
+    if (!hasReviewableContent) {
+      return []
+    }
+
     const items: Array<{ type: 'weekly' | 'monthly'; title: string; message: string }> = []
     const isWeeklyDay = today.getDay() === 0
     const isMonthlyDay = today.getDate() === endOfMonth(today).getDate()
@@ -719,7 +765,7 @@ export default function Dashboard() {
     }
 
     return items
-  }, [today, weeklyReviewDueCheck, monthlyReviewDueCheck])
+  }, [today, weeklyReviewDueCheck, monthlyReviewDueCheck, hasReviewableContent])
 
   // Calculate goals with progress using centralized function
   const goalsWithProgress = useMemo(() => {

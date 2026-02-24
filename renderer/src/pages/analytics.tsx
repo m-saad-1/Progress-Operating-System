@@ -50,6 +50,7 @@ import {
   getDateRange,
   calculateGoalAnalytics,
   calculateTimeAnalytics,
+  calculateProductivityScore,
   type TimeRange,
   type GoalWithProgress
 } from '@/lib/progress'
@@ -249,14 +250,8 @@ export default function Analytics() {
   }, [taskRangeSnapshot, taskTabStatsSnapshot?.today, timeRange])
 
   const productivityScore = useMemo(() => {
-    const taskProgress = taskAnalytics.weightedCompletionRate
-    const habitConsistency = habitAnalytics.avgConsistency
-    return {
-      overall: Math.round((taskProgress + habitConsistency) / 2),
-      taskProgress,
-      habitConsistency,
-    }
-  }, [habitAnalytics.avgConsistency, taskAnalytics.weightedCompletionRate])
+    return calculateProductivityScore(taskAnalytics, habitAnalytics)
+  }, [habitAnalytics, taskAnalytics])
 
   // Fetch time_blocks data for the Analytics Time tab — tightly connected to Time page
   const { data: timeBlocksAnalytics } = useQuery({
@@ -382,6 +377,29 @@ export default function Analytics() {
     [habits, allHabitCompletions, productivityDateRange, timeRange]
   )
 
+  const getWeightedProductivity = (
+    taskPlannedWeight: number,
+    taskEarnedWeight: number,
+    dueHabits: number,
+    completedDueHabits: number
+  ) => {
+    const taskCompletion = taskPlannedWeight > 0
+      ? (taskEarnedWeight / taskPlannedWeight) * 100
+      : 0
+    const habitCompletion = dueHabits > 0
+      ? (completedDueHabits / dueHabits) * 100
+      : 0
+
+    if (dueHabits <= 0) {
+      return Math.round(taskCompletion)
+    }
+
+    const totalCategoryWeight = 20 + 4
+    const taskContribution = taskCompletion * 20
+    const habitContribution = habitCompletion * 4
+    return Math.round((taskContribution + habitContribution) / totalCategoryWeight)
+  }
+
   const productivityChartData = useMemo(() => {
     const habitByDate = new Map(
       productivityHabitSeries.map((point) => [point.fullDate, point])
@@ -391,17 +409,24 @@ export default function Analytics() {
       .filter((point) => point.dateKey <= format(productivityDateRange.end, 'yyyy-MM-dd'))
       .map((point) => {
         const habitPoint = habitByDate.get(point.dateKey)
-        const plannedWeight = point.plannedWeight + (habitPoint?.dueHabits || 0)
-        const earnedWeight = point.earnedWeight + (habitPoint?.completedDueHabits || 0)
-        const productivity = plannedWeight > 0
-          ? Math.round((earnedWeight / plannedWeight) * 100)
-          : 0
+        const taskPlannedWeight = point.plannedWeight
+        const taskEarnedWeight = point.earnedWeight
+        const dueHabits = habitPoint?.dueHabits || 0
+        const completedDueHabits = habitPoint?.completedDueHabits || 0
+        const productivity = getWeightedProductivity(
+          taskPlannedWeight,
+          taskEarnedWeight,
+          dueHabits,
+          completedDueHabits
+        )
 
         return {
           date: point.date,
           fullDate: point.dateKey,
-          plannedWeight,
-          earnedWeight,
+          taskPlannedWeight,
+          taskEarnedWeight,
+          dueHabits,
+          completedDueHabits,
           productivity,
         }
       })
@@ -411,15 +436,17 @@ export default function Analytics() {
     }
 
     if (timeRange === 'quarter') {
-      const byWeek = new Map<string, { plannedWeight: number; earnedWeight: number }>()
+      const byWeek = new Map<string, { taskPlannedWeight: number; taskEarnedWeight: number; dueHabits: number; completedDueHabits: number }>()
 
       daily.forEach((point) => {
         const pointDate = parseISO(point.fullDate)
         const bucketStart = startOfWeek(pointDate, { weekStartsOn: 1 })
         const bucketKey = format(bucketStart, 'yyyy-MM-dd')
-        const current = byWeek.get(bucketKey) || { plannedWeight: 0, earnedWeight: 0 }
-        current.plannedWeight += point.plannedWeight
-        current.earnedWeight += point.earnedWeight
+        const current = byWeek.get(bucketKey) || { taskPlannedWeight: 0, taskEarnedWeight: 0, dueHabits: 0, completedDueHabits: 0 }
+        current.taskPlannedWeight += point.taskPlannedWeight
+        current.taskEarnedWeight += point.taskEarnedWeight
+        current.dueHabits += point.dueHabits
+        current.completedDueHabits += point.completedDueHabits
         byWeek.set(bucketKey, current)
       })
 
@@ -428,40 +455,52 @@ export default function Analytics() {
         .map(([bucketKey, value]) => ({
           date: format(parseISO(bucketKey), 'MMM d'),
           fullDate: bucketKey,
-          plannedWeight: value.plannedWeight,
-          earnedWeight: value.earnedWeight,
-          productivity: value.plannedWeight > 0
-            ? Math.round((value.earnedWeight / value.plannedWeight) * 100)
-            : 0,
+          taskPlannedWeight: value.taskPlannedWeight,
+          taskEarnedWeight: value.taskEarnedWeight,
+          dueHabits: value.dueHabits,
+          completedDueHabits: value.completedDueHabits,
+          productivity: getWeightedProductivity(
+            value.taskPlannedWeight,
+            value.taskEarnedWeight,
+            value.dueHabits,
+            value.completedDueHabits
+          ),
         }))
     }
 
-    const byMonth = new Map<string, { plannedWeight: number; earnedWeight: number }>()
+    const byMonth = new Map<string, { taskPlannedWeight: number; taskEarnedWeight: number; dueHabits: number; completedDueHabits: number }>()
     daily.forEach((point) => {
       const pointDate = parseISO(point.fullDate)
       const bucketStart = startOfMonth(pointDate)
       const bucketKey = format(bucketStart, 'yyyy-MM')
-      const current = byMonth.get(bucketKey) || { plannedWeight: 0, earnedWeight: 0 }
-      current.plannedWeight += point.plannedWeight
-      current.earnedWeight += point.earnedWeight
+      const current = byMonth.get(bucketKey) || { taskPlannedWeight: 0, taskEarnedWeight: 0, dueHabits: 0, completedDueHabits: 0 }
+      current.taskPlannedWeight += point.taskPlannedWeight
+      current.taskEarnedWeight += point.taskEarnedWeight
+      current.dueHabits += point.dueHabits
+      current.completedDueHabits += point.completedDueHabits
       byMonth.set(bucketKey, current)
     })
 
-    const monthBuckets: Array<{ date: string; fullDate: string; plannedWeight: number; earnedWeight: number; productivity: number }> = []
+    const monthBuckets: Array<{ date: string; fullDate: string; taskPlannedWeight: number; taskEarnedWeight: number; dueHabits: number; completedDueHabits: number; productivity: number }> = []
     let monthCursor = startOfMonth(productivityDateRange.start)
     const monthEndKey = format(startOfMonth(productivityDateRange.end), 'yyyy-MM')
 
     while (format(monthCursor, 'yyyy-MM') <= monthEndKey) {
       const bucketKey = format(monthCursor, 'yyyy-MM')
-      const value = byMonth.get(bucketKey) || { plannedWeight: 0, earnedWeight: 0 }
+      const value = byMonth.get(bucketKey) || { taskPlannedWeight: 0, taskEarnedWeight: 0, dueHabits: 0, completedDueHabits: 0 }
       monthBuckets.push({
         date: format(monthCursor, 'MMM'),
         fullDate: bucketKey,
-        plannedWeight: value.plannedWeight,
-        earnedWeight: value.earnedWeight,
-        productivity: value.plannedWeight > 0
-          ? Math.round((value.earnedWeight / value.plannedWeight) * 100)
-          : 0,
+        taskPlannedWeight: value.taskPlannedWeight,
+        taskEarnedWeight: value.taskEarnedWeight,
+        dueHabits: value.dueHabits,
+        completedDueHabits: value.completedDueHabits,
+        productivity: getWeightedProductivity(
+          value.taskPlannedWeight,
+          value.taskEarnedWeight,
+          value.dueHabits,
+          value.completedDueHabits
+        ),
       })
       monthCursor = addMonths(monthCursor, 1)
     }
@@ -704,7 +743,10 @@ export default function Analytics() {
                 <div className="text-2xl font-bold">{productivityScore.overall}%</div>
                 <Progress value={productivityScore.overall} className="mt-2" />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Task Progress ({productivityScore.taskProgress}%) + Habits ({productivityScore.habitConsistency}%)
+                  {productivityScore.breakdown.hasHabits 
+                    ? `Tasks (${productivityScore.taskComponent}%) + Habits (${productivityScore.habitComponent}%) `
+                    : `Tasks (${productivityScore.taskComponent}%) — no habits tracked`
+                  }
                 </p>
               </CardContent>
             </Card>

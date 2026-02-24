@@ -253,6 +253,7 @@ export class ProgressDatabase {
             goal_id TEXT,
             task_id TEXT,
             tags TEXT NOT NULL DEFAULT '[]',
+            pinned INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             deleted_at TEXT,
@@ -497,6 +498,15 @@ export class ProgressDatabase {
           -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, handled programmatically
         `,
       },
+      
+      // Version 12: Add pinned column to notes for pinning functionality
+      {
+        version: 12,
+        up: `
+          -- Add pinned column to notes if missing
+          -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, handled programmatically
+        `,
+      },
     ];
     
     // Run migrations
@@ -712,6 +722,19 @@ export class ProgressDatabase {
       }
     } catch (error) {
       console.error('Failed to check/add columns (post-migration):', error);
+    }
+    
+    // Check notes table for pinned column
+    try {
+      const notesTableInfo = this.db.prepare('PRAGMA table_info(notes)').all() as Array<{name: string}>;
+      const hasPinned = notesTableInfo.some(col => col.name === 'pinned');
+      
+      if (!hasPinned) {
+        console.log('Adding missing pinned column to notes table (post-migration check)');
+        this.db.exec('ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+      }
+    } catch (error) {
+      console.error('Failed to check/add pinned column to notes:', error);
     }
   }
   

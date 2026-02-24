@@ -57,6 +57,8 @@ import {
   Tag,
   Eye,
   Archive,
+  Pin,
+  PinOff,
 } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { useToaster } from '@/hooks/use-toaster'
@@ -75,6 +77,7 @@ interface Note {
   goal_id: string | null
   task_id: string | null
   tags: string[]
+  pinned: boolean
   created_at: string
   updated_at: string
   version: number
@@ -88,6 +91,7 @@ interface NoteFormData {
   goal_id: string
   task_id: string
   tags: string[]
+  pinned?: boolean
 }
 
 interface NoteWithDetails extends Note {
@@ -220,11 +224,12 @@ const getPreviewContent = (content: string, maxChars = 220) => {
   return `${normalized.substring(0, maxChars).trimEnd()}...`
 }
 
-function NoteCardGrid({ note, onEdit, onArchive, onView }: { 
+function NoteCardGrid({ note, onEdit, onArchive, onView, onTogglePin }: { 
   note: NoteWithDetails, 
   onEdit: (note: NoteWithDetails) => void,
   onArchive: (id: string) => void,
-  onView: (note: NoteWithDetails) => void
+  onView: (note: NoteWithDetails) => void,
+  onTogglePin: (id: string, pinned: boolean) => void
 }) {
   const truncatedContent = getPreviewContent(note.content)
 
@@ -235,12 +240,26 @@ function NoteCardGrid({ note, onEdit, onArchive, onView }: {
       {/* Header */}
       <div className="flex items-start justify-between mb-3">
         <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-base truncate text-foreground">{note.title}</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="font-semibold text-base truncate text-foreground">{note.title}</h3>
+            {note.pinned && (
+              <Pin className="h-4 w-4 text-primary flex-shrink-0" />
+            )}
+          </div>
           <p className="text-xs text-muted-foreground mt-1">
             {formatNoteType(note.type)} • {format(parseISO(note.updated_at), 'MMM d, yyyy')}
           </p>
         </div>
         <div className="flex items-center gap-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            className="h-8 w-8" 
+            onClick={() => onTogglePin(note.id, note.pinned)}
+            title={note.pinned ? 'Unpin note' : 'Pin note'}
+          >
+            {note.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+          </Button>
           <Button 
             variant="ghost" 
             size="icon" 
@@ -349,11 +368,12 @@ function NoteCardGrid({ note, onEdit, onArchive, onView }: {
   )
 }
 
-function NoteCardList({ note, onEdit, onArchive, onView }: { 
+function NoteCardList({ note, onEdit, onArchive, onView, onTogglePin }: { 
   note: NoteWithDetails, 
   onEdit: (note: NoteWithDetails) => void,
   onArchive: (id: string) => void,
-  onView: (note: NoteWithDetails) => void
+  onView: (note: NoteWithDetails) => void,
+  onTogglePin: (id: string, pinned: boolean) => void
 }) {
   const truncatedContent = getPreviewContent(note.content, 140)
 
@@ -364,7 +384,12 @@ function NoteCardList({ note, onEdit, onArchive, onView }: {
       tabIndex={0}
     >
       <div className="flex-1 min-w-0 cursor-pointer" onClick={() => onView(note)}>
-        <div className="font-medium truncate text-foreground">{note.title}</div>
+        <div className="flex items-center gap-2">
+          <div className="font-medium truncate text-foreground">{note.title}</div>
+          {note.pinned && (
+            <Pin className="h-3.5 w-3.5 text-primary flex-shrink-0" />
+          )}
+        </div>
         <div className="text-xs text-muted-foreground flex items-center gap-2 mt-1">
           <span className="truncate">{formatNoteType(note.type)}</span>
           <span>•</span>
@@ -382,6 +407,15 @@ function NoteCardList({ note, onEdit, onArchive, onView }: {
       </div>
       
       <div className="flex items-center gap-1 ml-4 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+        <Button 
+          variant="ghost" 
+          size="icon" 
+          className="h-7 w-7" 
+          onClick={() => onTogglePin(note.id, note.pinned)}
+          title={note.pinned ? 'Unpin note' : 'Pin note'}
+        >
+          {note.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+        </Button>
         <Button 
           variant="ghost" 
           size="icon" 
@@ -444,6 +478,7 @@ export default function Notes() {
     goal_id: '',
     task_id: '',
     tags: [],
+    pinned: false,
   })
   const [newTag, setNewTag] = useState('')
   const [activeTab, setActiveTab] = useState('all')
@@ -519,6 +554,11 @@ export default function Notes() {
     
     return matchesSearch && matchesType && matchesMood && matchesGoal && matchesTab
   }).sort((a, b) => {
+    // Pinned notes always come first
+    if (a.pinned && !b.pinned) return -1
+    if (!a.pinned && b.pinned) return 1
+    
+    // Then sort by selected criterion
     switch (sortBy) {
       case 'updated':
         return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
@@ -614,6 +654,33 @@ export default function Notes() {
     },
   })
 
+  // Toggle pin mutation
+  const togglePinMutation = useMutation({
+    mutationFn: async ({ id, pinned }: { id: string; pinned: boolean }) => {
+      const note = notes?.find(n => n.id === id)
+      if (!note) throw new Error('Note not found')
+      
+      return await database.updateNote(id, {
+        title: note.title,
+        content: note.content,
+        type: note.type,
+        mood: note.mood || undefined,
+        goal_id: note.goal_id || undefined,
+        task_id: note.task_id || undefined,
+        tags: note.tags,
+        pinned: !pinned,
+      })
+    },
+    onSuccess: (_, { pinned }) => {
+      queryClient.invalidateQueries({ queryKey: ['notes'] })
+      success(pinned ? 'Note unpinned' : 'Note pinned')
+    },
+    onError: (error) => {
+      console.error('Failed to toggle pin:', error)
+      toastError('Failed to update note')
+    },
+  })
+
   const resetForm = () => {
     setFormData({
       title: '',
@@ -623,6 +690,7 @@ export default function Notes() {
       goal_id: '',
       task_id: '',
       tags: [],
+      pinned: false,
     })
     setNewTag('')
     setFormErrors({})
@@ -639,6 +707,7 @@ export default function Notes() {
       goal_id: note.goal_id || '',
       task_id: note.task_id || '',
       tags: note.tags || [],
+      pinned: note.pinned || false,
     })
     setIsCreating(true)
   }
@@ -1323,6 +1392,7 @@ export default function Notes() {
               onEdit={handleEdit}
               onArchive={(id) => deleteNoteMutation.mutate(id)}
               onView={setViewingNote}
+              onTogglePin={(id, pinned) => togglePinMutation.mutate({ id, pinned })}
             />
           ))}
         </div>
@@ -1338,6 +1408,7 @@ export default function Notes() {
             onEdit={handleEdit}
             onArchive={(id) => deleteNoteMutation.mutate(id)}
             onView={setViewingNote}
+            onTogglePin={(id, pinned) => togglePinMutation.mutate({ id, pinned })}
           />
         ))}
       </div>
