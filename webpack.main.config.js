@@ -1,8 +1,11 @@
 const path = require('path');
 const TsconfigPathsPlugin = require('tsconfig-paths-webpack-plugin');
 
+const isProd = process.env.NODE_ENV === 'production';
+
 module.exports = {
-  mode: 'development',
+  mode: isProd ? 'production' : 'development',
+  devtool: isProd ? false : 'eval-cheap-module-source-map',
 
   entry: path.resolve(__dirname, 'main/src/index.ts'),
 

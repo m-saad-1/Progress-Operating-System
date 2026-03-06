@@ -72,7 +72,7 @@ interface Note {
   id: string
   title: string
   content: string
-  type: 'free' | 'daily' | 'weekly' | 'goal' | 'task'
+  type: 'free' | 'daily' | 'weekly' | 'goal' | 'task' | 'challenge' | 'career'
   mood: string | null
   goal_id: string | null
   task_id: string | null
@@ -116,6 +116,8 @@ interface NoteStats {
   weekly: number;
   goal: number;
   task: number;
+  challenge: number;
+  career: number;
   withMood: number;
   withTags: number;
 }
@@ -172,6 +174,8 @@ const formatNoteType = (type: string) => {
     case 'weekly': return 'Weekly Review'
     case 'goal': return 'Goal Note'
     case 'task': return 'Task Note'
+    case 'challenge': return 'Challenge'
+    case 'career': return 'Career'
     default: return type
   }
 }
@@ -307,7 +311,9 @@ function NoteCardGrid({ note, onEdit, onArchive, onView, onTogglePin }: {
           note.type === 'daily' && "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
           note.type === 'weekly' && "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300",
           note.type === 'goal' && "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
-          note.type === 'task' && "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+          note.type === 'task' && "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+          note.type === 'challenge' && "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
+          note.type === 'career' && "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300"
         )}>
           {formatNoteType(note.type)}
         </span>
@@ -579,6 +585,8 @@ export default function Notes() {
     weekly: notes?.filter(n => n.type === 'weekly').length || 0,
     goal: notes?.filter(n => n.type === 'goal').length || 0,
     task: notes?.filter(n => n.type === 'task').length || 0,
+    challenge: notes?.filter(n => n.type === 'challenge').length || 0,
+    career: notes?.filter(n => n.type === 'career').length || 0,
     withMood: notes?.filter(n => n.mood).length || 0,
     withTags: notes?.filter(n => n.tags && n.tags.length > 0).length || 0,
   }
@@ -837,8 +845,8 @@ export default function Notes() {
                 New Note
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-6xl max-h-[95vh] bg-white dark:bg-slate-950 border-0 shadow-xl flex flex-col gap-0 m-2 p-6">
-              <DialogHeader className="flex-shrink-0 border-b border-gray-100 dark:border-gray-800 pb-4">
+            <DialogContent className="max-w-6xl max-h-[95vh] bg-white dark:bg-zinc-900 border-0 shadow-xl flex flex-col gap-0 m-2 p-6">
+              <DialogHeader className="flex-shrink-0 border-b border-gray-100 dark:border-zinc-700 pb-4">
                 <DialogTitle className="text-2xl font-bold">{isEditing ? 'Edit Note' : 'Create New Note'}</DialogTitle>
                 <DialogDescription className="text-base mt-1">
                   Capture your thoughts, ideas, or reflections.
@@ -858,7 +866,7 @@ export default function Notes() {
                           setFormErrors((prev) => ({ ...prev, title: undefined }))
                         }
                       }}
-                      className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus-visible:ring-green-500/50 focus-visible:border-green-500 focus:border-green-500"
+                      className="bg-gray-50 dark:bg-zinc-800 border-gray-200 dark:border-zinc-700 focus-visible:ring-green-500/50 focus-visible:border-green-500 focus:border-green-500"
                     />
                     {formErrors.title && (
                       <p className="text-xs text-red-500">{formErrors.title}</p>
@@ -877,7 +885,7 @@ export default function Notes() {
                           }
                         }}
                       >
-                        <SelectTrigger className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus:ring-green-500/50 focus:border-green-500">
+                        <SelectTrigger className="bg-gray-50 dark:bg-zinc-800 border-gray-200 dark:border-zinc-700 focus:ring-green-500/50 focus:border-green-500">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -886,6 +894,8 @@ export default function Notes() {
                           <SelectItem value="weekly">Weekly Review</SelectItem>
                           <SelectItem value="goal">Goal Note</SelectItem>
                           <SelectItem value="task">Task Note</SelectItem>
+                          <SelectItem value="challenge">Challenge</SelectItem>
+                          <SelectItem value="career">Career</SelectItem>
                         </SelectContent>
                       </Select>
                       {formErrors.type && (
@@ -901,7 +911,7 @@ export default function Notes() {
                           setFormData({ ...formData, mood: value === "none" ? "" : value })
                         }
                       >
-                        <SelectTrigger className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus:ring-green-500/50 focus:border-green-500">
+                        <SelectTrigger className="bg-gray-50 dark:bg-zinc-800 border-gray-200 dark:border-zinc-700 focus:ring-green-500/50 focus:border-green-500">
                           <SelectValue placeholder="How are you feeling?" />
                         </SelectTrigger>
                         <SelectContent>
@@ -925,7 +935,7 @@ export default function Notes() {
                           setFormData({ ...formData, goal_id: value === "none" ? "" : value })
                         }
                       >
-                        <SelectTrigger className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus:ring-green-500/50 focus:border-green-500">
+                        <SelectTrigger className="bg-gray-50 dark:bg-zinc-800 border-gray-200 dark:border-zinc-700 focus:ring-green-500/50 focus:border-green-500">
                           <SelectValue placeholder="Select a goal..." />
                         </SelectTrigger>
                         <SelectContent>
@@ -947,7 +957,7 @@ export default function Notes() {
                           setFormData({ ...formData, task_id: value === "none" ? "" : value })
                         }
                       >
-                        <SelectTrigger className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus:ring-green-500/50 focus:border-green-500">
+                        <SelectTrigger className="bg-gray-50 dark:bg-zinc-800 border-gray-200 dark:border-zinc-700 focus:ring-green-500/50 focus:border-green-500">
                           <SelectValue placeholder="Select a task..." />
                         </SelectTrigger>
                         <SelectContent>
@@ -974,13 +984,16 @@ export default function Notes() {
                         }
                       }}
                       placeholder="Write your note here..."
-                      className="h-[520px] bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800"
+                      className="h-[360px] bg-gray-50 dark:bg-zinc-800 border-gray-200 dark:border-zinc-700"
                       autoSaveDelay={800}
                     />
                     {formErrors.content && (
                       <p className="text-xs text-red-500">{formErrors.content}</p>
                     )}
                   </div>
+                  
+                  {/* Extra spacing for writing comfort */}
+                  <div className="h-16"></div>
                   
                   {/* Tags */}
                   <div className="space-y-2">
@@ -991,7 +1004,7 @@ export default function Notes() {
                         value={newTag}
                         onChange={(e) => setNewTag(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && addTag()}
-                        className="bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-800 focus-visible:ring-green-500/50 focus:border-green-500"
+                        className="bg-gray-50 dark:bg-zinc-800 border-gray-200 dark:border-zinc-700 focus-visible:ring-green-500/50 focus:border-green-500"
                       />
                       <Button type="button" onClick={addTag}>
                         Add
@@ -1018,7 +1031,7 @@ export default function Notes() {
                 </div>
               </div>
               
-              <DialogFooter className="flex-shrink-0 border-t border-gray-100 dark:border-gray-800 pt-4 mt-4 gap-2">
+              <DialogFooter className="flex-shrink-0 border-t border-gray-100 dark:border-zinc-700 pt-4 mt-4 gap-2">
                 <Button 
                   variant="outline"
                   onClick={() => {
@@ -1048,8 +1061,8 @@ export default function Notes() {
 
           {/* View Note Modal */}
           <Dialog open={!!viewingNote} onOpenChange={(open) => !open && setViewingNote(null)}>
-            <DialogContent className="max-w-6xl max-h-[95vh] bg-white dark:bg-slate-950 border-0 shadow-xl flex flex-col gap-0 m-2 p-6 overflow-hidden">
-              <DialogHeader className="flex-shrink-0 border-b border-gray-100 dark:border-gray-800 pb-4">
+            <DialogContent className="max-w-6xl max-h-[95vh] bg-white dark:bg-zinc-900 border-0 shadow-xl flex flex-col gap-0 m-2 p-6 overflow-hidden">
+              <DialogHeader className="flex-shrink-0 border-b border-gray-100 dark:border-zinc-700 pb-4">
                 <div className="flex items-start justify-between">
                   <div>
                     <DialogTitle className="text-3xl font-bold">{viewingNote?.title}</DialogTitle>
@@ -1062,7 +1075,9 @@ export default function Notes() {
                             viewingNote.type === 'daily' && "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
                             viewingNote.type === 'weekly' && "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300",
                             viewingNote.type === 'goal' && "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
-                            viewingNote.type === 'task' && "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                            viewingNote.type === 'task' && "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+                            viewingNote.type === 'challenge' && "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
+                            viewingNote.type === 'career' && "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300"
                           )}>
                             {formatNoteType(viewingNote.type)}
                           </Badge>
@@ -1102,10 +1117,52 @@ export default function Notes() {
 
                     {/* Content */}
                     <div className="prose prose-sm dark:prose-invert max-w-none">
-                      <div className="font-sans text-base leading-relaxed p-4 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900">
+                      <style>{`
+                        .note-content mark {
+                          background-color: #fef08a;
+                          color: #854d0e;
+                          padding: 0.125rem 0.25rem;
+                          border-radius: 0.125rem;
+                        }
+                        .dark .note-content mark {
+                          background-color: #713f12;
+                          color: #fef08a;
+                        }
+                        .note-content strong,
+                        .note-content b {
+                          font-weight: 600;
+                          color: inherit;
+                        }
+                        .dark .note-content strong,
+                        .dark .note-content b {
+                          color: rgb(241, 245, 249);
+                        }
+                        .note-content em,
+                        .note-content i {
+                          font-style: italic;
+                          color: inherit;
+                        }
+                        .note-content u {
+                          text-decoration: underline;
+                          color: inherit;
+                        }
+                        .note-content code {
+                          background-color: rgb(241, 245, 249);
+                          color: rgb(51, 65, 85);
+                          padding: 0.125rem 0.375rem;
+                          border-radius: 0.25rem;
+                          font-family: 'Monaco', 'Menlo', monospace;
+                          font-size: 0.875em;
+                        }
+                        .dark .note-content code {
+                          background-color: rgb(30, 41, 59);
+                          color: rgb(226, 232, 240);
+                        }
+                      `}</style>
+                      <div className="font-sans text-base leading-relaxed p-4 rounded-lg border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-slate-200">
                         {hasHtmlContent(viewingNote.content) ? (
                           <div
-                            className="break-words [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-6 [&_ol]:pl-6 [&_li]:my-1"
+                            className="note-content break-words [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-6 [&_ol]:pl-6 [&_li]:my-1"
                             dangerouslySetInnerHTML={{ __html: viewingNote.content }}
                           />
                         ) : (
@@ -1131,7 +1188,7 @@ export default function Notes() {
                 )}
               </div>
               
-              <DialogFooter className="flex-shrink-0 border-t border-gray-100 dark:border-gray-800 pt-4 mt-4 gap-2">
+              <DialogFooter className="flex-shrink-0 border-t border-gray-100 dark:border-zinc-700 pt-4 mt-4 gap-2">
                 <Button 
                   variant="outline"
                   onClick={() => setViewingNote(null)}
@@ -1235,6 +1292,8 @@ export default function Notes() {
                   <SelectItem value="weekly">Weekly Reviews</SelectItem>
                   <SelectItem value="goal">Goal Notes</SelectItem>
                   <SelectItem value="task">Task Notes</SelectItem>
+                  <SelectItem value="challenge">Challenges</SelectItem>
+                  <SelectItem value="career">Career Notes</SelectItem>
                 </SelectContent>
               </Select>
               

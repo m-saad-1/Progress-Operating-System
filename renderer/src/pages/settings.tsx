@@ -203,9 +203,12 @@ export default function Settings() {
   const autoSync = useStore(state => state.autoSync)
   const setAutoSync = useStore(state => state.setAutoSync)
   
+  // Select userProfile with proper subscription
+  const userProfile = useStore(state => state.userProfile)
+  
   // Local form state - initialized from store
-  const [profileName, setProfileName] = useState(store.userProfile?.name || '')
-  const [profileEmail, setProfileEmail] = useState(store.userProfile?.email || '')
+  const [profileName, setProfileName] = useState(userProfile?.name || '')
+  const [profileEmail, setProfileEmail] = useState(userProfile?.email || '')
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const settingsTabs = useMemo(
     () => new Set(['profile', 'appearance', 'notifications', 'sync', 'privacy', 'keyboard']),
@@ -220,7 +223,7 @@ export default function Settings() {
   const [isClearingCaches, setIsClearingCaches] = useState(false)
   const [feedbackType, setFeedbackType] = useState<'bug-report' | 'suggestion' | 'feature-request' | 'general-feedback'>('general-feedback')
   const [feedbackMessage, setFeedbackMessage] = useState('')
-  const [feedbackEmail, setFeedbackEmail] = useState(store.userProfile?.email || '')
+  const [feedbackEmail, setFeedbackEmail] = useState(userProfile?.email || '')
   const [feedbackEmailTouched, setFeedbackEmailTouched] = useState(false)
   const [feedbackScreenshotName, setFeedbackScreenshotName] = useState('')
   const [feedbackScreenshotDataUrl, setFeedbackScreenshotDataUrl] = useState('')
@@ -229,14 +232,14 @@ export default function Settings() {
   const [isOnline, setIsOnline] = useState(() => typeof navigator === 'undefined' ? true : navigator.onLine)
   const [feedbackSubmitStatus, setFeedbackSubmitStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
 
-  // Sync local state with store changes
+  // Sync local state with store changes when userProfile updates
   useEffect(() => {
-    setProfileName(store.userProfile?.name || '')
-    setProfileEmail(store.userProfile?.email || '')
+    setProfileName(userProfile?.name || '')
+    setProfileEmail(userProfile?.email || '')
     if (!feedbackEmailTouched) {
-      setFeedbackEmail(store.userProfile?.email || '')
+      setFeedbackEmail(userProfile?.email || '')
     }
-  }, [store.userProfile, feedbackEmailTouched])
+  }, [userProfile, feedbackEmailTouched])
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true)
@@ -267,13 +270,13 @@ export default function Settings() {
 
   // Track unsaved changes
   useEffect(() => {
-    if (!store.userProfile) return
+    if (!userProfile) return
     
     const hasChanges = 
-      profileName !== (store.userProfile.name || '') ||
-      profileEmail !== (store.userProfile.email || '')
+      profileName !== (userProfile.name || '') ||
+      profileEmail !== (userProfile.email || '')
     setHasUnsavedChanges(hasChanges)
-  }, [profileName, profileEmail, store.userProfile])
+  }, [profileName, profileEmail, userProfile])
 
   // Save profile changes
   const handleSaveProfile = () => {
@@ -288,8 +291,7 @@ export default function Settings() {
   const handleReset = () => {
     if (window.confirm('Are you sure you want to reset all settings to default? This cannot be undone.')) {
       store.resetAllSettings()
-      setProfileName('')
-      setProfileEmail('')
+      // Let useEffect handle syncing local state from updated userProfile
       success('Settings reset to default')
     }
   }
@@ -582,14 +584,14 @@ export default function Settings() {
 
   // Get user initials for avatar
   const userInitials = useMemo(() => {
-    if (!store.userProfile?.name) return 'U'
-    return store.userProfile.name
+    if (!userProfile?.name) return 'U'
+    return userProfile.name
       .split(' ')
       .map(n => n[0])
       .join('')
       .toUpperCase()
       .slice(0, 2)
-  }, [store.userProfile])
+  }, [userProfile])
 
   return (
     <div className="space-y-6 p-6 max-w-6xl mx-auto">
@@ -658,7 +660,7 @@ export default function Settings() {
               <div className="flex items-start gap-6">
                 <div className="relative group flex flex-col items-center gap-2">
                   <Avatar className="h-24 w-24 border-4 border-primary/20">
-                    <AvatarImage src={store.userProfile?.avatar} />
+                    <AvatarImage src={userProfile?.avatar} />
                     <AvatarFallback className="bg-primary/10 text-primary text-2xl font-bold">
                       {userInitials}
                     </AvatarFallback>
@@ -684,9 +686,9 @@ export default function Settings() {
                       }}
                     >
                       <Upload className="h-3 w-3 mr-1" />
-                      {store.userProfile?.avatar ? 'Change' : 'Upload'}
+                      {userProfile?.avatar ? 'Change' : 'Upload'}
                     </Button>
-                    {store.userProfile?.avatar && (
+                    {userProfile?.avatar && (
                       <Button
                         size="sm"
                         className="h-7 px-2 text-xs bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20 border-none shadow-sm hover:shadow-md transition-all"
@@ -725,9 +727,9 @@ export default function Settings() {
                       />
                     </div>
                   </div>
-                  {store.userProfile?.createdAt && (
+                  {userProfile?.createdAt && (
                     <p className="text-xs text-muted-foreground">
-                      Member since {format(new Date(store.userProfile.createdAt), 'MMMM d, yyyy')}
+                      Member since {format(new Date(userProfile.createdAt), 'MMMM d, yyyy')}
                     </p>
                   )}
                 </div>

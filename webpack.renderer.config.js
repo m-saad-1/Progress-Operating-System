@@ -3,6 +3,8 @@ const webpack = require('webpack');
 const TsconfigPathsPlugin = require('tsconfig-paths-webpack-plugin');
 const fs = require('fs');
 
+const isProd = process.env.NODE_ENV === 'production';
+
 // Load .env file
 function loadEnv() {
   const envPath = path.resolve(__dirname, '.env');
@@ -41,7 +43,8 @@ function loadEnv() {
 const envVars = loadEnv();
 
 module.exports = {
-  mode: 'development',
+  mode: isProd ? 'production' : 'development',
+  devtool: isProd ? false : 'eval-cheap-module-source-map',
   entry: './renderer/src/main.tsx',
   module: {
     rules: require('./webpack.rules'),

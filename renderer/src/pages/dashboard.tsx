@@ -67,15 +67,16 @@ import { QuickActions } from '@/components/quick-actions'
 import { ReviewBanner, ReviewReminder } from '@/components/review-reminder'
 import { cn } from '@/lib/utils'
 import { Task, Goal, Habit, HabitCompletion, TaskDurationType, Priority } from '@/types'
-import { database, CreateTaskDTO, getLocalDateString, TaskTabStatsSnapshot } from '@/lib/database'
+import { database, CreateTaskDTO, getLocalDateString, TaskTabStatsSnapshot, TaskRangeAnalyticsSnapshot } from '@/lib/database'
+import { buildTaskProgressUpdatePayload, invalidateTaskRelatedQueries } from '@/lib/task-sync'
 import {
-  calculateTaskAnalytics,
   calculateHabitAnalytics,
   calculateHabitDueMetricsForDay,
   calculateHabitDueSeries,
   calculateProductivityScore,
   calculateTrendData,
-  calculateGoalProgress
+  calculateGoalProgress,
+  getDateRange
 } from '@/lib/progress'
 import { getTodaysTasks, isTaskPausedOnDate } from '@/lib/daily-reset'
 import { 
@@ -227,11 +228,10 @@ export default function Dashboard() {
   const electron = useElectron()
   const queryClient = useQueryClient()
   const { error: toastError, success: toastSuccess } = useToaster()
-  const { tasks, habits, goals, updateTask, addTask, archiveTask } = useStore()
+  const { tasks, habits, goals, updateTask, addTask, archiveTask, deleteTask } = useStore()
   const today = new Date()
   
   const [chartTab, setChartTab] = useState<'tasks' | 'habits' | 'productivity' | 'goals'>('productivity')
-  const [analyticsWeekOffset, setAnalyticsWeekOffset] = useState(0) // 0 = this week, -1 = last week, -2 = 2 weeks ago, etc.
   const [timeOfDay, setTimeOfDay] = useState('')
   const [greeting, setGreeting] = useState('')
   
@@ -386,6 +386,18 @@ export default function Dashboard() {
     queryFn: () => database.getTaskTabStats(),
     staleTime: 30 * 1000,
     enabled: electron.isReady,
+  })
+
+  // Fetch weekly task range snapshot to match Analytics tab
+  const weeklyTaskRange = useMemo(() => getDateRange('week'), [])
+  const { data: weeklyTaskSnapshot } = useQuery<TaskRangeAnalyticsSnapshot>({
+    queryKey: ['task-range-snapshot-dashboard', format(weeklyTaskRange.start, 'yyyy-MM-dd'), format(weeklyTaskRange.end, 'yyyy-MM-dd')],
+    queryFn: () => database.getTaskRangeAnalyticsSnapshot(
+      format(weeklyTaskRange.start, 'yyyy-MM-dd'),
+      format(weeklyTaskRange.end, 'yyyy-MM-dd')
+    ),
+    enabled: electron.isReady,
+    staleTime: 30 * 1000,
   })
 
   const weeklyReviewPeriod = useMemo(() => {
@@ -837,13 +849,8 @@ export default function Dashboard() {
     habitConsistencyStats.todayConsistency,
   ])
 
-  const selectedAnalyticsRange = useMemo(() => {
-    const now = new Date()
-    const weekOffset = analyticsWeekOffset * 7
-    const end = subDays(now, -weekOffset)
-    const start = subDays(end, 6)
-    return { start, end }
-  }, [analyticsWeekOffset])
+  // Always use current calendar week (Mon-Sun ending today) to match Analytics tab
+  const selectedAnalyticsRange = useMemo(() => getDateRange('week'), [])
 
   // Set greeting based on time of day
   useEffect(() => {
@@ -863,42 +870,32 @@ export default function Dashboard() {
   // Task progress mutation - updates Dashboard stats, Analytics, and Sidebar
   // CRITICAL: BINARY COMPLETION RULE - Only 100% progress = completed
   // No partial credit toward completion (tasks are either done or not)
+  const invalidateTaskDerivedQueries = useCallback(() => {
+    invalidateTaskRelatedQueries(queryClient)
+  }, [queryClient])
+
   const updateTaskProgressMutation = useMutation({
     mutationFn: async ({ taskId, progress }: { taskId: string; progress: number }) => {
-      // BINARY COMPLETION: only 100% = completed
-      const isCompleted = progress === 100
-      const status = isCompleted ? 'completed' : progress > 0 ? 'in-progress' : 'pending'
-      const completed_at = isCompleted ? new Date().toISOString() : null
-      
-      await database.updateTask(taskId, { 
-        progress, 
-        status,
-        ...(completed_at && { completed_at })
-      })
-      
-      // Update the store directly for immediate UI update
-      const taskToUpdate = tasks.find(t => t.id === taskId)
-      if (taskToUpdate) {
-        updateTask({
-          ...taskToUpdate,
-          progress,
-          status: status as any,
-          completed_at: completed_at || taskToUpdate.completed_at,
-          updated_at: new Date().toISOString()
-        })
-      }
-      
-      return { taskId, progress, status }
+      const existingTask = await database.getTaskById(taskId)
+      if (!existingTask) throw new Error('Task not found')
+
+      const { updates } = buildTaskProgressUpdatePayload(existingTask, progress)
+      await database.updateTask(taskId, updates)
+      const updatedTask = await database.getTaskById(taskId)
+
+      return { updatedTask, progress }
     },
-    onSuccess: (data) => {
-      // Invalidate all related queries for consistency
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
-      queryClient.invalidateQueries({ queryKey: ['analytics'] })
+    onSuccess: ({ updatedTask, progress }) => {
+      if (updatedTask) {
+        updateTask(updatedTask)
+      }
+
       queryClient.invalidateQueries({ queryKey: ['review-insights'] })
-      queryClient.invalidateQueries({ queryKey: ['goals'] }) // Goals linked to tasks
+      queryClient.invalidateQueries({ queryKey: ['goals'] })
+      invalidateTaskDerivedQueries()
+
       // Task is completed only when progress is 100%
-      if (data.progress === 100) {
+      if (progress === 100) {
         toastSuccess('Task completed!')
       }
     },
@@ -925,10 +922,7 @@ export default function Dashboard() {
         toastSuccess('Task created successfully! 🎉')
         setIsTaskDialogOpen(false)
         setTaskFormData(getInitialFormData())
-        // Invalidate queries for consistency
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-        queryClient.invalidateQueries({ queryKey: ['tasks'] })
-        queryClient.invalidateQueries({ queryKey: ['analytics'] })
+        invalidateTaskDerivedQueries()
       }
     },
     onError: () => toastError('Failed to create task'),
@@ -947,10 +941,8 @@ export default function Dashboard() {
         setIsTaskDialogOpen(false)
         setIsEditing(null)
         setTaskFormData(getInitialFormData())
-        // Invalidate queries
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-        queryClient.invalidateQueries({ queryKey: ['tasks'] })
-        queryClient.invalidateQueries({ queryKey: ['analytics'] })
+        queryClient.invalidateQueries({ queryKey: ['review-insights'] })
+        invalidateTaskDerivedQueries()
       }
     },
     onError: () => toastError('Failed to update task'),
@@ -963,14 +955,31 @@ export default function Dashboard() {
     },
     onSuccess: (id) => {
       archiveTask(id)
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
-      queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['review-insights'] })
       queryClient.invalidateQueries({ queryKey: ['archive'] })
+      invalidateTaskDerivedQueries()
       toastSuccess('Task archived')
       setTaskToArchive(null)
     },
     onError: () => toastError('Failed to archive task'),
+  })
+
+  // Permanent delete mutation - completely removes task and all its data
+  const permanentDeleteTaskMutation = useMutation({
+    mutationFn: async (id: string) => {
+      // Completely remove task and all associated data (checklist items, time blocks, notes, etc.)
+      await database.permanentlyDeleteTask(id, { deleteHistory: true })
+      return id
+    },
+    onSuccess: (id) => {
+      deleteTask(id)
+      queryClient.invalidateQueries({ queryKey: ['review-insights'] })
+      queryClient.invalidateQueries({ queryKey: ['archive'] })
+      invalidateTaskDerivedQueries()
+      toastSuccess('Task permanently deleted. All data removed.')
+      setTaskToArchive(null)
+    },
+    onError: () => toastError('Failed to permanently delete task'),
   })
 
   // Handle task creation
@@ -1026,7 +1035,7 @@ export default function Dashboard() {
   }, [])
 
   // Process chart data using centralized calculation for consistency
-  // Supports viewing previous weeks with analyticsWeekOffset
+  // Chart data for current week to match Analytics tab
   const chartData = useMemo(() => {
     const { start, end } = selectedAnalyticsRange
     const completions = (dashboardData as DashboardData | undefined)?.habitCompletions || []
@@ -1053,15 +1062,21 @@ export default function Dashboard() {
     [chartData]
   )
 
-  // Calculate productivity score for the selected chart period to match Analytics tab
+  // Calculate productivity score using Analytics tab's Weekly period logic and snapshot data
   const periodProductivityScore = useMemo(() => {
-    const range = selectedAnalyticsRange
+    const weekRange = getDateRange('week')
     
-    const tAnalytics = calculateTaskAnalytics(tasks, range)
-    const hAnalytics = calculateHabitAnalytics(allHabitsForDashboard, range, habitCompletions)
+    // Use snapshot data for tasks (same as Analytics tab)
+    const taskAnalyticsFromSnapshot = {
+      weightedCompletionRate: weeklyTaskSnapshot?.summary.weightedProgress ?? 0,
+      totalWeight: weeklyTaskSnapshot?.summary.plannedWeight ?? 0,
+    }
     
-    return calculateProductivityScore(tAnalytics, hAnalytics)
-  }, [tasks, allHabitsForDashboard, selectedAnalyticsRange, habitCompletions])
+    // Calculate habit analytics from live data
+    const hAnalytics = calculateHabitAnalytics(allHabitsForDashboard, weekRange, habitCompletions)
+    
+    return calculateProductivityScore(taskAnalyticsFromSnapshot, hAnalytics)
+  }, [weeklyTaskSnapshot, allHabitsForDashboard, habitCompletions])
 
   if (error) {
     return (
@@ -1323,36 +1338,14 @@ export default function Dashboard() {
                     <span>Progress Analytics</span>
                   </CardTitle>
                   <CardDescription>
-                    Weekly performance overview
+                    Current week (matches Analytics tab)
                   </CardDescription>
-                  {/* Week selector - Left/Right arrows with date in middle */}
-                  <div className="flex items-center justify-between w-full mt-3 gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setAnalyticsWeekOffset(analyticsWeekOffset - 1)}
-                      className="h-7 px-2"
-                    >
-                      ←
-                    </Button>
-                    <div className="text-sm text-muted-foreground text-center flex-1">
-                      {(() => {
-                        const today = new Date()
-                        const weekOffset = analyticsWeekOffset * 7
-                        const end = subDays(today, -weekOffset)
-                        const start = subDays(end, 6)
-                        return `${format(start, 'MMM d')} - ${format(end, 'MMM d, yyyy')}`
-                      })()}
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setAnalyticsWeekOffset(analyticsWeekOffset + 1)}
-                      disabled={analyticsWeekOffset === 0}
-                      className="h-7 px-2"
-                    >
-                      →
-                    </Button>
+                  {/* Current week date range */}
+                  <div className="text-sm text-muted-foreground mt-2">
+                    {(() => {
+                      const weekRange = getDateRange('week')
+                      return `${format(weekRange.start, 'MMM d')} - ${format(weekRange.end, 'MMM d, yyyy')}`
+                    })()}
                   </div>
                 </div>
                 {/* Chart type selector - stays in top right */}
@@ -1564,7 +1557,7 @@ export default function Dashboard() {
                       "p-3 rounded-lg border transition-colors cursor-pointer",
                       isUrgent && "border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10",
                       !isUrgent && isOnTrack && "border-green-500/20 bg-green-500/5 hover:bg-green-500/10",
-                      !isUrgent && !isOnTrack && "bg-muted/30 hover:bg-muted/50"
+                      !isUrgent && !isOnTrack && "border-rose-500/25 bg-rose-500/5 hover:bg-rose-500/10"
                     )}>
                       <div className="flex items-start justify-between gap-2 mb-2">
                         <div className="flex-1 min-w-0">
@@ -1578,13 +1571,35 @@ export default function Dashboard() {
                               size="sm"
                               className={cn(
                                 "text-[10px]",
-                                momentum === 'Active' && "text-green-600 border-green-500/30",
-                                momentum === 'Stalled' && "text-amber-600 border-amber-500/30"
+                                momentum === 'Active' && "bg-green-500/10 text-green-600 border-green-500/30 dark:bg-green-500/15 dark:text-green-300 dark:border-green-500/40",
+                                momentum === 'Stalled' && "bg-amber-500/10 text-amber-600 border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/40",
+                                momentum === 'No tasks linked' && "bg-slate-500/10 text-slate-600 border-slate-500/30 dark:bg-slate-500/15 dark:text-slate-300 dark:border-slate-500/40"
                               )}
                             >
                               {momentum}
                             </Badge>
                           </div>
+                          {goal.tags && goal.tags.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {goal.tags.slice(0, 3).map((tag) => (
+                                <Badge
+                                  key={tag}
+                                  variant="outline"
+                                  className="text-[10px] bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40"
+                                >
+                                  {tag}
+                                </Badge>
+                              ))}
+                              {goal.tags.length > 3 && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40"
+                                >
+                                  +{goal.tags.length - 3} more
+                                </Badge>
+                              )}
+                            </div>
+                          )}
                         </div>
                         <div className="text-right flex-shrink-0">
                           {daysRemaining !== null && (
@@ -1903,15 +1918,46 @@ export default function Dashboard() {
 
       {/* Archive Confirmation Dialog */}
       <AlertDialog open={!!taskToArchive} onOpenChange={(open) => !open && setTaskToArchive(null)}>
-        
         <AlertDialogContent className="bg-white text-black border border-border shadow-lg">
           <AlertDialogHeader>
-            <AlertDialogTitle>Archive Task</AlertDialogTitle>
-            <AlertDialogDescription>
-              This task will be moved to the Archive. You can restore it later from the Archive section.
+            <AlertDialogTitle>
+              {(() => {
+                const task = tasks.find(t => t.id === taskToArchive)
+                return task?.duration_type === 'today' ? 'Archive or Delete Task?' : 'Archive Task'
+              })()}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-3">
+              {(() => {
+                const task = tasks.find(t => t.id === taskToArchive)
+                return (
+                  <>
+                    <p>
+                      {task?.duration_type === 'today' 
+                        ? `Choose how to handle "${task?.title}":`
+                        : 'This task will be moved to the Archive. You can restore it later from the Archive section.'
+                      }
+                    </p>
+                    {task?.duration_type === 'today' && (
+                      <div className="space-y-2 text-sm">
+                        <div className="p-3 rounded-md bg-orange-50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-900/30">
+                          <p className="font-medium text-orange-900 dark:text-orange-200 mb-1">📦 Archive</p>
+                          <p className="text-orange-700 dark:text-orange-300">Move to Archive tab. Can be restored later. Progress history preserved.</p>
+                        </div>
+                        <div className="p-3 rounded-md bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/30">
+                          <p className="font-medium text-red-900 dark:text-red-200 mb-1">🗑️ Permanent Delete</p>
+                          <p className="text-red-700 dark:text-red-300">Completely remove all data including completion status, counts, weighted progress, dashboard contributions, analytics, and related statistics. <strong>This action cannot be undone.</strong></p>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )
+              })()}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
+          <AlertDialogFooter className={(() => {
+            const task = tasks.find(t => t.id === taskToArchive)
+            return task?.duration_type === 'today' ? 'flex-col sm:flex-row gap-2' : ''
+          })()}>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction 
               onClick={() => taskToArchive && deleteTaskMutation.mutate(taskToArchive)}
@@ -1919,6 +1965,17 @@ export default function Dashboard() {
             >
               Archive
             </AlertDialogAction>
+            {(() => {
+              const task = tasks.find(t => t.id === taskToArchive)
+              return task?.duration_type === 'today' && (
+                <AlertDialogAction
+                  onClick={() => taskToArchive && permanentDeleteTaskMutation.mutate(taskToArchive)}
+                  className="bg-red-600 hover:bg-red-700 text-white"
+                >
+                  Permanent Delete
+                </AlertDialogAction>
+              )
+            })()}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

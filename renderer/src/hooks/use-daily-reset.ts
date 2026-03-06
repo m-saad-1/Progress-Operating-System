@@ -12,10 +12,13 @@
  * - Preserves task history in daily_progress
  * - Preserves habit history in habit_completions
  * - Updates UI reactively for both tasks and habits
+ * - Invalidates React Query cache at midnight for real-time data freshness
  */
 
 import { useEffect, useRef, useCallback } from 'react'
-import { format, parseISO, startOfDay, differenceInCalendarDays } from 'date-fns'
+import { format, startOfDay, differenceInCalendarDays } from 'date-fns'
+import { safeParseDate } from '@/lib/date-safe'
+import { useQueryClient } from '@tanstack/react-query'
 import { useStore } from '@/store'
 import { database } from '@/lib/database'
 import { shouldResetTask, resetTaskForNewDay, normalizeDailyProgress } from '@/lib/daily-reset'
@@ -33,7 +36,7 @@ const isValidDateKey = (value: string | null | undefined): value is string => {
 
 const toLocalDateKey = (value: string): string | null => {
   try {
-    return format(startOfDay(parseISO(value)), 'yyyy-MM-dd')
+    return format(startOfDay(safeParseDate(value)), 'yyyy-MM-dd')
   } catch {
     return null
   }
@@ -117,8 +120,10 @@ const deriveLastProcessedDate = (
  * - Task history is preserved in daily_progress and habit_completions tables
  * - Old tasks remain in database indefinitely unless explicitly user-deleted
  * - Handles multi-day offline gaps: snapshots each missed day properly
+ * - Invalidates React Query cache for real-time UI updates
  */
 export const useDailyReset = () => {
+  const queryClient = useQueryClient()
   const { tasks, updateTask, habits, updateHabit } = useStore()
   const lastResetDateRef = useRef<string | null>(null)
   const initializedRef = useRef(false)
@@ -182,8 +187,8 @@ export const useDailyReset = () => {
     console.log(`Daily reset triggered: ${lastResetDate} → ${today}`)
 
     // Calculate how many days have elapsed (handles multi-day offline gaps)
-    const lastResetDay = startOfDay(parseISO(lastResetDate))
-    const todayDay = startOfDay(parseISO(today))
+    const lastResetDay = startOfDay(safeParseDate(lastResetDate))
+    const todayDay = startOfDay(safeParseDate(today))
     const daysMissed = differenceInCalendarDays(todayDay, lastResetDay)
 
     // PART 1: Snapshot and reset tasks
@@ -217,7 +222,7 @@ export const useDailyReset = () => {
               if (!history[snapshotKey]) {
                 // For today-only tasks: only snapshot on their creation day
                 if (task.duration_type === 'today') {
-                  const createdKey = format(startOfDay(parseISO(task.created_at)), 'yyyy-MM-dd')
+                  const createdKey = format(startOfDay(safeParseDate(task.created_at)), 'yyyy-MM-dd')
                   if (snapshotKey !== createdKey) continue
                 }
 
@@ -341,20 +346,49 @@ export const useDailyReset = () => {
 
     // Mark day as processed only after rollover work completes.
     lastResetDateRef.current = today
-  }, [tasks, updateTask, habits, updateHabit])
+
+    // Invalidate all React Query caches to ensure real-time UI updates at midnight
+    // This refreshes analytics, dashboard stats, task lists, habit data, etc.
+    console.log('[Daily Reset] Invalidating all queries for fresh data')
+    queryClient.invalidateQueries()
+    
+    console.log('[Daily Reset] Daily reset completed successfully')
+  }, [tasks, updateTask, habits, updateHabit, queryClient])
 
   // Check for midnight transition every minute
   useEffect(() => {
     // Run immediately on mount
     performDailyReset()
 
-    // Then check every minute for midnight
+    let midnightTimeout: ReturnType<typeof setTimeout> | null = null
+
+    const scheduleNextMidnightReset = () => {
+      const now = new Date()
+      const nextMidnight = new Date(now)
+      nextMidnight.setHours(24, 0, 0, 0)
+      const delay = Math.max(250, nextMidnight.getTime() - now.getTime() + 50)
+
+      midnightTimeout = setTimeout(() => {
+        performDailyReset()
+        scheduleNextMidnightReset()
+      }, delay)
+    }
+
+    scheduleNextMidnightReset()
+
+    // Fallback polling every minute for resilience after sleep/wake or timer drift
     const interval = setInterval(() => {
       performDailyReset()
     }, 60 * 1000) // 60 seconds
 
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      if (midnightTimeout) {
+        clearTimeout(midnightTimeout)
+      }
+    }
   }, [performDailyReset])
 }
 
 export default useDailyReset
+

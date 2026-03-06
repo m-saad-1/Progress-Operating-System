@@ -679,8 +679,19 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             }
             [role="textbox"] mark {
               background-color: #fef08a;
+              color: #854d0e;
               padding: 0.125rem 0.25rem;
               border-radius: 0.125rem;
+            }
+            .dark [role="textbox"] mark {
+              background-color: #713f12;
+              color: #fef08a;
+            }
+            [role="textbox"] {
+              color: var(--foreground);
+            }
+            .dark [role="textbox"] {
+              color: rgb(226, 232, 240);
             }
             [role="textbox"]:empty:before {
               content: attr(data-placeholder);

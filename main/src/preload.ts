@@ -51,6 +51,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppPath: (name: string) => ipcRenderer.invoke('app:getPath', name),
   getPlatform: () => process.platform,
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  getIconPath: () => ipcRenderer.invoke('app:getIconPath'),
+  showNotification: (options: { title: string; body: string }) => 
+    ipcRenderer.invoke('app:showNotification', options),
   relaunch: () => ipcRenderer.invoke('app:relaunch'),
   resetAllData: () => ipcRenderer.invoke('app:resetAllData'),
   
@@ -148,6 +151,8 @@ declare global {
       getAppPath: (name: string) => Promise<string>;
       getPlatform: () => string;
       getVersion: () => Promise<string>;
+      getIconPath: () => Promise<string>;
+      showNotification: (options: { title: string; body: string }) => Promise<{ success: boolean; error?: string }>;
       relaunch: () => Promise<void>;
       
       // Sync

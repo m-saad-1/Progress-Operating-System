@@ -6,7 +6,6 @@ import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Progress } from '@/components/ui/progress'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -102,7 +101,6 @@ export default function Archive() {
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedType, setSelectedType] = useState<string>('all')
   const [confirmClearAll, setConfirmClearAll] = useState(false)
-  const [multiSelectMode, setMultiSelectMode] = useState(false)
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
 
   // Fetch archived items using the new database method
@@ -187,14 +185,7 @@ export default function Archive() {
 
   const clearSelection = () => setSelectedItems(new Set())
 
-  const toggleMultiSelectMode = () => {
-    setMultiSelectMode((previous) => {
-      if (previous) {
-        clearSelection()
-      }
-      return !previous
-    })
-  }
+
 
   const toggleItemSelection = (item: ArchivedItem) => {
     const key = getItemKey(item)
@@ -311,12 +302,66 @@ export default function Archive() {
       queryClient.invalidateQueries({ queryKey: ['task-stats'] })
       queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
       clearSelection()
-      setMultiSelectMode(false)
       success(`${deletedCount} item${deletedCount === 1 ? '' : 's'} permanently deleted`)
     },
     onError: (error) => {
       console.error('Failed to batch delete items:', error)
       toastError('Failed to delete selected items')
+    },
+  })
+
+  const batchRestoreMutation = useMutation({
+    mutationFn: async (items: ArchivedItem[]) => {
+      const results = await Promise.all(items.map(async (item) => {
+        switch (item.type) {
+          case 'task':
+            return { type: item.type, data: await database.restoreTask(item.id) }
+          case 'habit':
+            return { type: item.type, data: await database.restoreHabit(item.id) }
+          case 'goal':
+            return { type: item.type, data: await database.restoreGoal(item.id) }
+          case 'note':
+            return { type: item.type, data: await database.restoreNote(item.id) }
+          case 'review':
+            return { type: item.type, data: await database.restoreReview(item.id) }
+        }
+      }))
+      return { items, results }
+    },
+    onSuccess: ({ items, results }) => {
+      // Update store with restored items
+      results.forEach((result) => {
+        if (result?.data) {
+          switch (result.type) {
+            case 'task':
+              restoreTask(result.data as Task)
+              break
+            case 'habit':
+              restoreHabit(result.data as Habit)
+              break
+            case 'goal':
+              restoreGoal(result.data as Goal)
+              break
+          }
+        }
+      })
+      // Invalidate all relevant queries
+      queryClient.invalidateQueries({ queryKey: ['archive'] })
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      queryClient.invalidateQueries({ queryKey: ['habits'] })
+      queryClient.invalidateQueries({ queryKey: ['goals'] })
+      queryClient.invalidateQueries({ queryKey: ['notes'] })
+      queryClient.invalidateQueries({ queryKey: ['reviews'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['task-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
+      clearSelection()
+      success(`${items.length} item${items.length === 1 ? '' : 's'} restored successfully! Historical progress preserved.`)
+    },
+    onError: (error) => {
+      console.error('Failed to batch restore items:', error)
+      toastError('Failed to restore selected items')
     },
   })
 
@@ -348,40 +393,40 @@ export default function Archive() {
 
   const getItemColor = (type: ArchivedItemType) => {
     switch (type) {
-      case 'goal': return 'bg-purple-500/10 text-purple-500 border-purple-500/20'
-      case 'task': return 'bg-blue-500/10 text-blue-500 border-blue-500/20'
-      case 'habit': return 'bg-green-500/10 text-green-500 border-green-500/20'
-      case 'note': return 'bg-amber-500/10 text-amber-500 border-amber-500/20'
-      case 'review': return 'bg-indigo-500/10 text-indigo-500 border-indigo-500/20'
+      case 'goal': return 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20'
+      case 'task': return 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
+      case 'habit': return 'bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20'
+      case 'note': return 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+      case 'review': return 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20'
     }
   }
 
   const getPriorityColor = (priority: string) => {
     switch (priority) {
-      case 'critical': return 'bg-red-500/10 text-red-500 border-red-500/30'
-      case 'high': return 'bg-orange-500/10 text-orange-500 border-orange-500/30'
-      case 'medium': return 'bg-yellow-500/10 text-yellow-500 border-yellow-500/30'
-      case 'low': return 'bg-green-500/10 text-green-500 border-green-500/30'
-      default: return 'bg-muted text-muted-foreground'
+      case 'critical': return 'bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/30 dark:border-red-500/20'
+      case 'high': return 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/30 dark:border-orange-500/20'
+      case 'medium': return 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border-yellow-500/30 dark:border-yellow-500/20'
+      case 'low': return 'bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/30 dark:border-green-500/20'
+      default: return 'bg-muted text-muted-foreground border-border'
     }
   }
 
   const getFrequencyColor = (frequency: string) => {
     switch (frequency) {
-      case 'daily': return 'bg-blue-500/10 text-blue-600 border-blue-500/30'
-      case 'weekly': return 'bg-purple-500/10 text-purple-600 border-purple-500/30'
-      case 'monthly': return 'bg-emerald-500/10 text-emerald-600 border-emerald-500/30'
+      case 'daily': return 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30 dark:border-blue-500/20'
+      case 'weekly': return 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/30 dark:border-purple-500/20'
+      case 'monthly': return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 dark:border-emerald-500/20'
       default: return 'bg-muted text-muted-foreground border-border'
     }
   }
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'completed': return 'bg-green-500/10 text-green-600 border-green-500/30'
-      case 'in-progress': return 'bg-blue-500/10 text-blue-600 border-blue-500/30'
-      case 'blocked': return 'bg-amber-500/10 text-amber-600 border-amber-500/30'
-      case 'pending': return 'bg-slate-500/10 text-slate-600 border-slate-500/30'
-      case 'draft': return 'bg-orange-500/10 text-orange-600 border-orange-500/30'
+      case 'completed': return 'bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/30 dark:border-green-500/20'
+      case 'in-progress': return 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30 dark:border-blue-500/20'
+      case 'blocked': return 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30 dark:border-amber-500/20'
+      case 'pending': return 'bg-slate-500/10 text-slate-600 dark:text-slate-400 border-slate-500/30 dark:border-slate-500/20'
+      case 'draft': return 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/30 dark:border-orange-500/20'
       default: return 'bg-muted text-muted-foreground border-border'
     }
   }
@@ -643,7 +688,79 @@ export default function Archive() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value={selectedType} className="mt-6">
+        <TabsContent value={selectedType} className="mt-6 space-y-4">
+          {/* Selection Action Bar */}
+          {selectedArchivedItems.length > 0 && (
+            <Card className="border-blue-500/30 bg-gradient-to-r from-blue-500/5 to-blue-500/10">
+              <CardContent className="pt-4 pb-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <CheckSquare className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                    <span>{selectedArchivedItems.length} item{selectedArchivedItems.length === 1 ? '' : 's'} selected</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => batchRestoreMutation.mutate(selectedArchivedItems)}
+                      disabled={batchRestoreMutation.isPending}
+                      className="bg-green-500/10 border-green-500/30 text-green-600 dark:text-green-300 hover:bg-green-500/20 hover:border-green-500/50"
+                    >
+                      <Undo2 className="mr-2 h-4 w-4" />
+                      {batchRestoreMutation.isPending ? 'Restoring...' : 'Restore'}
+                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={batchDeleteMutation.isPending}
+                          className="bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-300 hover:bg-red-500/20 hover:border-red-500/50"
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent className="bg-white dark:bg-card border border-border shadow-lg">
+                        <AlertDialogHeader>
+                          <AlertDialogTitle className="flex items-center gap-2">
+                            <AlertTriangle className="h-5 w-5 text-destructive" />
+                            Delete {selectedArchivedItems.length} selected item{selectedArchivedItems.length === 1 ? '' : 's'}?
+                          </AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will permanently delete <strong>{selectedArchivedItems.length}</strong> item{selectedArchivedItems.length === 1 ? '' : 's'}. This action cannot be undone.
+                            {selectedArchivedItems.some((item) => item.type === 'habit') && (
+                              <span className="block mt-2 text-destructive">
+                                Habit completion history will be permanently deleted.
+                              </span>
+                            )}
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => batchDeleteMutation.mutate(selectedArchivedItems)}
+                            className="bg-orange-500 hover:bg-orange-600"
+                          >
+                            {batchDeleteMutation.isPending ? 'Deleting...' : 'Delete Selected'}
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={clearSelection}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {isLoading ? (
             <div className="space-y-4">
               {[1, 2, 3].map(i => (
@@ -694,9 +811,9 @@ export default function Archive() {
                   getFrequencyColor={getFrequencyColor}
                   getStatusColor={getStatusColor}
                   allowHistoryDeletion={allowHistoryDeletion}
-                  multiSelectMode={multiSelectMode}
                   isSelected={selectedItems.has(getItemKey(item))}
                   onSelectToggle={() => toggleItemSelection(item)}
+                  showCheckboxes={selectedArchivedItems.length > 0}
                 />
               ))}
             </div>
@@ -720,9 +837,9 @@ function ArchivedItemCard({
   getFrequencyColor,
   getStatusColor,
   allowHistoryDeletion,
-  multiSelectMode,
   isSelected,
   onSelectToggle,
+  showCheckboxes = false,
 }: {
   item: ArchivedItem
   onRestore: () => void
@@ -735,9 +852,9 @@ function ArchivedItemCard({
   getFrequencyColor: (frequency: string) => string
   getStatusColor: (status: string) => string
   allowHistoryDeletion: boolean
-  multiSelectMode: boolean
   isSelected: boolean
   onSelectToggle: () => void
+  showCheckboxes?: boolean
 }) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
@@ -774,7 +891,7 @@ function ArchivedItemCard({
                     </Badge>
                   )}
                   {item.review_type && (
-                    <Badge className="text-xs border bg-indigo-500/10 text-indigo-600 border-indigo-500/30 capitalize pointer-events-none">
+                    <Badge className="text-xs border bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30 dark:border-indigo-500/20 capitalize pointer-events-none">
                       {item.review_type}
                     </Badge>
                   )}
@@ -842,7 +959,7 @@ function ArchivedItemCard({
                   )}
 
                   {item.category && (
-                    <Badge className="text-xs capitalize border bg-violet-500/10 text-violet-600 border-violet-500/30 pointer-events-none">
+                    <Badge className="text-xs capitalize border bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/30 dark:border-violet-500/20 pointer-events-none">
                       {item.category}
                     </Badge>
                   )}
@@ -943,7 +1060,10 @@ function ArchivedItemCard({
                   checked={isSelected}
                   onCheckedChange={onSelectToggle}
                   aria-label={`Select ${item.title}`}
-                  className="data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+                  className={cn(
+                    "data-[state=checked]:bg-primary data-[state=checked]:border-primary transition-opacity",
+                    !showCheckboxes && !isSelected && "opacity-0 group-hover:opacity-100"
+                  )}
                 />
               </div>
             </div>

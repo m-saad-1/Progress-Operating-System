@@ -31,10 +31,11 @@
  * 
  * 5. TIME-SCOPING
  *    - Daily:   Today only
- *    - Weekly:  Last 7 days
- *    - Monthly: Last 30 days
- *    - Yearly:  Last 365 days
- *    - All metrics are time-window specific
+ *    - Weekly:  Last 7 days (rolling window)
+ *    - Monthly: Current calendar month
+ *    - Quarterly: Current calendar quarter
+ *    - Yearly:  Current calendar year
+ *    - Ranges end at today (no future dates)
  * 
  * ============================================
  * WHAT NOT TO INCLUDE
@@ -47,12 +48,18 @@
  */
 
 import {
-  parseISO, 
-  isWithinInterval, 
-  startOfDay, 
+  parseISO,
+  isWithinInterval,
+  startOfDay,
   startOfWeek,
-  endOfDay, 
-  subDays, 
+  startOfMonth,
+  startOfQuarter,
+  startOfYear,
+  endOfDay,
+  endOfMonth,
+  endOfQuarter,
+  endOfYear,
+  subDays,
   addDays,
   differenceInDays,
   eachDayOfInterval,
@@ -733,29 +740,69 @@ export interface DateRange {
 // ============================================
 
 export const getDateRange = (range: TimeRange): DateRange => {
-  const end = endOfDay(new Date())
+  const today = new Date()
+  const end = endOfDay(today)
   let start: Date
-  
+
   switch (range) {
     case 'day':
-      start = startOfDay(new Date())
+      start = startOfDay(today)
       break
     case 'week':
-      start = startOfDay(subDays(new Date(), 6))
+      start = startOfDay(subDays(today, 6))
       break
     case 'month':
-      start = startOfDay(subDays(new Date(), 29))
+      start = startOfMonth(today)
       break
     case 'quarter':
-      start = startOfDay(subDays(new Date(), 89))
+      start = startOfQuarter(today)
       break
     case 'year':
-      start = startOfDay(subDays(new Date(), 364))
+      start = startOfYear(today)
       break
     default:
-      start = startOfDay(subDays(new Date(), 29))
+      start = startOfMonth(today)
   }
-  
+
+  return { start, end }
+}
+
+/**
+ * Returns the full calendar period range for display purposes.
+ * Unlike getDateRange which ends at today for data calculations,
+ * this shows the complete period (e.g., Feb 1-28 even if today is Feb 27).
+ */
+export const getDateRangeDisplay = (range: TimeRange): DateRange => {
+  const today = new Date()
+  let start: Date
+  let end: Date
+
+  switch (range) {
+    case 'day':
+      start = startOfDay(today)
+      end = endOfDay(today)
+      break
+    case 'week':
+      start = startOfDay(subDays(today, 6))
+      end = endOfDay(today)
+      break
+    case 'month':
+      start = startOfMonth(today)
+      end = endOfMonth(today)
+      break
+    case 'quarter':
+      start = startOfQuarter(today)
+      end = endOfQuarter(today)
+      break
+    case 'year':
+      start = startOfYear(today)
+      end = endOfYear(today)
+      break
+    default:
+      start = startOfMonth(today)
+      end = endOfMonth(today)
+  }
+
   return { start, end }
 }
 
@@ -2089,6 +2136,7 @@ export const ProgressUtils = {
   
   // Date helpers
   getDateRange,
+  getDateRangeDisplay,
   isInRange,
   
   // Habit display and reset logic

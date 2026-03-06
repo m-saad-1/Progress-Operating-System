@@ -58,7 +58,8 @@ import {
   Archive,
   AlertCircle
 } from 'lucide-react'
-import { format, startOfDay, startOfMonth, endOfMonth, eachDayOfInterval, isAfter, parseISO, subDays, startOfWeek, endOfWeek } from 'date-fns'
+import { format, startOfDay, startOfMonth, endOfMonth, eachDayOfInterval, isAfter, subDays, startOfWeek, endOfWeek } from 'date-fns'
+import { safeParseDate } from '@/lib/date-safe'
 import { useToaster } from '@/hooks/use-toaster'
 import { useElectron } from '@/hooks/use-electron'
 import { cn } from '@/lib/utils'
@@ -82,65 +83,10 @@ import {
   Area,
   XAxis,
   YAxis,
-  Tooltip,
-  Legend,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
 } from 'recharts'
 import { ContextTipsDialog } from '@/components/context-tips-dialog'
-
-const DueHabitTooltip = ({ active, payload, label }: any) => {
-  if (!active || !payload || !Array.isArray(payload) || payload.length === 0) return null
-
-  const point = payload[0]?.payload
-  if (!point) return null
-
-  const dueHabits = Number(point.dueHabits ?? 0)
-  const completedDueHabits = Number(point.completedDueHabits ?? 0)
-  const missedHabits = Math.max(dueHabits - completedDueHabits, 0)
-  const completionRate = dueHabits > 0 ? Math.round((completedDueHabits / dueHabits) * 100) : 0
-  const displayDate = point.fullDate
-    ? format(parseISO(`${point.fullDate}T00:00:00`), 'EEE, MMM d, yyyy')
-    : label || 'N/A'
-  const dueTitles: string[] = Array.isArray(point.dueHabitTitles) ? point.dueHabitTitles : []
-  const completedTitles: string[] = Array.isArray(point.completedDueHabitTitles) ? point.completedDueHabitTitles : []
-
-  return (
-    <div className="rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-slate-950 p-4 shadow-xl">
-      <p className="font-semibold text-sm mb-3 text-foreground">{displayDate}</p>
-      <div className="space-y-2 text-sm">
-        <div className="flex items-center justify-between gap-4">
-          <span className="text-muted-foreground">Due Habits:</span>
-          <span className="font-semibold text-purple-600 dark:text-purple-400">{dueHabits}</span>
-        </div>
-        <div className="flex items-center justify-between gap-4">
-          <span className="text-muted-foreground">Completed:</span>
-          <span className="font-semibold text-green-600 dark:text-green-400">{completedDueHabits}</span>
-        </div>
-        <div className="flex items-center justify-between gap-4">
-          <span className="text-muted-foreground">Missed:</span>
-          <span className="font-semibold text-red-600 dark:text-red-400">{missedHabits}</span>
-        </div>
-        <div className="flex items-center justify-between gap-4 border-t border-gray-200 dark:border-gray-800 pt-2 mt-2">
-          <span className="text-muted-foreground">Consistency:</span>
-          <span className="font-semibold text-foreground">{completionRate}%</span>
-        </div>
-      </div>
-      {(dueTitles.length > 0 || completedTitles.length > 0) && (
-        <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-800 space-y-1 text-xs">
-          {dueTitles.length > 0 && (
-            <p className="text-muted-foreground truncate" title={`Due: ${dueTitles.join(', ')}`}>
-              <span className="font-medium">Due:</span> {dueTitles.join(', ')}
-            </p>
-          )}
-          {completedTitles.length > 0 && (
-            <p className="text-muted-foreground truncate" title={`Completed: ${completedTitles.join(', ')}`}>
-              <span className="font-medium">Completed:</span> {completedTitles.join(', ')}
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
 
 interface HabitFormData {
   title: string
@@ -426,6 +372,16 @@ export default function Habits() {
     return metrics
   }, [habits, typedAllCompletions])
 
+  const consistentHabitsByHistory = useMemo(() => {
+    return filteredHabits
+      .filter((habit) => (habitComputedMetrics.get(habit.id)?.consistency || 0) >= 80)
+      .sort(
+        (a, b) =>
+          (habitComputedMetrics.get(b.id)?.consistency || 0) -
+          (habitComputedMetrics.get(a.id)?.consistency || 0)
+      )
+  }, [filteredHabits, habitComputedMetrics])
+
   const stats: HabitStats = useMemo(() => {
     const activeHabits = [
       ...habitAnalytics.byFrequency.daily,
@@ -463,10 +419,8 @@ export default function Habits() {
   }, [habitAnalytics, typedAllCompletions, habitComputedMetrics, dueTodayMetrics])
 
   const selectedMonthDueSeries = useMemo(() => {
-    const today = startOfDay(new Date())
     const monthStart = startOfMonth(selectedMonth)
-    const rawMonthEnd = endOfMonth(selectedMonth)
-    const monthEnd = rawMonthEnd > today ? today : rawMonthEnd
+    const monthEnd = endOfMonth(selectedMonth)  // Use full month, not capped to today
 
     if (monthStart > monthEnd) {
       return []
@@ -516,13 +470,13 @@ export default function Habits() {
     }
 
     const getDueMetaForDate = (dayKey: string) => {
-      const referenceDate = startOfDay(parseISO(`${dayKey}T00:00:00`))
+      const referenceDate = startOfDay(safeParseDate(`${dayKey}T00:00:00`))
       const dueHabitTitles: string[] = []
       const completedDueHabitTitles: string[] = []
 
       habits.forEach((habit) => {
         if (!habit || habit.deleted_at) return
-        const createdAt = startOfDay(parseISO(habit.created_at))
+        const createdAt = startOfDay(safeParseDate(habit.created_at))
         if (createdAt > referenceDate) return
 
         if (habit.frequency === 'daily') {
@@ -562,15 +516,22 @@ export default function Habits() {
 
     return calculateHabitDueSeries(habits, typedAllCompletions, { start: monthStart, end: monthEnd }, 'short').map((point) => {
       const dueMeta = getDueMetaForDate(point.fullDate)
+      const dueHabits = point.dueHabits || 0
+      const completedDueHabits = point.completedDueHabits || 0
+      const completionRate = dueHabits > 0 ? Math.round((completedDueHabits / dueHabits) * 100) : 0
+      const dayOfMonth = safeParseDate(point.fullDate + 'T00:00:00').getDate()
+      
       return {
-      date: point.date,
-      fullDate: point.fullDate,
-      dueHabits: point.dueHabits,
-      completedDueHabits: point.completedDueHabits,
-      earlyCompletedHabits: point.earlyCompletedHabits,
-      dueHabitTitles: dueMeta.dueHabitTitles,
-      completedDueHabitTitles: dueMeta.completedDueHabitTitles,
-    }
+        date: point.date,
+        fullDate: point.fullDate,
+        dayOfMonth: dayOfMonth,
+        dueHabits: dueHabits,
+        completedDueHabits: completedDueHabits,
+        completionRate: completionRate,
+        earlyCompletedHabits: point.earlyCompletedHabits,
+        dueHabitTitles: dueMeta.dueHabitTitles,
+        completedDueHabitTitles: dueMeta.completedDueHabitTitles,
+      }
     })
   }, [habits, selectedMonth, typedAllCompletions])
 
@@ -578,10 +539,8 @@ export default function Habits() {
     () => {
       if (!Array.isArray(typedAllCompletions) || typedAllCompletions.length === 0) return 0
 
-      const today = startOfDay(new Date())
       const monthStart = startOfMonth(selectedMonth)
-      const rawMonthEnd = endOfMonth(selectedMonth)
-      const monthEnd = rawMonthEnd > today ? today : rawMonthEnd
+      const monthEnd = endOfMonth(selectedMonth)  // Use full month, not capped to today
 
       if (monthStart > monthEnd) return 0
 
@@ -616,7 +575,7 @@ export default function Habits() {
         .filter((completion) => completion.completed)
         .forEach((completion) => {
           const dateOnly = completion.date.slice(0, 10)
-          const completedDate = startOfDay(parseISO(`${dateOnly}T00:00:00`))
+          const completedDate = startOfDay(safeParseDate(`${dateOnly}T00:00:00`))
           if (completedDate < monthStart || completedDate > monthEnd) return
           if (!completedByHabit.has(completion.habit_id)) {
             completedByHabit.set(completion.habit_id, [])
@@ -628,7 +587,7 @@ export default function Habits() {
 
       habits.forEach((habit) => {
         if (!habit || habit.deleted_at || habit.frequency === 'daily') return
-        const createdAt = startOfDay(parseISO(habit.created_at))
+        const createdAt = startOfDay(safeParseDate(habit.created_at))
         const completionDates = completedByHabit.get(habit.id) || []
         if (completionDates.length === 0) return
 
@@ -665,6 +624,17 @@ export default function Habits() {
     [habits, selectedMonth, typedAllCompletions]
   )
 
+  // Calculate monthly totals for due habits
+  const monthlyTotalDue = useMemo(() => {
+    if (!Array.isArray(selectedMonthDueSeries)) return 0
+    return selectedMonthDueSeries.reduce((sum, point) => sum + (point.dueHabits || 0), 0)
+  }, [selectedMonthDueSeries])
+
+  const monthlyTotalCompleted = useMemo(() => {
+    if (!Array.isArray(selectedMonthDueSeries)) return 0
+    return selectedMonthDueSeries.reduce((sum, point) => sum + (point.completedDueHabits || 0), 0)
+  }, [selectedMonthDueSeries])
+
   // Create habit mutation
   const createHabitMutation = useMutation({
     mutationFn: async (habitData: CreateHabitDTO) => {
@@ -678,6 +648,9 @@ export default function Habits() {
             // Invalidate dashboard and analytics queries
             queryClient.invalidateQueries({ queryKey: ['dashboard'] })
             queryClient.invalidateQueries({ queryKey: ['analytics'] })
+            queryClient.invalidateQueries({ queryKey: ['habit-completions-all'] })
+            queryClient.invalidateQueries({ queryKey: ['today-analytics-productivity'] })
+            queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
             success('Habit created successfully')
             setIsCreating(false)
             resetForm()
@@ -704,6 +677,9 @@ export default function Habits() {
             // Invalidate dashboard and analytics queries
             queryClient.invalidateQueries({ queryKey: ['dashboard'] })
             queryClient.invalidateQueries({ queryKey: ['analytics'] })
+            queryClient.invalidateQueries({ queryKey: ['habit-completions-all'] })
+            queryClient.invalidateQueries({ queryKey: ['today-analytics-productivity'] })
+            queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
             success('Habit updated successfully')
             setIsEditing(null)
             resetForm()
@@ -836,6 +812,10 @@ export default function Habits() {
         queryClient.invalidateQueries({ queryKey: ['analytics'] })
         queryClient.invalidateQueries({ queryKey: ['review-insights'] })
         queryClient.invalidateQueries({ queryKey: ['habits'] })
+        queryClient.invalidateQueries({ queryKey: ['habit-completions-all'] })
+        queryClient.invalidateQueries({ queryKey: ['today-analytics-productivity'] })
+        queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+        queryClient.invalidateQueries({ queryKey: ['task-tab-stats-snapshot'] })
         
         if (variables.completed) {
           success('Habit marked as complete')
@@ -858,6 +838,10 @@ export default function Habits() {
       queryClient.invalidateQueries({ queryKey: ['archive'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['habit-completions-all'] })
+      queryClient.invalidateQueries({ queryKey: ['today-analytics-productivity'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['task-tab-stats-snapshot'] })
       queryClient.invalidateQueries({ queryKey: ['review-insights'] })
       success('Habit archived. Completion history preserved.')
     },
@@ -946,7 +930,7 @@ export default function Habits() {
     const today = startOfDay(new Date())
     const yesterday = startOfDay(subDays(today, 1))
     const candidate = startOfDay(date)
-    const createdDay = startOfDay(parseISO(habitCreatedAt))
+    const createdDay = startOfDay(safeParseDate(habitCreatedAt))
 
     if (candidate.getTime() > today.getTime()) return false
     if (candidate.getTime() < createdDay.getTime()) return false
@@ -984,12 +968,12 @@ export default function Habits() {
 
     const candidate = typedAllCompletions.find((completion) => {
       if (!completion.completed || completion.habit_id !== habit.id) return false
-      const completionDate = startOfDay(parseISO(completion.date))
+      const completionDate = startOfDay(safeParseDate(completion.date))
       return completionDate >= start && completionDate <= end
     })
 
     if (!candidate) return null
-    return startOfDay(parseISO(candidate.date))
+    return startOfDay(safeParseDate(candidate.date))
   }
 
   /**
@@ -1013,7 +997,7 @@ export default function Habits() {
     
     // Prevent marking dates before habit creation
     if (habitCreatedAt) {
-      const creationDate = getLocalDateString(parseISO(habitCreatedAt))
+      const creationDate = getLocalDateString(safeParseDate(habitCreatedAt))
       if (dateStr < creationDate) {
         console.warn('[HABIT] Cannot mark date before habit creation:', dateStr, 'created:', creationDate)
         return
@@ -1085,7 +1069,7 @@ export default function Habits() {
               {habit.description || 'Build this habit consistently'}
             </CardDescription>
             <div className="mt-1 text-xs text-muted-foreground">
-              Created: {format(parseISO(habit.created_at), 'MMM d, yyyy, h:mm a')}
+              Created: {format(safeParseDate(habit.created_at), 'MMM d, yyyy, h:mm a')}
             </div>
           </div>
           {/* Direct Action Icons */}
@@ -1212,7 +1196,7 @@ export default function Habits() {
             "w-full bg-transparent dark:bg-transparent transition-all duration-200",
             isCompletedForAction 
               ? "bg-green-500/10 text-green-600 border-green-500/30 hover:bg-red-500/10 hover:text-red-600 hover:border-red-500/30 dark:bg-transparent dark:text-green-300 dark:border-green-500/35 dark:hover:bg-red-500/20 dark:hover:text-red-200 dark:hover:border-red-500/45" 
-              : "text-foreground border-secondary hover:bg-green-500/10 hover:text-green-600 hover:border-green-500/30 dark:bg-transparent dark:text-zinc-100 dark:border-zinc-700/70 dark:hover:bg-green-500/20 dark:hover:text-green-200 dark:hover:border-green-500/45"
+              : "text-green-700 border-green-500/40 hover:bg-green-500/10 hover:text-green-700 hover:border-green-500/50 dark:bg-transparent dark:text-zinc-100 dark:border-zinc-700/70 dark:hover:bg-green-500/20 dark:hover:text-green-200 dark:hover:border-green-500/45"
           )}
           disabled={toggleHabitCompletionMutation.isPending}
           onClick={() => {
@@ -1607,8 +1591,7 @@ export default function Habits() {
 
         <TabsContent value="consistency" className="mt-6">
           {(() => {
-            const consistentHabits = filteredHabits.filter(h => h.consistency_score >= 80).sort((a, b) => b.consistency_score - a.consistency_score);
-            if (consistentHabits.length === 0) {
+            if (consistentHabitsByHistory.length === 0) {
               return (
                 <Card>
                   <CardContent className="pt-6 text-center">
@@ -1623,7 +1606,7 @@ export default function Habits() {
             }
             return (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {consistentHabits.map(renderHabitCard)}
+                {consistentHabitsByHistory.map(renderHabitCard)}
               </div>
             )
           })()}
@@ -1808,51 +1791,85 @@ export default function Habits() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Due Habit Graph</CardTitle>
-          <CardDescription>
-            Completed Today / Due Today · Only due habits affect today&apos;s score.
-          </CardDescription>
+      <Card className="overflow-hidden">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-lg font-semibold">
+              <TrendingUp className="h-4 w-4 text-amber-500" />
+              Due Habit Graph
+            </CardTitle>
+            <div className="text-xs font-medium text-muted-foreground">Rolling 30 days</div>
+          </div>
+          <CardDescription className="text-sm">Due vs Completed habits per day</CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="h-72">
+        <CardContent className="pt-0 pb-6 px-6">
+          <div className="mb-4 flex items-center justify-between">
+            <div className="text-sm font-medium text-muted-foreground">Completed / Due:</div>
+            <div className="text-sm font-semibold">{monthlyTotalCompleted} / {monthlyTotalDue}</div>
+          </div>
+          <div className="h-48">
             {selectedMonthDueSeries.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={selectedMonthDueSeries}>
-                  <defs>
-                    <linearGradient id="dueHabitsGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.8}/>
-                      <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
-                    </linearGradient>
-                    <linearGradient id="completedDueGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#22c55e" stopOpacity={0.8}/>
-                      <stop offset="95%" stopColor="#22c55e" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                  <Tooltip 
-                    content={DueHabitTooltip} 
-                    cursor={{ fill: 'rgba(139, 92, 246, 0.1)' }}
-                    wrapperStyle={{ outline: 'none' }}
+                <AreaChart data={selectedMonthDueSeries} margin={{ top: 5, right: 12, left: -10, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis 
+                    dataKey="dayOfMonth" 
+                    type="number"
+                    domain={[1, new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() + 1, 0).getDate()]}
+                    ticks={(() => {
+                      const daysInMonth = new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() + 1, 0).getDate()
+                      const ticks = []
+                      // Show ticks for all dates in the month
+                      for (let i = 1; i <= daysInMonth; i++) ticks.push(i)
+                      return ticks
+                    })()}
+                    className="text-xs" 
                   />
-                  <Legend />
-                  <Area
-                    type="monotone"
-                    dataKey="dueHabits"
+                  <YAxis className="text-xs" />
+                  <RechartsTooltip 
+                    content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const data = payload[0]?.payload
+                        return (
+                          <div className="rounded-lg border bg-popover p-3 shadow-lg">
+                            <p className="font-semibold text-sm mb-2">Day {data?.dayOfMonth}</p>
+                            <div className="space-y-1 text-sm">
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-muted-foreground">Due:</span>
+                                <span className="font-bold">{data?.dueHabits || 0}</span>
+                              </div>
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-muted-foreground">Completed:</span>
+                                <span className="font-bold">{data?.completedDueHabits || 0}</span>
+                              </div>
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-muted-foreground">Completion Rate:</span>
+                                <span className="font-bold">{data?.completionRate || 0}%</span>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      }
+                      return null
+                    }}
+                  />
+                  <Area 
+                    type="monotone" 
+                    dataKey="dueHabits" 
                     name="Due Habits"
-                    stroke="#8b5cf6"
-                    fill="url(#dueHabitsGradient)"
-                    strokeWidth={2}
+                    stroke="#3b82f6" 
+                    fill="#3b82f6" 
+                    fillOpacity={0.3}
+                    isAnimationActive={true}
                   />
-                  <Area
-                    type="monotone"
-                    dataKey="completedDueHabits"
-                    name="Completed Due"
-                    stroke="#22c55e"
-                    fill="url(#completedDueGradient)"
-                    strokeWidth={2}
+                  <Area 
+                    type="monotone" 
+                    dataKey="completedDueHabits" 
+                    name="Completed"
+                    stroke="#22c55e" 
+                    fill="#22c55e" 
+                    fillOpacity={0.4}
+                    isAnimationActive={true}
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -1912,3 +1929,4 @@ export default function Habits() {
     </div>
   )
 }
+

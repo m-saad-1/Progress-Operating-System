@@ -298,7 +298,7 @@ export default function Time() {
         <div className="flex items-center gap-2">
           <Badge variant={isRunning ? "default" : "secondary"} className={cn(
             isRunning
-              ? "bg-status-active text-white border-status-active/70 shadow-sm"
+              ? "bg-green-600 text-white dark:bg-green-500 dark:text-white border-green-600/70 dark:border-green-500/70 shadow-sm font-semibold"
               : "bg-secondary text-secondary-foreground"
           )}>
             {isRunning && <span className="mr-1.5 h-2 w-2 rounded-full bg-white/95 animate-pulse" />}

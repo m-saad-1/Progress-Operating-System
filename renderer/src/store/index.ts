@@ -292,7 +292,7 @@ const defaultPrivacySettings: PrivacySettings = {
   analytics: false,
   crashReports: true,
   shareUsageData: false,
-  localOnly: true,
+  localOnly: false,
 }
 
 // Default review questions for each type
@@ -619,7 +619,7 @@ export const useStore = create<Store>()(
       clearNotifications: () => set({ notifications: [] }),
       
       // Sync state
-      syncEnabled: false,
+      syncEnabled: true,
       syncProvider: 'local',
       syncInterval: 5,
       autoSync: true,
@@ -647,6 +647,7 @@ export const useStore = create<Store>()(
       // Settings reset
       resetAllSettings: () => set({
         theme: 'light',
+        userProfile: defaultUserProfile,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         weekStart: 'monday',
         language: 'en',
@@ -660,7 +661,7 @@ export const useStore = create<Store>()(
         allowHistoryDeletion: false,
         keyboardShortcuts: defaultKeyboardShortcuts,
         keyboardShortcutsEnabled: true,
-        syncEnabled: false,
+        syncEnabled: true,
         syncProvider: 'local',
         syncInterval: 5,
         autoSync: true,
@@ -722,7 +723,7 @@ export const useStore = create<Store>()(
         notifications: [],
         
         // Reset sync state
-        syncEnabled: false,
+        syncEnabled: true,
         syncProvider: 'local',
         syncInterval: 5,
         autoSync: true,

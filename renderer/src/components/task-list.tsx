@@ -103,7 +103,15 @@ export const TaskList: React.FC<TaskListProps> = ({
                 {task.progress || 0}%
               </Badge>
               {showPriority && task.priority && (
-                <Badge variant={task.priority}>
+                <Badge 
+                  variant="outline"
+                  className={cn(
+                    "capitalize",
+                    task.priority === 'high' && "bg-red-500/10 text-red-600 border-red-500/20 hover:bg-red-500/20 dark:bg-red-500/15 dark:text-red-300 dark:border-red-500/40",
+                    task.priority === 'medium' && "bg-amber-500/10 text-amber-600 border-amber-500/20 hover:bg-amber-500/20 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/40",
+                    task.priority === 'low' && "bg-blue-500/10 text-blue-600 border-blue-500/20 hover:bg-blue-500/20 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/40"
+                  )}
+                >
                   {task.priority}
                 </Badge>
               )}

@@ -162,6 +162,7 @@ export function HabitTracker({ habits, habitCompletions = [], compact = false }:
                   })
                 }}
                 disabled={updateMutation.isPending || !electron.isReady}
+                className="border-slate-400 dark:border-slate-500"
               />
               <div className="flex-1">
                 <div className="font-medium flex items-center gap-2">
@@ -184,7 +185,13 @@ export function HabitTracker({ habits, habitCompletions = [], compact = false }:
               </div>
             </div>
             
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-3">
+              {!compact && (
+                <div className="text-sm font-medium">
+                  {Math.round(habit.consistency_score)}%
+                </div>
+              )}
+              
               {habit.streak_current > 0 && (
                 <div className="flex items-center text-amber-600">
                   <Flame className="h-4 w-4 mr-1" />
@@ -194,12 +201,6 @@ export function HabitTracker({ habits, habitCompletions = [], compact = false }:
               
               {habit.consistency_score >= 80 && (
                 <Star className="h-4 w-4 text-amber-500" />
-              )}
-              
-              {!compact && (
-                <div className="text-sm font-medium">
-                  {Math.round(habit.consistency_score)}%
-                </div>
               )}
             </div>
           </div>

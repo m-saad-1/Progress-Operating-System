@@ -59,6 +59,18 @@ const BACKUP_TIPS_SECTIONS = [
       'Use export/import for migration scenarios; use restore for rollback and recovery scenarios.',
     ],
   },
+  {
+    title: 'Backup Storage Locations',
+    points: [
+      'Local backups are stored in your device\'s AppData directory: AppData\\Local\\PersonalOS\\backups (Windows) or ~/.PersonalOS/backups (Mac/Linux).',
+      'Backup files are compressed with gzip to minimize storage space while maintaining data integrity.',
+      'To manually access backups: Open file explorer, navigate to the backup folder, and locate the .json.gz files (each named with a timestamp).',
+      'The folder also contains a manifest.json file that lists all backups and their metadata for verification.',
+      'To restore a backup manually: Decompress the .gz file, review the JSON structure, and import it through the Import button if the app cannot automatically restore it.',
+      'Browser/exported backups can be restored through the Import button—use this for moving data between devices or as a migration backup.',
+      'Never manually edit backup files unless absolutely necessary; corrupted backups cannot be recovered and may require complete app reset.',
+    ],
+  },
 ] as const
 
 export default function BackupPage() {
@@ -246,9 +258,15 @@ export default function BackupPage() {
                 Refresh
               </Button>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Auto-backup runs every 6 hours · Max 50 backups retained
-            </p>
+            <div className="flex flex-col items-end gap-1">
+              <p className="text-sm text-muted-foreground">
+                Auto-backup runs every 6 hours · Max 50 backups retained
+              </p>
+              <p className="text-xs text-muted-foreground/80 flex items-center gap-1">
+                <HardDrive className="h-3 w-3" />
+                Backups stored in: <code className="px-1 py-0.5 rounded bg-muted text-xs">AppData/Local/PersonalOS/backups</code>
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>

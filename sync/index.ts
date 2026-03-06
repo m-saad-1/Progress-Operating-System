@@ -29,7 +29,7 @@ export class SyncManager extends EventEmitter {
   constructor() {
     super();
     this.config = {
-      enabled: false,
+      enabled: true,
       provider: 'supabase',
       syncInterval: 5, // minutes
       encryptionKey: '',

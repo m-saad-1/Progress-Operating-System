@@ -27,6 +27,8 @@ interface ElectronAPI {
   // System operations
   getAppPath: (name: string) => Promise<string>
   getPlatform: () => string
+  getIconPath: () => Promise<string>
+  showNotification: (options: { title: string; body: string }) => Promise<{ success: boolean; error?: string }>
   resetAllData: () => Promise<any>
   
   // Sync operations

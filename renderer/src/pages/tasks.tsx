@@ -1,5 +1,6 @@
-import React, { useState, useMemo, useCallback, useEffect } from 'react'
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { shallow } from 'zustand/shallow'
 import { 
   Card, 
   CardContent, 
@@ -71,12 +72,14 @@ import {
   Archive,
   HelpCircle,
 } from 'lucide-react'
-import { format, parseISO, isToday, startOfMonth, endOfMonth, subMonths, addMonths, eachDayOfInterval, getWeek, getDay, isSameDay, startOfDay, subDays } from 'date-fns'
+import { format, isToday, startOfMonth, endOfMonth, subMonths, addMonths, eachDayOfInterval, getWeek, getDay, isSameDay, startOfDay, subDays } from 'date-fns'
+import { safeParseDate, safeToDayKeyParts } from '@/lib/date-safe'
 import { useToaster } from '@/hooks/use-toaster'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 import { database, CreateTaskDTO, TaskTabStatsSnapshot, TaskAnalyticsChartSnapshot, TaskMonthlyHistoryPoint } from '@/lib/database'
 import { Task, TaskProgress, DailyTaskState, TaskStatus } from '@/types'
+import { invalidateTaskRelatedQueries, buildTaskProgressUpdatePayload } from '@/lib/task-sync'
 import { 
   ProgressSelector, 
   CircularProgressSelector,
@@ -247,7 +250,7 @@ const CalendarMatrixView: React.FC<{
       }
       return dayProgress
     }
-    if (task.due_date && isSameDay(parseISO(task.due_date), date)) {
+    if (task.due_date && isSameDay(safeParseDate(task.due_date), date)) {
       const currentProgress = task.progress ?? 0
       if ((task.status ?? 'pending') === 'pending' && currentProgress === 0) {
         return -1
@@ -408,7 +411,7 @@ const CalendarMatrixView: React.FC<{
                       const progress = getTaskDayProgress(task, day)
                       const isCurrentDay = isToday(day)
                       const isWeekend = getDay(day) === 0 || getDay(day) === 6
-                      const taskCreatedDay = startOfDay(parseISO(task.created_at))
+                      const taskCreatedDay = startOfDay(safeParseDate(task.created_at))
                       const dayStart = startOfDay(day)
                       const todayStart = startOfDay(new Date())
                       const yesterdayStart = startOfDay(subDays(todayStart, 1))
@@ -578,7 +581,7 @@ const CheckboxView: React.FC<{
   tasks: Task[]
   onProgressChange: (taskId: string, date: string, progress: ProgressValue) => void
   onTaskClick: (task: Task) => void
-}> = ({ tasks, onProgressChange, onTaskClick }) => {
+}> = React.memo(({ tasks, onProgressChange, onTaskClick }) => {
   return (
     <CalendarMatrixView
       tasks={tasks}
@@ -586,36 +589,124 @@ const CheckboxView: React.FC<{
       onTaskClick={onTaskClick}
     />
   )
-}
+})
 
 // Task Analytics Charts - Enhanced
-const TaskAnalytics: React.FC = () => {
+const TaskAnalytics: React.FC<{ dayKey: string }> = React.memo(({ dayKey }) => {
+  // Daily Activity section has independent month navigation
+  const [selectedDailyActivityMonth, setSelectedDailyActivityMonth] = useState(new Date())
+  // Previous Months Progress section has independent year navigation
+  const [selectedMonthHistoryYear, setSelectedMonthHistoryYear] = useState(new Date().getFullYear())
+  const previousDayKeyRef = useRef(dayKey)
+
+  useEffect(() => {
+    const previousDayKey = previousDayKeyRef.current
+    if (previousDayKey === dayKey) return
+
+    const prevParts = safeToDayKeyParts(previousDayKey)
+    const currParts = safeToDayKeyParts(dayKey)
+    if (!prevParts || !currParts) {
+      previousDayKeyRef.current = dayKey
+      return
+    }
+    const [prevYear, prevMonth, prevDay] = prevParts
+    const [currYear, currMonth, currDay] = currParts
+
+    if (!prevYear || !prevMonth || !prevDay || !currYear || !currMonth || !currDay) {
+      previousDayKeyRef.current = dayKey
+      return
+    }
+
+    const previousDate = new Date(prevYear, prevMonth - 1, prevDay, 0, 0, 0, 0)
+    const currentDate = new Date(currYear, currMonth - 1, currDay, 0, 0, 0, 0)
+    const previousMonthStart = startOfMonth(previousDate)
+    const currentMonthStart = startOfMonth(currentDate)
+
+    if (
+      previousMonthStart.getTime() !== currentMonthStart.getTime() &&
+      startOfMonth(selectedDailyActivityMonth).getTime() === previousMonthStart.getTime()
+    ) {
+      setSelectedDailyActivityMonth(currentMonthStart)
+    }
+
+    previousDayKeyRef.current = dayKey
+  }, [dayKey, selectedDailyActivityMonth])
+
+  const { data: rollingTrendSnapshot } = useQuery<TaskAnalyticsChartSnapshot>({
+    queryKey: ['task-analytics-chart-rolling', dayKey],
+    queryFn: () => database.getTaskAnalyticsChartSnapshot(new Date()),
+    staleTime: 30 * 1000,
+  })
+  
+  // Fetch analytics data for Daily Activity section (independent month) - Real historical task data
+  const { data: dailyActivitySnapshot } = useQuery<TaskAnalyticsChartSnapshot>({
+    queryKey: ['task-analytics-chart-daily-activity', format(selectedDailyActivityMonth, 'yyyy-MM'), dayKey],
+    queryFn: () => database.getTaskAnalyticsChartSnapshot(selectedDailyActivityMonth),
+    staleTime: 30 * 1000,
+  })
+  
+  // Fetch analytics data for Consistency section (current year only)
   const { data: analyticsSnapshot } = useQuery<TaskAnalyticsChartSnapshot>({
-    queryKey: ['task-analytics-chart'],
-    queryFn: () => database.getTaskAnalyticsChartSnapshot(),
+    queryKey: ['task-analytics-chart-consistency', dayKey],
+    queryFn: () => database.getTaskAnalyticsChartSnapshot(new Date()),
     staleTime: 30 * 1000,
   })
 
   const { data: previousMonthsHistory = [] } = useQuery<TaskMonthlyHistoryPoint[]>({
-    queryKey: ['task-monthly-history'],
+    queryKey: ['task-monthly-history', dayKey],
     queryFn: () => database.getTaskMonthlyHistory(),
     staleTime: 60 * 1000,
   })
 
-  const monthlyData = analyticsSnapshot?.monthlyTrend || []
-  const dailyData = analyticsSnapshot?.dailyActivity || []
+  const monthlyData = rollingTrendSnapshot?.monthlyTrend || []
+  const dailyData = dailyActivitySnapshot?.dailyActivity || []
   const heatmapData = analyticsSnapshot?.heatmap || []
 
-  const monthLabel = useMemo(() => {
-    if (dailyData.length === 0) return ''
-    const firstDate = parseISO(`${dailyData[0].dateKey}T00:00:00`)
-    return format(firstDate, 'MMMM yyyy')
-  }, [dailyData])
+  const dailyActivityMonthLabel = useMemo(() => {
+    return format(selectedDailyActivityMonth, 'MMMM yyyy')
+  }, [selectedDailyActivityMonth])
 
+  const canNavigateToPreviousDailyActivityMonth = useMemo(() => {
+    // Allow navigation up to 12 months back for Daily Activity
+    const twelveMonthsAgo = subMonths(new Date(), 12)
+    return startOfMonth(selectedDailyActivityMonth) > startOfMonth(twelveMonthsAgo)
+  }, [selectedDailyActivityMonth])
+
+  const canNavigateToNextDailyActivityMonth = useMemo(() => {
+    // Can't navigate beyond current month for Daily Activity
+    return startOfMonth(selectedDailyActivityMonth) < startOfMonth(new Date())
+  }, [selectedDailyActivityMonth])
+
+  // Y-axis dynamically adjusts per month based on highest daily weight in that specific month
   const dailyMaxWeight = useMemo(() => {
-    const maxPlanned = dailyData.reduce((max, point) => Math.max(max, point.updates), 0)
+    if (!dailyData || dailyData.length === 0) {
+      return 4
+    }
+    const maxPlanned = dailyData.reduce((max, point) => Math.max(max, point.updates || 0), 0)
+    // Ensure minimum scale of 4, add 1 to provide visual headroom
     return Math.max(4, Math.ceil(maxPlanned + 1))
   }, [dailyData])
+
+  // Filter previous months history to only show selected year
+  const filteredMonthlyHistory = useMemo(() => {
+    return previousMonthsHistory.filter((month) => {
+      const monthYear = parseInt(month.monthKey.split('-')[0], 10)
+      return monthYear === selectedMonthHistoryYear
+    })
+  }, [previousMonthsHistory, selectedMonthHistoryYear])
+
+  const canNavigateToPreviousYear = useMemo(() => {
+    // Get earliest year from all historical data
+    if (previousMonthsHistory.length === 0) return false
+    const earliestYear = Math.min(...previousMonthsHistory.map(m => parseInt(m.monthKey.split('-')[0], 10)))
+    return selectedMonthHistoryYear > earliestYear
+  }, [selectedMonthHistoryYear, previousMonthsHistory])
+
+  const canNavigateToNextYear = useMemo(() => {
+    // Can't navigate beyond current year
+    const currentYear = new Date().getFullYear()
+    return selectedMonthHistoryYear < currentYear
+  }, [selectedMonthHistoryYear])
 
   const monthlyTotalEarned = useMemo(() => {
     return monthlyData.reduce((sum, point) => sum + point.completed, 0)
@@ -637,7 +728,7 @@ const TaskAnalytics: React.FC = () => {
     const dateMap = new Map<string, string>()
     if (!analyticsSnapshot?.heatmapStartDate) return dateMap
     
-    const start = parseISO(`${analyticsSnapshot.heatmapStartDate}T00:00:00`)
+    const start = safeParseDate(`${analyticsSnapshot.heatmapStartDate}T00:00:00`)
     for (let weekIndex = 0; weekIndex < heatmapData.length; weekIndex++) {
       const week = heatmapData[weekIndex]
       for (let dayIndex = 0; dayIndex < week.length; dayIndex++) {
@@ -657,7 +748,7 @@ const TaskAnalytics: React.FC = () => {
     if (!analyticsSnapshot?.heatmapStartDate || heatmapData.length === 0) return [] as Array<{ index: number; label: string }>
 
     const labels: Array<{ index: number; label: string }> = []
-    const start = parseISO(`${analyticsSnapshot.heatmapStartDate}T00:00:00`)
+    const start = safeParseDate(`${analyticsSnapshot.heatmapStartDate}T00:00:00`)
     const seenMonths = new Set<string>()
 
     for (let weekIndex = 0; weekIndex < heatmapData.length; weekIndex++) {
@@ -691,11 +782,14 @@ const TaskAnalytics: React.FC = () => {
     <div className="space-y-5">
       <Card className="overflow-hidden">
         <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-lg font-semibold">
-            <TrendingUp className="h-4 w-4 text-amber-500" />
-            Progress Trend
-          </CardTitle>
-          <CardDescription className="text-sm">Daily Weight completion score across the last 30 days</CardDescription>
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-lg font-semibold">
+              <TrendingUp className="h-4 w-4 text-amber-500" />
+              Progress Trend
+            </CardTitle>
+            <div className="text-xs font-medium text-muted-foreground">Rolling 30 days</div>
+          </div>
+          <CardDescription className="text-sm">Daily weight completion score • rolling earned/planned trend</CardDescription>
         </CardHeader>
         <CardContent className="pt-0 pb-6 px-6">
           <div className="mb-4 flex items-center justify-between">
@@ -706,7 +800,7 @@ const TaskAnalytics: React.FC = () => {
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={monthlyData} margin={{ top: 5, right: 12, left: -10, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="day" className="text-xs" />
+                <XAxis dataKey="dateKey" className="text-xs" tickFormatter={(value) => String(value).slice(8, 10)} />
                 <YAxis domain={[0, 100]} className="text-xs" />
                 <RechartsTooltip 
                   content={({ active, payload }) => {
@@ -742,11 +836,51 @@ const TaskAnalytics: React.FC = () => {
       
       <Card className="overflow-hidden">
         <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base font-semibold">
-            <BarChart3 className="h-4 w-4 text-green-500" />
-            Daily Activity
-          </CardTitle>
-          <CardDescription className="text-sm">{monthLabel || 'Current month'} • earned/planned weight by day</CardDescription>
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-base font-semibold">
+              <BarChart3 className="h-4 w-4 text-green-500" />
+              Daily Activity
+            </CardTitle>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setSelectedDailyActivityMonth(prev => subMonths(prev, 1))}
+                disabled={!canNavigateToPreviousDailyActivityMonth}
+                title="View previous month"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <div className="min-w-32 text-center">
+                <button
+                  className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-muted"
+                >
+                  {dailyActivityMonthLabel}
+                </button>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setSelectedDailyActivityMonth(prev => addMonths(prev, 1))}
+                disabled={!canNavigateToNextDailyActivityMonth}
+                title="View next month"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setSelectedDailyActivityMonth(startOfMonth(new Date()))}
+                title="Go to current month"
+              >
+                <Calendar className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          <CardDescription className="text-sm">{dailyActivityMonthLabel || 'Current month'} • earned/planned weight by day</CardDescription>
         </CardHeader>
         <CardContent className="pt-0 pb-6 px-6">
           <div className="mb-4 flex items-center justify-between">
@@ -925,44 +1059,128 @@ const TaskAnalytics: React.FC = () => {
 
       <Card className="overflow-hidden">
         <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base font-semibold">
-            <Calendar className="h-4 w-4 text-blue-500" />
-            Previous Months Progress
-          </CardTitle>
-          <CardDescription className="text-sm">Historical monthly performance from database timestamps</CardDescription>
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-base font-semibold">
+              <Calendar className="h-4 w-4 text-blue-500" />
+              Previous Months Progress
+            </CardTitle>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setSelectedMonthHistoryYear(prev => prev - 1)}
+                disabled={!canNavigateToPreviousYear}
+                title="View previous year"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <div className="min-w-16 text-center">
+                <button
+                  className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-muted"
+                  title={`Viewing ${selectedMonthHistoryYear}`}
+                >
+                  {selectedMonthHistoryYear}
+                </button>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setSelectedMonthHistoryYear(prev => prev + 1)}
+                disabled={!canNavigateToNextYear}
+                title="View next year"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setSelectedMonthHistoryYear(new Date().getFullYear())}
+                title="Go to current year"
+              >
+                <Calendar className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          <CardDescription className="text-sm">{selectedMonthHistoryYear} monthly performance with weighted completion metrics</CardDescription>
         </CardHeader>
         <CardContent className="pt-0 pb-6 px-6">
-          {previousMonthsHistory.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No previous months available yet.</div>
+          {filteredMonthlyHistory.length === 0 ? (
+            <div className="text-sm text-muted-foreground text-center py-4">No data available for {selectedMonthHistoryYear}. Data will show after first month completes.</div>
           ) : (
             <div className="space-y-2">
-              {previousMonthsHistory.map((month) => (
-                <div key={month.monthKey} className="rounded-lg border border-border/50 bg-card/50 px-3 py-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="font-medium text-sm">{month.monthLabel}</div>
-                    <div className="text-xs text-muted-foreground">
-                      Weight {Math.round(month.earnedWeight)}/{Math.round(month.plannedWeight)}
+              {filteredMonthlyHistory.map((month) => {
+                const completionRate = month.completionRate || 0
+                const completedCount = month.completionRate >= 100 ? month.total : Math.round((month.completionRate / 100) * month.total)
+                const partiallyCompletedCount = Math.max(0, month.total - completedCount)
+                const skippedCount = month.total > 0 ? Math.max(0, month.total - (month.completed || 0) - partiallyCompletedCount) : 0
+                
+                return (
+                  <div 
+                    key={month.monthKey} 
+                    className="rounded border bg-card hover:bg-muted/50 transition-colors p-3"
+                  >
+                    {/* Month Header with Completion Badge */}
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-sm">{month.monthLabel}</span>
+                        <Badge 
+                          variant="outline" 
+                          className={cn(
+                            "text-xs font-semibold",
+                            completionRate >= 80 && "bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-300",
+                            completionRate >= 60 && completionRate < 80 && "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300",
+                            completionRate < 60 && "bg-red-100 text-red-700 border-red-300 dark:bg-red-900/40 dark:text-red-300"
+                          )}
+                        >
+                          {completionRate}%
+                        </Badge>
+                      </div>
+                      <div className="text-right text-xs text-muted-foreground">
+                        Weight: <span className="font-medium text-foreground">{Math.round(month.earnedWeight * 10) / 10}/{Math.round(month.plannedWeight * 10) / 10}</span>
+                      </div>
+                    </div>
+
+                    {/* Data Grid */}
+                    <div className="grid grid-cols-3 gap-2 text-xs mb-2">
+                      <div className="flex flex-col">
+                        <span className="text-muted-foreground font-medium mb-0.5">Total</span>
+                        <span className="font-semibold text-sm">{month.total}</span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-muted-foreground font-medium mb-0.5">Completed</span>
+                        <span className="font-semibold text-sm text-emerald-600 dark:text-emerald-400">{month.completed}</span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-muted-foreground font-medium mb-0.5">Skipped</span>
+                        <span className="font-semibold text-sm text-red-600 dark:text-red-400">{skippedCount}</span>
+                      </div>
+                    </div>
+
+                    {/* Progress Bar */}
+                    <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div 
+                        className={cn(
+                          "h-full rounded-full transition-all",
+                          completionRate >= 80 ? "bg-emerald-500" :
+                          completionRate >= 60 ? "bg-amber-500" :
+                          "bg-red-500"
+                        )}
+                        style={{ width: `${completionRate}%` }}
+                      />
                     </div>
                   </div>
-                  <div className="mt-1 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                    <div className="flex items-center justify-between">
-                      <span>Completion</span>
-                      <span className="font-semibold text-foreground">{month.completionRate}%</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span>Consistency</span>
-                      <span className="font-semibold text-foreground">{month.consistency}%</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </CardContent>
       </Card>
     </div>
   )
-}
+})
 
 // Task Item Component with Progressive Completion
 const TaskItem: React.FC<{
@@ -1164,7 +1382,7 @@ const TaskItem: React.FC<{
                         {task.due_date && task.duration_type !== 'continuous' && (
                           <div className="flex items-center">
                             <Calendar className="mr-1 h-3 w-3" />
-                            Due: {format(parseISO(task.due_date), 'MMM d, yyyy')}
+                            Due: {format(safeParseDate(task.due_date), 'MMM d, yyyy')}
                           </div>
                         )}
                         
@@ -1210,7 +1428,7 @@ const TaskItem: React.FC<{
                       {task.tags && task.tags.length > 0 && (
                         <div className="flex flex-wrap gap-1">
                           {task.tags.map((tag: string) => (
-                            <Badge key={tag} variant="outline" className="text-xs">
+                            <Badge key={tag} variant="outline" className="text-xs bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40">
                               {tag}
                             </Badge>
                           ))}
@@ -1230,7 +1448,17 @@ const TaskItem: React.FC<{
 export default function Tasks() {
   const queryClient = useQueryClient()
   const { success, error: toastError } = useToaster()
-  const { tasks, goals, addTask, updateTask, archiveTask } = useStore()
+  const { tasks, goals, addTask, updateTask, archiveTask, deleteTask } = useStore(
+    (state) => ({
+      tasks: state.tasks,
+      goals: state.goals,
+      addTask: state.addTask,
+      updateTask: state.updateTask,
+      archiveTask: state.archiveTask,
+      deleteTask: state.deleteTask,
+    }),
+    shallow,
+  )
   
   const [viewMode, setViewMode] = useState<'list' | 'checkbox'>('list')
   const [isCreating, setIsCreating] = useState(false)
@@ -1271,8 +1499,8 @@ export default function Tasks() {
       const yesterdaysTasks = getYesterdaysTasks(tasks)
       return [...todaysTasks, ...yesterdaysTasks].sort((a, b) => {
         // Sort by due date if available, otherwise by created date
-        const aDate = a.due_date ? parseISO(a.due_date) : parseISO(a.created_at)
-        const bDate = b.due_date ? parseISO(b.due_date) : parseISO(b.created_at)
+        const aDate = a.due_date ? safeParseDate(a.due_date) : safeParseDate(a.created_at)
+        const bDate = b.due_date ? safeParseDate(b.due_date) : safeParseDate(b.created_at)
         return aDate.getTime() - bDate.getTime()
       })
     }
@@ -1285,7 +1513,7 @@ export default function Tasks() {
       .filter(task => !task.deleted_at)
       .filter(task => {
         if (task.duration_type === 'today') {
-          const taskCreatedAt = startOfDay(parseISO(task.created_at))
+          const taskCreatedAt = startOfDay(safeParseDate(task.created_at))
           return taskCreatedAt.getTime() === todayDay.getTime()
         }
         return true
@@ -1319,8 +1547,8 @@ export default function Tasks() {
     if (todaysTasks.length > 0) {
       groups["Today's Tasks"] = todaysTasks.sort((a, b) => {
         // Sort by due date if available, otherwise by created date
-        const aDate = a.due_date ? parseISO(a.due_date) : parseISO(a.created_at)
-        const bDate = b.due_date ? parseISO(b.due_date) : parseISO(b.created_at)
+        const aDate = a.due_date ? safeParseDate(a.due_date) : safeParseDate(a.created_at)
+        const bDate = b.due_date ? safeParseDate(b.due_date) : safeParseDate(b.created_at)
         return aDate.getTime() - bDate.getTime()
       })
     }
@@ -1328,8 +1556,8 @@ export default function Tasks() {
     if (yesterdaysTasks.length > 0) {
       groups["Yesterday's Tasks"] = yesterdaysTasks.sort((a, b) => {
         // Sort by due date if available, otherwise by created date
-        const aDate = a.due_date ? parseISO(a.due_date) : parseISO(a.created_at)
-        const bDate = b.due_date ? parseISO(b.due_date) : parseISO(b.created_at)
+        const aDate = a.due_date ? safeParseDate(a.due_date) : safeParseDate(a.created_at)
+        const bDate = b.due_date ? safeParseDate(b.due_date) : safeParseDate(b.created_at)
         return aDate.getTime() - bDate.getTime()
       })
     }
@@ -1405,6 +1633,10 @@ export default function Tasks() {
     }
   }, [statsSnapshot])
 
+  const invalidateTaskDerivedQueries = useCallback(() => {
+    invalidateTaskRelatedQueries(queryClient)
+  }, [queryClient])
+
   // Mutations
   const createTaskMutation = useMutation({
     mutationFn: async (taskData: CreateTaskDTO) => {
@@ -1418,11 +1650,7 @@ export default function Tasks() {
         success('Task created successfully! 🎉')
         setIsCreating(false)
         resetForm()
-        // Invalidate dashboard and analytics when tasks change
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-        queryClient.invalidateQueries({ queryKey: ['analytics'] })
-        queryClient.invalidateQueries({ queryKey: ['task-stats'] })
-        queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
+        invalidateTaskDerivedQueries()
       }
     },
     onError: () => toastError('Failed to create task'),
@@ -1441,11 +1669,7 @@ export default function Tasks() {
         setIsCreating(false)
         setIsEditing(null)
         resetForm()
-        // Invalidate dashboard and analytics when tasks change
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-        queryClient.invalidateQueries({ queryKey: ['analytics'] })
-        queryClient.invalidateQueries({ queryKey: ['task-stats'] })
-        queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
+        invalidateTaskDerivedQueries()
       }
     },
     onError: () => toastError('Failed to update task'),
@@ -1487,11 +1711,7 @@ export default function Tasks() {
         } else {
           success('Task resumed ▶️')
         }
-        // Invalidate related queries
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-        queryClient.invalidateQueries({ queryKey: ['analytics'] })
-        queryClient.invalidateQueries({ queryKey: ['task-stats'] })
-        queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
+        invalidateTaskDerivedQueries()
       }
     },
     onError: () => toastError('Failed to toggle pause state'),
@@ -1504,19 +1724,13 @@ export default function Tasks() {
 
   const updateProgressMutation = useMutation({
     mutationFn: async ({ id, progress }: { id: string; progress: number }) => {
-      // Task completion rule: 100% only = completed
-      const isCompleted = progress === 100
-      const dbUpdates: Record<string, any> = { 
-        progress: progress as TaskProgress,
-        status: isCompleted ? 'completed' : progress > 0 ? 'in-progress' : 'pending',
-      }
-      // Explicitly set or clear completed_at — null clears it in the DB
-      if (isCompleted) {
-        dbUpdates.completed_at = new Date().toISOString()
-      } else {
-        dbUpdates.completed_at = null
-      }
-      await database.updateTask(id, dbUpdates)
+      // Get existing task to update daily_progress history
+      const existingTask = await database.getTaskById(id)
+      if (!existingTask) throw new Error('Task not found')
+
+      const { updates } = buildTaskProgressUpdatePayload(existingTask as Task, progress)
+
+      await database.updateTask(id, updates)
       const updatedTask = await database.getTaskById(id)
       return { updatedTask, progress }
     },
@@ -1527,12 +1741,8 @@ export default function Tasks() {
         if (progress === 100) {
           success('Task completed! 🎉🎊')
         }
-        // Invalidate all related queries
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-        queryClient.invalidateQueries({ queryKey: ['analytics'] })
         queryClient.invalidateQueries({ queryKey: ['review-insights'] })
-        queryClient.invalidateQueries({ queryKey: ['task-stats'] })
-        queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
+        invalidateTaskDerivedQueries()
       }
     },
     onError: () => toastError('Failed to update progress'),
@@ -1547,12 +1757,8 @@ export default function Tasks() {
     onSuccess: (updatedTask) => {
       if (updatedTask) {
         updateTask(updatedTask)
-        // Invalidate all related queries
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-        queryClient.invalidateQueries({ queryKey: ['analytics'] })
         queryClient.invalidateQueries({ queryKey: ['review-insights'] })
-        queryClient.invalidateQueries({ queryKey: ['task-stats'] })
-        queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
+        invalidateTaskDerivedQueries()
       }
     },
     onError: () => toastError('Failed to update daily progress'),
@@ -1571,11 +1777,29 @@ export default function Tasks() {
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       queryClient.invalidateQueries({ queryKey: ['analytics'] })
       queryClient.invalidateQueries({ queryKey: ['review-insights'] })
-      queryClient.invalidateQueries({ queryKey: ['task-stats'] })
-      queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
+      invalidateTaskDerivedQueries()
       success('Task archived. Progress history preserved.')
     },
     onError: () => toastError('Failed to archive task'),
+  })
+
+  // Permanent delete mutation - completely removes task and all its data
+  const permanentDeleteTaskMutation = useMutation({
+    mutationFn: async (id: string) => {
+      // Completely remove task and all associated data (checklist items, time blocks, notes, etc.)
+      await database.permanentlyDeleteTask(id, { deleteHistory: true })
+      return id
+    },
+    onSuccess: (id) => {
+      deleteTask(id)
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['review-insights'] })
+      invalidateTaskDerivedQueries()
+      success('Task permanently deleted. All data removed.')
+    },
+    onError: () => toastError('Failed to permanently delete task'),
   })
 
   const resetForm = () => {
@@ -1610,7 +1834,7 @@ export default function Tasks() {
     setFormData({
       title: task.title,
       description: task.description || '',
-      due_date: task.due_date ? format(parseISO(task.due_date), 'yyyy-MM-dd') : '',
+      due_date: task.due_date ? format(safeParseDate(task.due_date), 'yyyy-MM-dd') : '',
       priority: task.priority,
       status: task.status,
       estimated_time: task.estimated_time?.toString() || '',
@@ -1652,17 +1876,17 @@ export default function Tasks() {
     if (!task) return
     if (task.is_paused) return
 
-    const taskCreatedDay = startOfDay(parseISO(task.created_at))
-    const targetDay = startOfDay(parseISO(date))
+    const taskCreatedDay = startOfDay(safeParseDate(task.created_at))
+    const targetDay = startOfDay(safeParseDate(date))
     if (targetDay.getTime() < taskCreatedDay.getTime()) return
 
     // Derive proper status from progress value
     const status = progress >= 100 ? 'completed' : progress > 0 ? 'in-progress' : 'pending'
-    const dailyProgress = recordDailyProgress(task, parseISO(date), progress as any, status, 'user')
+    const dailyProgress = recordDailyProgress(task, safeParseDate(date), progress as any, status, 'user')
     updateDailyProgressMutation.mutate({ id: taskId, dailyProgress })
 
     // For today's date, also update the live task progress/status
-    if (isToday(parseISO(date))) {
+    if (isToday(safeParseDate(date))) {
       updateProgressMutation.mutate({ id: taskId, progress })
     }
   }, [tasks, updateDailyProgressMutation, updateProgressMutation])
@@ -1775,9 +1999,10 @@ export default function Tasks() {
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Description</label>
                     <Textarea
+                      key={`task-description-${isEditing ?? 'new'}`}
                       placeholder="Add details, notes, or context..."
-                      value={formData.description}
-                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      defaultValue={formData.description}
+                      onBlur={(e) => setFormData((prev) => ({ ...prev, description: e.target.value }))}
                       rows={3}
                       className="bg-secondary/50 border-green-500/20 focus-visible:ring-green-500/50 dark:border-green-500/15"
                     />
@@ -1868,7 +2093,7 @@ export default function Tasks() {
                     <label className="text-sm font-medium">Related Goal</label>
                     <Select
                       value={formData.goal_id || "none"}
-                      onValueChange={(value) => setFormData({ ...formData, goal_id: value === "none" ? "" : value })}
+                      onValueChange={(value: string) => setFormData({ ...formData, goal_id: value === "none" ? "" : value })}
                     >
                       <SelectTrigger className="bg-secondary/50 border-green-500/20 focus:ring-green-500/50 dark:border-green-500/15">
                         <SelectValue placeholder="Select a goal..." />
@@ -1902,7 +2127,7 @@ export default function Tasks() {
                     {formData.tags.length > 0 && (
                       <div className="flex flex-wrap gap-2 mt-2">
                         {formData.tags.map(tag => (
-                          <Badge key={tag} variant="secondary" className="gap-1">
+                          <Badge key={tag} variant="outline" className="gap-1 bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40">
                             {tag}
                             <button type="button" onClick={() => removeTag(tag)} className="ml-1 hover:text-destructive">
                               <X className="h-3 w-3" />
@@ -2203,7 +2428,7 @@ export default function Tasks() {
 
       {/* Analytics Section */}
       <div className="animate-in fade-in slide-in-from-top-4 duration-300">
-        <TaskAnalytics />
+        <TaskAnalytics dayKey={dayKey} />
       </div>
 
       {/* Task Detail Modal */}
@@ -2266,7 +2491,7 @@ export default function Tasks() {
               {taskDetailModal.description && (
                 <div className="space-y-1">
                   <label className="text-sm font-medium text-muted-foreground">Description</label>
-                  <p className="text-sm bg-secondary/30 p-3 rounded-lg">
+                  <p className="text-sm bg-secondary/30 p-3 rounded-lg max-h-40 overflow-y-auto scroll-smooth">
                     {taskDetailModal.description}
                   </p>
                 </div>
@@ -2279,7 +2504,7 @@ export default function Tasks() {
                     <label className="text-muted-foreground flex items-center gap-1">
                       <Calendar className="h-3 w-3" /> Due Date
                     </label>
-                    <p className="font-medium">{format(parseISO(taskDetailModal.due_date), 'MMM d, yyyy')}</p>
+                    <p className="font-medium">{format(safeParseDate(taskDetailModal.due_date), 'MMM d, yyyy')}</p>
                   </div>
                 )}
                 
@@ -2294,7 +2519,7 @@ export default function Tasks() {
                 
                 <div className="space-y-1">
                   <label className="text-muted-foreground">Created</label>
-                  <p className="font-medium">{format(parseISO(taskDetailModal.created_at), 'MMM d, yyyy')}</p>
+                  <p className="font-medium">{format(safeParseDate(taskDetailModal.created_at), 'MMM d, yyyy')}</p>
                 </div>
                 
                 {taskDetailModal.goal_id && (
@@ -2313,7 +2538,7 @@ export default function Tasks() {
                   <label className="text-sm font-medium text-muted-foreground">Tags</label>
                   <div className="flex flex-wrap gap-1">
                     {taskDetailModal.tags.map((tag: string) => (
-                      <Badge key={tag} variant="outline" className="text-xs">
+                      <Badge key={tag} variant="outline" className="text-xs bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40">
                         {tag}
                       </Badge>
                     ))}
@@ -2434,16 +2659,37 @@ export default function Tasks() {
       </Dialog>
 
       {/* Archive Confirmation Alert */}
-      <AlertDialog open={!!taskToArchive} onOpenChange={(open) => !open && setTaskToArchive(null)}>
+      <AlertDialog open={!!taskToArchive} onOpenChange={(open: boolean) => !open && setTaskToArchive(null)}>
         <AlertDialogContent className="bg-white dark:bg-card border border-border shadow-lg">
           <AlertDialogHeader>
-            <AlertDialogTitle>Archive Task</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to archive "{taskToArchive?.title}"?
-              This will move it to the Archive tab. You can restore it later.
+            <AlertDialogTitle>
+              {taskToArchive?.duration_type === 'today' ? 'Archive or Delete Task?' : 'Archive Task'}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-3">
+              <p>
+                {taskToArchive?.duration_type === 'today' 
+                  ? `Choose how to handle "${taskToArchive?.title}":`
+                  : `Are you sure you want to archive "${taskToArchive?.title}"?`
+                }
+              </p>
+              {taskToArchive?.duration_type === 'today' && (
+                <div className="space-y-2 text-sm">
+                  <div className="p-3 rounded-md bg-orange-50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-900/30">
+                    <p className="font-medium text-orange-900 dark:text-orange-200 mb-1">📦 Archive</p>
+                    <p className="text-orange-700 dark:text-orange-300">Move to Archive tab. Can be restored later. Progress history preserved.</p>
+                  </div>
+                  <div className="p-3 rounded-md bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/30">
+                    <p className="font-medium text-red-900 dark:text-red-200 mb-1">🗑️ Permanent Delete</p>
+                    <p className="text-red-700 dark:text-red-300">Completely remove all data including completion status, counts, weighted progress, dashboard contributions, analytics, and related statistics. <strong>This action cannot be undone.</strong></p>
+                  </div>
+                </div>
+              )}
+              {taskToArchive?.duration_type !== 'today' && (
+                <p>This will move it to the Archive tab. You can restore it later.</p>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
+          <AlertDialogFooter className={taskToArchive?.duration_type === 'today' ? 'flex-col sm:flex-row gap-2' : ''}>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
@@ -2459,9 +2705,26 @@ export default function Tasks() {
             >
               Archive
             </AlertDialogAction>
+            {taskToArchive?.duration_type === 'today' && (
+              <AlertDialogAction
+                onClick={() => {
+                  if (taskToArchive) {
+                    permanentDeleteTaskMutation.mutate(taskToArchive.id)
+                    if (taskDetailModal?.id === taskToArchive.id) {
+                      setTaskDetailModal(null)
+                    }
+                    setTaskToArchive(null)
+                  }
+                }}
+                className="bg-red-600 hover:bg-red-700 text-white"
+              >
+                Permanent Delete
+              </AlertDialogAction>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
     </div>
   )
 }
+

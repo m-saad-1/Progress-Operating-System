@@ -43,7 +43,8 @@
  * - Monthly habits: reset on 1st of month (after month completes)
  */
 
-import { startOfDay, isToday, isYesterday, isBefore, format, parseISO } from 'date-fns'
+import { startOfDay, isToday, isYesterday, isBefore, format } from 'date-fns'
+import { safeParseDate } from '@/lib/date-safe'
 import type { Task, TaskStatus, TaskProgress, DailyTaskState } from '@/types'
 
 const getDayKey = (date: Date): string => format(date, 'yyyy-MM-dd')
@@ -134,7 +135,7 @@ export const upsertDailyEntry = (
  * For today-only tasks, this is their created_at date
  */
 export const getTaskOccurrenceDate = (task: Task, referenceDate: Date = new Date()): Date => {
-  const taskCreatedAt = parseISO(task.created_at)
+  const taskCreatedAt = safeParseDate(task.created_at)
   const createdDay = startOfDay(taskCreatedAt)
   const refDay = startOfDay(referenceDate)
   
@@ -169,7 +170,7 @@ export const getTodaysTasks = (tasks: Task[]): Task[] => {
   return tasks.filter(task => {
     if (task.deleted_at) return false
 
-    const createdDay = startOfDay(parseISO(task.created_at))
+    const createdDay = startOfDay(safeParseDate(task.created_at))
 
     if (task.duration_type === 'continuous') {
       // Continuous tasks are always active on/after their creation date
@@ -210,9 +211,15 @@ export const getYesterdaysTasks = (tasks: Task[]): Task[] => {
   const yesterdayKey = getDayKey(yesterday)
 
   return tasks.filter(task => {
-    if (task.deleted_at) return false
+    if (task.deleted_at) {
+      const deletedDay = startOfDay(safeParseDate(task.deleted_at))
+      const deletedKey = getDayKey(deletedDay)
+      // Keep yesterday visibility when task is archived/deleted today,
+      // but hide it if it was deleted on or before yesterday.
+      if (deletedKey <= yesterdayKey) return false
+    }
 
-    const createdDay = startOfDay(parseISO(task.created_at))
+    const createdDay = startOfDay(safeParseDate(task.created_at))
 
     if (task.duration_type === 'today') {
       // Today-only tasks: show in yesterday if created on yesterday's date
@@ -257,7 +264,7 @@ export const getArchivedTasks = (tasks: Task[]): Task[] => {
   return tasks.filter(task => {
     if (task.deleted_at) return false
     
-    const taskCreatedAt = startOfDay(parseISO(task.created_at))
+    const taskCreatedAt = startOfDay(safeParseDate(task.created_at))
     
     if (task.duration_type === 'continuous') {
       // Continuous tasks are never really "archived", they keep appearing
@@ -287,14 +294,14 @@ export const getTasksInDateRange = (
     const history = normalizeDailyProgress(task)
 
     const hasHistoryInRange = Object.keys(history).some((dateKey) => {
-      const day = startOfDay(parseISO(dateKey))
+      const day = startOfDay(safeParseDate(dateKey))
       return !isBefore(day, rangeStart) && !isBefore(rangeEnd, day)
     })
 
     if (hasHistoryInRange) return true
 
     // Fallback for tasks without history: use creation date as occurrence
-    const taskCreatedAt = startOfDay(parseISO(task.created_at))
+    const taskCreatedAt = startOfDay(safeParseDate(task.created_at))
     return !isBefore(taskCreatedAt, rangeStart) && !isBefore(rangeEnd, taskCreatedAt)
   })
 }
@@ -304,7 +311,7 @@ export const getTasksInDateRange = (
  * Used in UI to show task recency
  */
 export const getTaskOccurrenceLabel = (task: Task): string => {
-  const taskDate = parseISO(task.created_at)
+  const taskDate = safeParseDate(task.created_at)
   
   if (isToday(taskDate)) {
     return 'Today'
@@ -443,3 +450,4 @@ export default {
   getLastWeeklyResetDate,
   getLastMonthlyResetDate,
 }
+

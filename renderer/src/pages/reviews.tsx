@@ -8,13 +8,11 @@ import {
   endOfWeek,
   startOfMonth,
   endOfMonth,
-  parseISO,
-  differenceInCalendarDays,
-  differenceInCalendarWeeks,
-  differenceInCalendarMonths,
-  isSameWeek,
-  isSameMonth,
+  subDays,
+  subWeeks,
+  subMonths,
 } from 'date-fns'
+import { safeParseDate } from '@/lib/date-safe'
 import {
   Calendar,
   CalendarDays,
@@ -202,8 +200,8 @@ function getPeriodDates(type: ReviewType, date: Date = new Date()) {
       }
     case 'weekly':
       return {
-        start: startOfWeek(date, { weekStartsOn: 1 }).toISOString(),
-        end: endOfWeek(date, { weekStartsOn: 1 }).toISOString(),
+        start: startOfWeek(date, { weekStartsOn: 0 }).toISOString(),
+        end: endOfWeek(date, { weekStartsOn: 0 }).toISOString(),
       }
     case 'monthly':
       return {
@@ -214,8 +212,8 @@ function getPeriodDates(type: ReviewType, date: Date = new Date()) {
 }
 
 function formatPeriodLabel(type: ReviewType, periodStart: string, periodEnd: string) {
-  const start = parseISO(periodStart)
-  const end = parseISO(periodEnd)
+  const start = safeParseDate(periodStart)
+  const end = safeParseDate(periodEnd)
   
   switch (type) {
     case 'daily':
@@ -234,58 +232,102 @@ function calculateReviewStreakForType(type: ReviewType, completedReviews: Review
   const uniquePeriods = new Map<string, Date>()
 
   for (const review of reviewsOfType) {
-    const reviewDate = parseISO(review.period_end)
+    const reviewDate = safeParseDate(review.period_end)
+    let periodStartDate: Date
     let periodKey = ''
 
     if (type === 'daily') {
-      periodKey = format(startOfDay(reviewDate), 'yyyy-MM-dd')
+      periodStartDate = startOfDay(reviewDate)
+      periodKey = format(periodStartDate, 'yyyy-MM-dd')
     } else if (type === 'weekly') {
-      periodKey = format(startOfWeek(reviewDate, { weekStartsOn: 1 }), 'yyyy-MM-dd')
+      periodStartDate = startOfWeek(reviewDate, { weekStartsOn: 0 })
+      periodKey = format(periodStartDate, 'yyyy-MM-dd')
     } else {
-      periodKey = format(startOfMonth(reviewDate), 'yyyy-MM')
+      periodStartDate = startOfMonth(reviewDate)
+      periodKey = format(periodStartDate, 'yyyy-MM')
     }
 
     const existing = uniquePeriods.get(periodKey)
-    if (!existing || reviewDate.getTime() > existing.getTime()) {
-      uniquePeriods.set(periodKey, reviewDate)
+    if (!existing || periodStartDate.getTime() > existing.getTime()) {
+      uniquePeriods.set(periodKey, periodStartDate)
     }
   }
 
-  const periodDates = Array.from(uniquePeriods.values()).sort((a, b) => b.getTime() - a.getTime())
-  if (periodDates.length === 0) return 0
+  if (uniquePeriods.size === 0) return 0
 
   const today = new Date()
-  const mostRecentReviewDate = periodDates[0]
+  const currentPeriodStart =
+    type === 'daily'
+      ? startOfDay(today)
+      : type === 'weekly'
+        ? startOfWeek(today, { weekStartsOn: 0 })
+        : startOfMonth(today)
 
-  if (type === 'daily') {
-    if (differenceInCalendarDays(today, mostRecentReviewDate) > 0) return 0
-
-    let streak = 1
-    for (let i = 0; i < periodDates.length - 1; i++) {
-      if (differenceInCalendarDays(periodDates[i], periodDates[i + 1]) !== 1) break
-      streak++
-    }
-    return streak
+  const toPeriodKey = (date: Date) => {
+    if (type === 'daily') return format(startOfDay(date), 'yyyy-MM-dd')
+    if (type === 'weekly') return format(startOfWeek(date, { weekStartsOn: 0 }), 'yyyy-MM-dd')
+    return format(startOfMonth(date), 'yyyy-MM')
   }
 
-  if (type === 'weekly') {
-    if (!isSameWeek(mostRecentReviewDate, today, { weekStartsOn: 1 })) return 0
+  const currentPeriodKey = toPeriodKey(currentPeriodStart)
 
-    let streak = 1
-    for (let i = 0; i < periodDates.length - 1; i++) {
-      if (differenceInCalendarWeeks(periodDates[i], periodDates[i + 1], { weekStartsOn: 1 }) !== 1) break
-      streak++
+  // Find the most recent completed review period
+  const sortedPeriods = Array.from(uniquePeriods.keys()).sort()
+  const mostRecentCompletedKey = sortedPeriods[sortedPeriods.length - 1]
+  
+  if (!mostRecentCompletedKey) return 0
+
+  let streakStartPeriodKey = currentPeriodKey
+  
+  // Determine if we should count the streak from current period or previous period
+  if (uniquePeriods.has(currentPeriodKey)) {
+    // Current period has a completed review, start from current
+    streakStartPeriodKey = currentPeriodKey
+  } else {
+    // Current period doesn't have a completed review
+    // Check if the most recent completed period is the previous period
+    const previousPeriodStart =
+      type === 'daily'
+        ? startOfDay(subDays(currentPeriodStart, 1))
+        : type === 'weekly'
+          ? startOfWeek(subWeeks(currentPeriodStart, 1), { weekStartsOn: 0 })
+          : startOfMonth(subMonths(currentPeriodStart, 1))
+    
+    const previousPeriodKey = toPeriodKey(previousPeriodStart)
+    
+    // If the most recent completed period is not the previous period, streak is broken
+    if (mostRecentCompletedKey !== previousPeriodKey) {
+      return 0
     }
-    return streak
+    
+    // Otherwise, the most recent completed period is the previous period - count from there
+    streakStartPeriodKey = previousPeriodKey
   }
-
-  if (!isSameMonth(mostRecentReviewDate, today)) return 0
 
   let streak = 1
-  for (let i = 0; i < periodDates.length - 1; i++) {
-    if (differenceInCalendarMonths(periodDates[i], periodDates[i + 1]) !== 1) break
-    streak++
+  let cursor = streakStartPeriodKey === currentPeriodKey ? currentPeriodStart : 
+    (type === 'daily'
+      ? startOfDay(subDays(currentPeriodStart, 1))
+      : type === 'weekly'
+        ? startOfWeek(subWeeks(currentPeriodStart, 1), { weekStartsOn: 0 })
+        : startOfMonth(subMonths(currentPeriodStart, 1)))
+
+  while (true) {
+    cursor =
+      type === 'daily'
+        ? startOfDay(subDays(cursor, 1))
+        : type === 'weekly'
+          ? startOfWeek(subWeeks(cursor, 1), { weekStartsOn: 0 })
+          : startOfMonth(subMonths(cursor, 1))
+
+    const key = toPeriodKey(cursor)
+    if (!uniquePeriods.has(key)) {
+      break
+    }
+
+    streak += 1
   }
+
   return streak
 }
 
@@ -312,63 +354,83 @@ function generateAutoContext(insights: ReviewInsightsData | null, type: ReviewTy
   
   // --- Tasks Section ---
   const taskParts: string[] = []
+  const taskEligibleCount = insights.taskEligibleCount ?? 0
+  const hasTaskActivity = insights.tasksCompleted > 0 || insights.tasksCreated > 0 || taskEligibleCount > 0
+  
   if (insights.tasksCompleted > 0) {
     taskParts.push(`Completed ${insights.tasksCompleted} task${insights.tasksCompleted !== 1 ? 's' : ''}`)
   }
   if (insights.tasksCreated > 0) {
     taskParts.push(`Created ${insights.tasksCreated} new task${insights.tasksCreated !== 1 ? 's' : ''}`)
   }
-  if (insights.taskCompletionRate > 0) {
-    taskParts.push(`Weighted completion rate: ${insights.taskCompletionRate}%`)
+  if (taskEligibleCount > 0 || insights.taskCompletionRate > 0) {
+    taskParts.push(`Completion rate: ${insights.taskCompletionRate}%${taskEligibleCount > 0 ? ` (${insights.tasksCompleted}/${taskEligibleCount})` : ''}`)
   }
   if (insights.overdueTasksCount > 0) {
-    taskParts.push(`${insights.overdueTasksCount} overdue task${insights.overdueTasksCount !== 1 ? 's' : ''}`)
+    taskParts.push(`⚠️ ${insights.overdueTasksCount} overdue task${insights.overdueTasksCount !== 1 ? 's' : ''}`)
   }
   if (insights.blockedTasksCount > 0) {
-    taskParts.push(`${insights.blockedTasksCount} blocked task${insights.blockedTasksCount !== 1 ? 's' : ''}`)
+    taskParts.push(`🚧 ${insights.blockedTasksCount} blocked task${insights.blockedTasksCount !== 1 ? 's' : ''}`)
   }
-  if (taskParts.length > 0) {
-    sections.push(`📋 Tasks:\n${taskParts.map(p => `  • ${p}`).join('\n')}`)
+  if (hasTaskActivity || taskParts.length > 0) {
+    sections.push(`📋 Tasks:\n${taskParts.length > 0 ? taskParts.map(p => `  • ${p}`).join('\n') : '  • No task activity this period'}`)
   }
   
   // --- Habits Section ---
   const habitParts: string[] = []
-  if (insights.habitsCompleted > 0) {
-    habitParts.push(`${insights.habitsCompleted} habit${insights.habitsCompleted !== 1 ? 's' : ''} completed`)
+  const habitPeriodsCompleted = insights.habitPeriodsCompleted ?? 0
+  const habitPeriodsExpected = insights.habitPeriodsExpected ?? 0
+  const hasHabitActivity = habitPeriodsCompleted > 0 || habitPeriodsExpected > 0
+  
+  if (habitPeriodsCompleted > 0) {
+    habitParts.push(`Completed ${habitPeriodsCompleted} habit period${habitPeriodsCompleted !== 1 ? 's' : ''}`)
   }
-  if (insights.habitConsistencyRate > 0) {
-    habitParts.push(`Consistency: ${insights.habitConsistencyRate}%`)
+  if (habitPeriodsExpected > 0 || insights.habitConsistencyRate > 0) {
+    habitParts.push(`Consistency: ${insights.habitConsistencyRate}%${habitPeriodsExpected > 0 ? ` (${habitPeriodsCompleted}/${habitPeriodsExpected})` : ''}`)
   }
 
   const combinedCompletionRate = getCombinedCompletionRate(insights)
-  if (combinedCompletionRate > 0) {
-    habitParts.push(`Combined completion rate: ${combinedCompletionRate}%`)
+  if (combinedCompletionRate > 0 && (taskEligibleCount > 0 || habitPeriodsExpected > 0)) {
+    habitParts.push(`Overall completion: ${combinedCompletionRate}% (tasks + habits combined)`)
   }
   if (insights.currentStreaks && insights.currentStreaks.length > 0) {
     const topStreak = insights.currentStreaks[0]
-    habitParts.push(`Top streak: ${topStreak.title} (${topStreak.streak} days)`)
+    habitParts.push(`🔥 Top streak: ${topStreak.title} (${topStreak.streak} day${topStreak.streak !== 1 ? 's' : ''})`)
   }
   if (insights.habitsMissed > 0) {
-    habitParts.push(`${insights.habitsMissed} habit${insights.habitsMissed !== 1 ? 's' : ''} missed`)
+    habitParts.push(`❌ ${insights.habitsMissed} period${insights.habitsMissed !== 1 ? 's' : ''} missed`)
   }
-  if (habitParts.length > 0) {
-    sections.push(`🎯 Habits:\n${habitParts.map(p => `  • ${p}`).join('\n')}`)
+  if (hasHabitActivity || habitParts.length > 0) {
+    sections.push(`🎯 Habits:\n${habitParts.length > 0 ? habitParts.map(p => `  • ${p}`).join('\n') : '  • No habit activity this period'}`)
   }
   
   // --- Goals Section ---
   const goalParts: string[] = []
+  const hasGoalActivity = insights.goalsCompletedThisPeriod > 0 || (insights.activeGoalsProgress && insights.activeGoalsProgress.length > 0)
+  
   if (insights.goalsCompletedThisPeriod > 0) {
-    goalParts.push(`${insights.goalsCompletedThisPeriod} goal${insights.goalsCompletedThisPeriod !== 1 ? 's' : ''} achieved`)
+    goalParts.push(`✅ ${insights.goalsCompletedThisPeriod} goal${insights.goalsCompletedThisPeriod !== 1 ? 's' : ''} achieved this period`)
   }
   if (insights.activeGoalsProgress && insights.activeGoalsProgress.length > 0) {
     const avgProgress = Math.round(insights.activeGoalsProgress.reduce((s, g) => s + g.progress, 0) / insights.activeGoalsProgress.length)
-    goalParts.push(`${insights.activeGoalsProgress.length} active goal${insights.activeGoalsProgress.length !== 1 ? 's' : ''} (avg ${avgProgress}%)`)
+    goalParts.push(`${insights.activeGoalsProgress.length} active goal${insights.activeGoalsProgress.length !== 1 ? 's' : ''} (average progress: ${avgProgress}%)`)
+    
+    // Show top progressing goals
+    const topGoals = insights.activeGoalsProgress
+      .filter(g => g.progress > 0)
+      .sort((a, b) => b.progress - a.progress)
+      .slice(0, 2)
+    if (topGoals.length > 0) {
+      topGoals.forEach(g => {
+        goalParts.push(`  → ${g.title}: ${g.progress}%`)
+      })
+    }
   }
   if (insights.goalsAtRisk && insights.goalsAtRisk.length > 0) {
-    goalParts.push(`${insights.goalsAtRisk.length} goal${insights.goalsAtRisk.length !== 1 ? 's' : ''} needing attention`)
+    goalParts.push(`⚠️ ${insights.goalsAtRisk.length} goal${insights.goalsAtRisk.length !== 1 ? 's' : ''} at risk or overdue`)
   }
-  if (goalParts.length > 0) {
-    sections.push(`🏆 Goals:\n${goalParts.map(p => `  • ${p}`).join('\n')}`)
+  if (hasGoalActivity || goalParts.length > 0) {
+    sections.push(`🏆 Goals:\n${goalParts.length > 0 ? goalParts.map(p => `  • ${p}`).join('\n') : '  • No active goals this period'}`)
   }
 
   // --- Time Section ---
@@ -389,27 +451,33 @@ function generateAutoContext(insights: ReviewInsightsData | null, type: ReviewTy
   // --- Analytics / Trends Section ---
   const analytParts: string[] = []
   if (insights.productivityTrend) {
-    const arrow = insights.productivityTrend === 'improving' ? '↑' : insights.productivityTrend === 'declining' ? '↓' : '→'
-    analytParts.push(`Productivity: ${arrow} ${insights.productivityTrend}`)
+    const arrow = insights.productivityTrend === 'improving' ? '📈' : insights.productivityTrend === 'declining' ? '📉' : '➡️'
+    const emoji = insights.productivityTrend === 'improving' ? '✨' : insights.productivityTrend === 'declining' ? '⚡' : '🔄'
+    analytParts.push(`${emoji} Task productivity: ${arrow} ${insights.productivityTrend}`)
   }
   if (insights.habitTrend) {
-    const arrow = insights.habitTrend === 'improving' ? '↑' : insights.habitTrend === 'declining' ? '↓' : '→'
-    analytParts.push(`Habit trend: ${arrow} ${insights.habitTrend}`)
+    const arrow = insights.habitTrend === 'improving' ? '📈' : insights.habitTrend === 'declining' ? '📉' : '➡️'
+    const emoji = insights.habitTrend === 'improving' ? '💪' : insights.habitTrend === 'declining' ? '💭' : '🔄'
+    analytParts.push(`${emoji} Habit consistency: ${arrow} ${insights.habitTrend}`)
   }
   if (insights.consistencyScore > 0) {
-    analytParts.push(`Overall consistency score: ${insights.consistencyScore}%`)
+    const rating = insights.consistencyScore >= 80 ? '🌟 Excellent' : insights.consistencyScore >= 60 ? '👍 Good' : insights.consistencyScore >= 40 ? '📝 Fair' : '🔨 Building'
+    analytParts.push(`${rating} - Overall consistency: ${insights.consistencyScore}%`)
   }
-  if ((insights.analyticsProductivityScore || 0) > 0) {
-    analytParts.push(`Productivity score: ${insights.analyticsProductivityScore}%`)
+  if (insights.mostProductiveDay) {
+    const dayName = format(safeParseDate(insights.mostProductiveDay), 'EEEE, MMM d')
+    analytParts.push(`⭐ Most productive: ${dayName}`)
   }
   if (analytParts.length > 0) {
-    sections.push(`📊 Analytics:\n${analytParts.map(p => `  • ${p}`).join('\n')}`)
+    sections.push(`📊 Trends & Insights:\n${analytParts.map(p => `  • ${p}`).join('\n')}`)
   }
   
-  if (sections.length === 0) return ''
+  if (sections.length === 0) {
+    return `No significant activity recorded for this period. Start tracking tasks, habits, or goals to see insights here.`
+  }
   
   const periodLabel = type === 'daily' ? 'today' : type === 'weekly' ? 'this week' : 'this month'
-  return `Here's what happened ${periodLabel}:\n\n${sections.join('\n\n')}`
+  return `📌 Summary for ${periodLabel}:\n\n${sections.join('\n\n')}\n\n💡 Use these insights to guide your reflection and plan your next actions.`
 }
 
 // Insight Card Component
@@ -1332,8 +1400,8 @@ function ReviewDetailModal({ review, open, onClose }: {
   
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-3xl max-h-[95vh] bg-white dark:bg-slate-950 border-0 shadow-xl flex flex-col gap-0 m-2 p-6 overflow-hidden">
-        <DialogHeader className="flex-shrink-0 border-b border-gray-200 dark:border-gray-800 pb-4">
+      <DialogContent className="max-w-3xl max-h-[95vh] bg-white dark:bg-zinc-900 border-0 shadow-xl flex flex-col gap-0 m-2 p-6 overflow-hidden">
+        <DialogHeader className="flex-shrink-0 border-b border-gray-200 dark:border-zinc-700 pb-4">
           <div className="flex items-start justify-between">
             <div className="flex-1">
               <DialogTitle className="text-2xl font-bold flex items-center gap-3">
@@ -1343,11 +1411,14 @@ function ReviewDetailModal({ review, open, onClose }: {
                 {formatPeriodLabel(review.type as ReviewType, review.period_start, review.period_end)}
               </DialogTitle>
               <div className="flex items-center gap-2 mt-3">
-                <Badge variant={review.status === 'completed' ? 'default' : 'secondary'} className="border-0">
+                <Badge 
+                  variant={review.status === 'completed' ? 'default' : 'secondary'} 
+                  className="border-0 pointer-events-none capitalize"
+                >
                   {review.status}
                 </Badge>
                 {sentimentConfig && SentimentIcon && (
-                  <Badge className={cn("border-0 px-3", sentimentConfig.color)}>
+                  <Badge className={cn("border-0 px-3 py-1 pointer-events-none shadow-sm", sentimentConfig.bgColor, sentimentConfig.color)}>
                     <SentimentIcon className="h-3.5 w-3.5 mr-2" />
                     {sentimentConfig.label}
                   </Badge>
@@ -1400,7 +1471,7 @@ function ReviewDetailModal({ review, open, onClose }: {
                 <h3 className="font-semibold text-lg text-foreground mb-3">Responses</h3>
                 <div className="space-y-3">
                   {Object.entries(responses).map(([key, value], index) => (
-                    <div key={index} className="p-4 rounded-lg bg-gray-50/50 dark:bg-gray-900/50 border border-gray-200/50 dark:border-gray-800/50">
+                    <div key={index} className="p-4 rounded-lg bg-gray-50/50 dark:bg-zinc-800/50 border border-gray-200/50 dark:border-zinc-700/50">
                       <div className="text-sm font-medium text-foreground mb-1 capitalize">
                         {key.replace(/_/g, ' ')}
                       </div>
@@ -1414,9 +1485,9 @@ function ReviewDetailModal({ review, open, onClose }: {
             )}
 
             {/* Metadata */}
-            <div className="pt-4 border-t border-gray-200 dark:border-gray-800">
+            <div className="pt-4 border-t border-gray-200 dark:border-zinc-700">
               <p className="text-xs text-muted-foreground">
-                Created: {format(parseISO(review.created_at), 'PPP · h:mm a')}
+                Created: {format(safeParseDate(review.created_at), 'PPP · h:mm a')}
               </p>
             </div>
           </div>
@@ -1432,6 +1503,7 @@ export default function Reviews() {
   const queryClient = useQueryClient()
   const electron = useElectron()
   const [activeTab, setActiveTab] = useState<ReviewType>('daily')
+  const [dayKey, setDayKey] = useState(() => format(new Date(), 'yyyy-MM-dd'))
   const [isEditing, setIsEditing] = useState(false)
   const [editingReview, setEditingReview] = useState<Review | null>(null)
   const [selectedReview, setSelectedReview] = useState<Review | null>(null)
@@ -1453,7 +1525,16 @@ export default function Reviews() {
   // Update period when tab changes
   useEffect(() => {
     setCurrentPeriod(getPeriodDates(activeTab))
-  }, [activeTab])
+  }, [activeTab, dayKey])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const nextDayKey = format(new Date(), 'yyyy-MM-dd')
+      setDayKey((prev) => (prev === nextDayKey ? prev : nextDayKey))
+    }, 60 * 1000)
+
+    return () => clearInterval(interval)
+  }, [])
 
   // Fetch reviews
   const { data: reviews = [], isLoading: loadingReviews } = useQuery({
@@ -1467,18 +1548,18 @@ export default function Reviews() {
   })
 
   const { data: taskStatsSnapshot } = useQuery<TaskTabStatsSnapshot>({
-    queryKey: ['task-stats', 'reviews-sync'],
+    queryKey: ['task-stats', 'reviews-sync', dayKey],
     queryFn: () => database.getTaskTabStats(),
     staleTime: 30_000,
   })
 
   const { data: allHabitCompletions = [] } = useQuery<HabitCompletion[]>({
-    queryKey: ['habit-completions-all', 'reviews'],
+    queryKey: ['habit-completions-all', 'reviews', dayKey],
     queryFn: async () => {
       if (!electron.isReady) return []
       const earliestHabitDate = habits.length > 0
         ? habits
-            .map((habit) => format(parseISO(habit.created_at), 'yyyy-MM-dd'))
+            .map((habit) => format(safeParseDate(habit.created_at), 'yyyy-MM-dd'))
             .sort()[0]
         : format(new Date(), 'yyyy-MM-dd')
       const today = format(new Date(), 'yyyy-MM-dd')
@@ -1497,11 +1578,11 @@ export default function Reviews() {
   const latestCompletedReview = useMemo(() => {
     return reviews
       .filter((r) => r.status === 'completed')
-      .sort((a, b) => parseISO(b.updated_at).getTime() - parseISO(a.updated_at).getTime())[0] || null
+      .sort((a, b) => safeParseDate(b.updated_at).getTime() - safeParseDate(a.updated_at).getTime())[0] || null
   }, [reviews])
 
   const periodRange = useMemo(
-    () => ({ start: parseISO(currentPeriod.start), end: parseISO(currentPeriod.end) }),
+    () => ({ start: safeParseDate(currentPeriod.start), end: safeParseDate(currentPeriod.end) }),
     [currentPeriod.end, currentPeriod.start]
   )
 
@@ -1559,14 +1640,14 @@ export default function Reviews() {
 
     const tasksCreated = tasks.filter((task) => {
       if (task.deleted_at) return false
-      const created = parseISO(task.created_at)
+      const created = safeParseDate(task.created_at)
       return created >= periodRange.start && created <= periodRange.end
     }).length
 
     const incompleteStatuses = new Set(['pending', 'in-progress', 'blocked', 'skipped'])
     const overdueTasksCount = tasks.filter((task) => {
       if (task.deleted_at || !task.due_date) return false
-      const due = parseISO(task.due_date)
+      const due = safeParseDate(task.due_date)
       if (!(due >= periodRange.start && due <= periodRange.end)) return false
       if (due >= startOfDay(new Date())) return false
       return incompleteStatuses.has(task.status)
@@ -1574,7 +1655,7 @@ export default function Reviews() {
 
     const blockedTasksCount = tasks.filter((task) => {
       if (task.deleted_at || task.status !== 'blocked') return false
-      const updated = parseISO(task.updated_at)
+      const updated = safeParseDate(task.updated_at)
       return updated >= periodRange.start && updated <= periodRange.end
     }).length
 
@@ -1601,10 +1682,10 @@ export default function Reviews() {
     const topCompletedTasks = tasks
       .filter((task) => {
         if (task.deleted_at || !task.completed_at) return false
-        const completedAt = parseISO(task.completed_at)
+        const completedAt = safeParseDate(task.completed_at)
         return completedAt >= periodRange.start && completedAt <= periodRange.end
       })
-      .sort((a, b) => parseISO(b.completed_at || b.updated_at).getTime() - parseISO(a.completed_at || a.updated_at).getTime())
+      .sort((a, b) => safeParseDate(b.completed_at || b.updated_at).getTime() - safeParseDate(a.completed_at || a.updated_at).getTime())
       .slice(0, 5)
       .map((task) => ({ id: task.id, title: task.title, completedAt: task.completed_at || task.updated_at }))
 
@@ -1615,13 +1696,13 @@ export default function Reviews() {
 
     const goalsAtRisk = goals
       .filter((goal) => goal.status === 'active' && !!goal.target_date && !goal.deleted_at)
-      .filter((goal) => parseISO(goal.target_date!) < periodRange.end)
+      .filter((goal) => safeParseDate(goal.target_date!) < periodRange.end)
       .slice(0, 5)
       .map((goal) => ({ id: goal.id, title: goal.title, progress: goal.progress || 0, reason: 'Overdue' }))
 
     const dailyTaskCounts = new Map<string, number>()
     topCompletedTasks.forEach((task) => {
-      const key = format(parseISO(task.completedAt), 'yyyy-MM-dd')
+      const key = format(safeParseDate(task.completedAt), 'yyyy-MM-dd')
       dailyTaskCounts.set(key, (dailyTaskCounts.get(key) || 0) + 1)
     })
     const sortedTaskDays = Array.from(dailyTaskCounts.entries()).sort((a, b) => b[1] - a[1])
@@ -1683,7 +1764,7 @@ export default function Reviews() {
     return getCombinedCompletionRate(latestInsights)
   }, [latestInsights])
 
-  const reviewStreaks = useMemo(() => calculateReviewStreaks(allReviews), [allReviews])
+  const reviewStreaks = useMemo(() => calculateReviewStreaks(allReviews), [allReviews, dayKey])
 
   // Create review mutation
   const createMutation = useMutation({
@@ -1957,7 +2038,7 @@ export default function Reviews() {
                         </p>
                         <p className="text-xs text-muted-foreground mt-1">
                           {existingReview 
-                            ? `${existingReview.status === 'completed' ? 'Completed' : 'Draft'} • ${format(parseISO(existingReview.updated_at), 'PPp')}`
+                            ? `${existingReview.status === 'completed' ? 'Completed' : 'Draft'} • ${format(safeParseDate(existingReview.updated_at), 'PPp')}`
                             : 'Not started yet'
                           }
                         </p>
@@ -2085,3 +2166,4 @@ export default function Reviews() {
     </div>
   )
 }
+

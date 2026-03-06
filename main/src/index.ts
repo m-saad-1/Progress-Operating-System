@@ -14,6 +14,9 @@ console.log('[MAIN] main/src/index.ts started');
 
 // Set app name for system notifications
 app.setName('Progress OS');
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.progressos.app');
+}
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;

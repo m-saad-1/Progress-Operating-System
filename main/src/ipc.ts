@@ -1,4 +1,4 @@
-import { ipcMain, dialog, app, BrowserWindow } from 'electron';
+import { ipcMain, dialog, app, BrowserWindow, nativeImage } from 'electron';
 import path from 'path';
 import fs from 'fs-extra';
 import { getDatabase } from './database';
@@ -235,6 +235,79 @@ export function initializeIpcMain(mainWindow: BrowserWindow) {
 
   ipcMain.handle('app:getVersion', () => {
     return app.getVersion();
+  });
+
+  ipcMain.handle('app:getIconPath', () => {
+    // Return platform-specific icon path for notifications
+    let iconFileName: string;
+    
+    if (process.platform === 'win32') {
+      // Windows: use .ico format (or .png as fallback)
+      iconFileName = 'icon.png'; // Windows notifications work better with PNG
+    } else if (process.platform === 'darwin') {
+      // macOS: use .png (icns is for app bundle)
+      iconFileName = 'icon.png';
+    } else {
+      // Linux: use .png format
+      iconFileName = 'icon.png';
+    }
+    
+    const iconPath = path.join(__dirname, '..', '..', 'build', iconFileName);
+    
+    // Verify the icon exists and return absolute path
+    if (fs.existsSync(iconPath)) {
+      // Return as file:// URL for better cross-platform compatibility
+      return `file://${iconPath.replace(/\\/g, '/')}`;
+    }
+    
+    // Fallback to icon.png if platform-specific icon doesn't exist
+    const fallbackPath = path.join(__dirname, '..', '..', 'build', 'icon.png');
+    if (fs.existsSync(fallbackPath)) {
+      return `file://${fallbackPath.replace(/\\/g, '/')}`;
+    }
+    
+    console.warn('[IPC] Notification icon not found at expected path');
+    return undefined;
+  });
+
+  // Native notification with app icon
+  ipcMain.handle('app:showNotification', (event, options: { title: string; body: string }) => {
+    try {
+      // Get the icon path for notifications
+      const iconPath = path.join(__dirname, '..', '..', 'build', 'icon.png');
+      
+      // Create notification options
+      const notificationOptions: any = {
+        title: options.title,
+        body: options.body,
+        silent: false,
+      };
+
+      // Add icon if it exists
+      // On Windows: this improves icon display in development mode
+      // On macOS: the app icon is used automatically via the bundle
+      // On Linux: this is required for the icon to display
+      if (fs.existsSync(iconPath)) {
+        notificationOptions.icon = nativeImage.createFromPath(iconPath);
+      }
+
+      // On Windows, ensure the app user model ID is set for proper notification display
+      // This is already set in main/src/index.ts with app.setAppUserModelId('com.progressos.app')
+
+      // Create and show the notification
+      // Using Electron's native Notification ensures the app icon is displayed correctly
+      const { Notification } = require('electron');
+      const notification = new Notification(notificationOptions);
+      notification.show();
+      
+      return { success: true };
+    } catch (error) {
+      console.error('[IPC] Failed to show notification:', error);
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to show notification' 
+      };
+    }
   });
 
   ipcMain.handle('app:relaunch', () => {

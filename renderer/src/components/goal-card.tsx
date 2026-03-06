@@ -102,7 +102,7 @@ export function GoalCard({
 
   return (
     <Card interactive className={cn(
-      "transition-all duration-300",
+      "transition-all duration-300 border-0 shadow-sm",
       compact && "h-full"
     )}>
       <CardHeader className={cn(
@@ -121,16 +121,28 @@ export function GoalCard({
               </CardTitle>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Badge variant={getCategoryColor(goal.category) as any}>
+              <Badge 
+                variant={getCategoryColor(goal.category) as any}
+                className="text-xs font-medium"
+              >
                 {goal.category}
               </Badge>
-              <Badge variant={getPriorityColor(goal.priority) as any}>
-                Priority: {goal.priority}
+              <Badge 
+                variant={getPriorityColor(goal.priority) as any}
+                className="text-xs font-medium"
+              >
+                {goal.priority}
               </Badge>
-              <Badge variant="outline">
-                Frequency: {goal.review_frequency || 'weekly'}
+              <Badge 
+                variant="outline"
+                className="text-xs font-medium bg-blue-50/80 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/40"
+              >
+                {goal.review_frequency || 'weekly'}
               </Badge>
-              <Badge variant={getStatusColor(goal.status) as any}>
+              <Badge 
+                variant={getStatusColor(goal.status) as any}
+                className="text-xs font-medium"
+              >
                 {goal.status}
               </Badge>
             </div>
@@ -208,13 +220,16 @@ export function GoalCard({
                 <Badge
                   key={index}
                   variant="outline"
-                  className="text-xs"
+                  className="text-xs bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40"
                 >
                   {tag}
                 </Badge>
               ))}
               {goal.tags.length > 3 && (
-                <Badge variant="outline" className="text-xs">
+                <Badge
+                  variant="outline"
+                  className="text-xs bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40"
+                >
                   +{goal.tags.length - 3} more
                 </Badge>
               )}

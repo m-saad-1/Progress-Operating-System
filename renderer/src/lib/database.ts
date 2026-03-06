@@ -1,4 +1,5 @@
 import { endOfMonth, endOfWeek, startOfMonth, startOfWeek } from 'date-fns'
+import { safeToDayKeyParts } from '@/lib/date-safe'
 import { calculateHabitStreaks } from '@/lib/habit-streaks'
 import type { Habit as SharedHabit, HabitCompletion as SharedHabitCompletion } from '@/types'
 
@@ -116,7 +117,7 @@ export interface Note {
   id: string;
   title: string;
   content: string;
-  type: 'free' | 'daily' | 'weekly' | 'goal' | 'task';
+  type: 'free' | 'daily' | 'weekly' | 'goal' | 'task' | 'challenge' | 'career';
   mood: string | null;
   goal_id: string | null;
   task_id: string | null;
@@ -289,7 +290,7 @@ export interface UpdateHabitDTO extends Partial<CreateHabitDTO> {
 export interface CreateNoteDTO {
   title: string;
   content: string;
-  type: Note['type'];
+  type: 'free' | 'daily' | 'weekly' | 'goal' | 'task' | 'challenge' | 'career';
   mood?: string;
   goal_id?: string;
   task_id?: string;
@@ -503,6 +504,43 @@ const normalizeDailyProgressFromDb = (
 
 const serializeDailyProgress = (history?: Record<string, DailyTaskState>): string => {
   return JSON.stringify(history || {})
+}
+
+/**
+ * Intelligently infer task state for a historical day.
+ * Checks completed_at timestamp and historical snapshots to determine progress.
+ */
+const inferTaskStateForDay = (
+  task: { completed_at?: string | null; progress?: number | null; status?: DailyTaskState['status'] | null; is_continuous?: number | boolean },
+  dayKey: string,
+  normalizedHistory: Record<string, DailyTaskState>,
+  _todayKey: string,
+  _getTaskLifecycleEndKey: (task: any) => string
+): { progress: number; status: DailyTaskState['status'] } => {
+  // If task was completed and completed_at <= dayKey, infer 100% completion
+  if (task.completed_at) {
+    const completedDayKey = getLocalDateString(new Date(task.completed_at))
+    if (completedDayKey <= dayKey) {
+      return { progress: task.progress ?? 100, status: 'completed' }
+    }
+  }
+
+  // For continuous tasks, find nearest historical snapshot
+  const isContinuous = task.is_continuous === 1 || task.is_continuous === true
+  if (isContinuous) {
+    const sortedDays = Object.keys(normalizedHistory).sort()
+    const nearestDay = sortedDays
+      .filter(d => d <= dayKey)
+      .reverse()[0]
+    
+    if (nearestDay) {
+      const entry = normalizedHistory[nearestDay]
+      return { progress: entry.progress ?? 0, status: entry.status ?? 'pending' }
+    }
+  }
+
+  // Default to pending with 0% if no evidence of completion
+  return { progress: 0, status: 'pending' }
 }
 
 const TASK_METADATA_DELETED_SENTINEL = '__deleted_task_metadata__'
@@ -1965,11 +2003,17 @@ export class DatabaseService {
       return dayKey === todayKey && isPausedNow
     }
 
+    const getTaskLifecycleEndKey = (task: RawDashboardTaskRecord): string => {
+      if (!task.deleted_at) return todayKey;
+      const deletedDay = toLocalDayKey(task.deleted_at);
+      return deletedDay < todayKey ? deletedDay : todayKey;
+    };
+
     const makeEntry = (
       task: RawDashboardTaskRecord,
       dayKey: string,
       normalizedHistory: Record<string, DailyTaskState>
-    ) => {
+    ): { progress: number; status: DailyTaskState['status'] } => {
       const historyEntry = normalizedHistory[dayKey]
       if (historyEntry) {
         return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' }
@@ -1982,10 +2026,7 @@ export class DatabaseService {
         }
       }
 
-      return {
-        progress: 0,
-        status: 'pending' as const,
-      }
+      return inferTaskStateForDay(task, dayKey, normalizedHistory, todayKey, getTaskLifecycleEndKey)
     }
     
     const queries = [
@@ -2340,11 +2381,17 @@ export class DatabaseService {
       return dayKey >= startKey && dayKey <= endKey;
     };
 
+    const getTaskLifecycleEndKey = (task: RawTaskStatsRecord): string => {
+      if (!task.deleted_at) return todayKey;
+      const deletedDay = toLocalDayKey(task.deleted_at);
+      return deletedDay < todayKey ? deletedDay : todayKey;
+    };
+
     const makeEntry = (
       task: RawTaskStatsRecord,
       dayKey: string,
       normalizedHistory: Record<string, DailyTaskState>
-    ) => {
+    ): { progress: number; status: DailyTaskState['status'] } => {
       const historyEntry = normalizedHistory[dayKey];
       if (historyEntry) {
         return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' };
@@ -2357,10 +2404,7 @@ export class DatabaseService {
         };
       }
 
-      return {
-        progress: 0,
-        status: 'pending' as const,
-      };
+      return inferTaskStateForDay(task, dayKey, normalizedHistory, todayKey, getTaskLifecycleEndKey);
     };
 
     const isPausedOnDay = (
@@ -2389,12 +2433,6 @@ export class DatabaseService {
       }
 
       return keys;
-    };
-
-    const getTaskLifecycleEndKey = (task: RawTaskStatsRecord): string => {
-      if (!task.deleted_at) return todayKey;
-      const deletedDay = toLocalDayKey(task.deleted_at);
-      return deletedDay < todayKey ? deletedDay : todayKey;
     };
 
     const computePeriodStats = (
@@ -2646,11 +2684,17 @@ export class DatabaseService {
       return dayKey >= startKey && dayKey <= endKey;
     };
 
+    const getTaskLifecycleEndKey = (task: RawTaskStatsRecord): string => {
+      if (!task.deleted_at) return todayKey;
+      const deletedDay = toLocalDayKey(task.deleted_at);
+      return deletedDay < todayKey ? deletedDay : todayKey;
+    };
+
     const makeEntry = (
       task: RawTaskStatsRecord,
       dayKey: string,
       normalizedHistory: Record<string, DailyTaskState>
-    ) => {
+    ): { progress: number; status: DailyTaskState['status'] } => {
       const historyEntry = normalizedHistory[dayKey];
       if (historyEntry) {
         return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' };
@@ -2663,10 +2707,7 @@ export class DatabaseService {
         };
       }
 
-      return {
-        progress: 0,
-        status: 'pending' as const,
-      };
+      return inferTaskStateForDay(task, dayKey, normalizedHistory, todayKey, getTaskLifecycleEndKey);
     };
 
     const isPausedOnDay = (
@@ -2695,12 +2736,6 @@ export class DatabaseService {
       }
 
       return keys;
-    };
-
-    const getTaskLifecycleEndKey = (task: RawTaskStatsRecord): string => {
-      if (!task.deleted_at) return todayKey;
-      const deletedDay = toLocalDayKey(task.deleted_at);
-      return deletedDay < todayKey ? deletedDay : todayKey;
     };
 
     const computePeriodStats = (
@@ -2900,7 +2935,7 @@ export class DatabaseService {
     };
   }
 
-  async getTaskAnalyticsChartSnapshot(): Promise<TaskAnalyticsChartSnapshot> {
+  async getTaskAnalyticsChartSnapshot(monthDate?: string | Date): Promise<TaskAnalyticsChartSnapshot> {
     type RawTaskStatsRecord = {
       id: string;
       priority: Task['priority'];
@@ -2935,12 +2970,50 @@ export class DatabaseService {
       return getLocalDateString(new Date(isoLike));
     };
 
+    const parseLocalDateKey = (dateKey: string): Date => {
+      const parts = safeToDayKeyParts(dateKey);
+      if (!parts) {
+        return new Date(dateKey);
+      }
+      const [year, month, day] = parts;
+      if (!year || !month || !day) {
+        return new Date(dateKey);
+      }
+      return new Date(year, month - 1, day, 0, 0, 0, 0);
+    };
+
+    const resolveMonthDate = (value?: string | Date): Date => {
+      if (value instanceof Date) {
+        return new Date(value.getFullYear(), value.getMonth(), value.getDate(), 0, 0, 0, 0);
+      }
+
+      if (typeof value === 'string') {
+        const monthOnly = value.match(/^(\d{4})-(\d{2})$/);
+        if (monthOnly) {
+          return new Date(Number(monthOnly[1]), Number(monthOnly[2]) - 1, 1, 0, 0, 0, 0);
+        }
+
+        const fullDay = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (fullDay) {
+          return new Date(Number(fullDay[1]), Number(fullDay[2]) - 1, Number(fullDay[3]), 0, 0, 0, 0);
+        }
+
+        const parsed = new Date(value);
+        if (!Number.isNaN(parsed.getTime())) {
+          return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate(), 0, 0, 0, 0);
+        }
+      }
+
+      const now = new Date();
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    };
+
     const inRange = (dayKey: string, startKey: string, endKey: string): boolean => {
       return dayKey >= startKey && dayKey <= endKey;
     };
 
     const getDayFromDateKey = (dateKey: string): string => {
-      const date = new Date(`${dateKey}T00:00:00`);
+      const date = parseLocalDateKey(dateKey);
       return date.toLocaleDateString(undefined, { weekday: 'short' });
     };
 
@@ -2953,7 +3026,7 @@ export class DatabaseService {
     };
 
     const getFullDateLabel = (dateKey: string): string => {
-      const date = new Date(`${dateKey}T00:00:00`);
+      const date = parseLocalDateKey(dateKey);
       return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
     };
 
@@ -2962,13 +3035,18 @@ export class DatabaseService {
       FROM tasks
     `);
 
-    const today = new Date();
-    const todayKey = getLocalDateString(today);
+    const today = resolveMonthDate(monthDate);
+    const currentDate = new Date();
+    const currentDateNormalized = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 0, 0, 0, 0);
+    // CRITICAL: todayKey MUST always be the actual current date for weight calculation cutoffs
+    // NOT the selected month's date. This ensures previous months calculate complete data.
+    const todayKey = getLocalDateString(currentDateNormalized);
+    const isCurrentMonth = today.getMonth() === currentDate.getMonth() && today.getFullYear() === currentDate.getFullYear();
 
     const buildDayKeys = (startKey: string, endKey: string): string[] => {
       const keys: string[] = [];
-      const cursor = new Date(startKey);
-      const end = new Date(endKey);
+      const cursor = parseLocalDateKey(startKey);
+      const end = parseLocalDateKey(endKey);
 
       while (cursor.getTime() <= end.getTime()) {
         keys.push(getLocalDateString(cursor));
@@ -2988,7 +3066,7 @@ export class DatabaseService {
       task: RawTaskStatsRecord,
       dayKey: string,
       normalizedHistory: Record<string, DailyTaskState>
-    ) => {
+    ): { progress: number; status: DailyTaskState['status'] } => {
       const historyEntry = normalizedHistory[dayKey];
       if (historyEntry) {
         return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' };
@@ -3001,10 +3079,7 @@ export class DatabaseService {
         };
       }
 
-      return {
-        progress: 0,
-        status: 'pending' as const,
-      };
+      return inferTaskStateForDay(task, dayKey, normalizedHistory, todayKey, getTaskLifecycleEndKey);
     };
 
     const isPausedOnDay = (
@@ -3032,6 +3107,9 @@ export class DatabaseService {
       let earnedWeight = 0;
 
       records.forEach((task) => {
+        // NOTE: Do NOT skip paused tasks here - paused status may vary by day.
+        // The isPausedOnDay check below will properly exclude them for specific days.
+        
         const createdDay = toLocalDayKey(task.created_at);
         const lifecycleEndKey = getTaskLifecycleEndKey(task);
         if (createdDay > lifecycleEndKey) {
@@ -3097,8 +3175,15 @@ export class DatabaseService {
     // Progress Trend: daily weighted completion rate with rolling average line
     const trendRates: number[] = [];
     const monthlyTrend: TaskMonthlyTrendPoint[] = [];
+    
+    // For current month: use today as end date
+    // For historical months: use last day of that month
+    const trendEndDate = isCurrentMonth 
+      ? currentDate
+      : new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    
     for (let i = 29; i >= 0; i--) {
-      const date = new Date(today);
+      const date = new Date(trendEndDate);
       date.setDate(date.getDate() - i);
       const dateKey = getLocalDateString(date);
       const dayStats = computePeriodWeights(taskRecords, dateKey, dateKey, dateKey);
@@ -3123,15 +3208,16 @@ export class DatabaseService {
       });
     }
 
-    // Daily Activity: full current month (complete month grid)
-    const currentMonthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-    const daysInCurrentMonth = currentMonthEnd.getDate();
+    // Daily Activity: full month grid for selected month
+    const selectedMonthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    const daysInSelectedMonth = selectedMonthEnd.getDate();
+    const currentDayKey = getLocalDateString(new Date());
 
     const dailyActivity: TaskDailyActivityPoint[] = [];
-    for (let dayNumber = 1; dayNumber <= daysInCurrentMonth; dayNumber++) {
+    for (let dayNumber = 1; dayNumber <= daysInSelectedMonth; dayNumber++) {
       const date = new Date(today.getFullYear(), today.getMonth(), dayNumber);
       const dateKey = getLocalDateString(date);
-      const isFuture = dateKey > todayKey;
+      const isFuture = dateKey > currentDayKey;
       const dayStats = isFuture
         ? { plannedWeight: 0, earnedWeight: 0, weightedProgress: 0 }
         : computePeriodWeights(taskRecords, dateKey, dateKey, dateKey);

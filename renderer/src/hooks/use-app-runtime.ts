@@ -149,6 +149,36 @@ export function useAppRuntime() {
 
   const syncTimerRef = useRef<number | null>(null)
 
+  // Helper function for web notification fallback
+  const tryWebNotification = async (title: string, message: string) => {
+    if (
+      typeof window === 'undefined' ||
+      !('Notification' in window)
+    ) {
+      return
+    }
+
+    if (Notification.permission === 'granted') {
+      try {
+        // Try to get the icon path for web notification
+        let iconPath: string | undefined
+        if (window.electronAPI?.getIconPath) {
+          iconPath = await window.electronAPI.getIconPath()
+        }
+
+        const notificationOptions: NotificationOptions = {
+          body: message,
+          ...(iconPath && { icon: iconPath })
+        }
+        new Notification(title, notificationOptions)
+      } catch (error) {
+        console.warn('Failed to create web notification:', error)
+      }
+    } else if (Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
+  }
+
   const sendReminder = (
     title: string,
     message: string,
@@ -173,14 +203,19 @@ export function useAppRuntime() {
 
     if (
       store.notificationSettings.enabled &&
-      store.notificationSettings.desktop &&
-      typeof window !== 'undefined' &&
-      'Notification' in window
+      store.notificationSettings.desktop
     ) {
-      if (Notification.permission === 'granted') {
-        new Notification(title, { body: message })
-      } else if (Notification.permission === 'default') {
-        Notification.requestPermission()
+      // Use native Electron notification for better icon support across platforms
+      if (window.electronAPI?.showNotification) {
+        window.electronAPI.showNotification({ title, body: message })
+          .catch((error: unknown) => {
+            console.warn('Failed to show native notification:', error)
+            // Fallback to web notification
+            tryWebNotification(title, message)
+          })
+      } else {
+        // Fallback to web notification if Electron API is not available
+        tryWebNotification(title, message)
       }
     }
 

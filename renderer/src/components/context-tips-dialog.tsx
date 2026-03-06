@@ -162,16 +162,16 @@ export function ContextTipsDialog({
           <HelpCircle className="relative z-10 h-[1.2rem] w-[1.2rem]" />
         </button>
       </DialogTrigger>
-      <DialogContent className={cn('sm:max-w-xl bg-white text-slate-900 dark:bg-white dark:text-slate-900 border-slate-200 shadow-xl', contentClassName)}>
+      <DialogContent className={cn('sm:max-w-xl bg-white dark:bg-zinc-900 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-zinc-700 shadow-xl', contentClassName)}>
         <DialogHeader>
-          <DialogTitle className="text-slate-900">{title}</DialogTitle>
-          {description && <DialogDescription className="text-slate-600">{description}</DialogDescription>}
+          <DialogTitle className="text-slate-900 dark:text-slate-100">{title}</DialogTitle>
+          {description && <DialogDescription className="text-slate-600 dark:text-slate-400">{description}</DialogDescription>}
         </DialogHeader>
         <div className="max-h-[65vh] overflow-y-auto space-y-4 pr-1">
           {sections.map((section) => (
-            <div key={section.title} className="rounded-lg border border-slate-200 bg-white p-3.5">
-              <h4 className="text-sm font-semibold text-slate-900">{section.title}</h4>
-              <ul className="mt-2 space-y-1.5 text-sm text-slate-700">
+            <div key={section.title} className="rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-3.5">
+              <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{section.title}</h4>
+              <ul className="mt-2 space-y-1.5 text-sm text-slate-700 dark:text-slate-300">
                 {section.points.map((point) => (
                   <li key={point} className="leading-relaxed">• {point}</li>
                 ))}

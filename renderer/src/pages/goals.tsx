@@ -55,7 +55,9 @@ import {
   ListTodo,
   Repeat,
   Activity,
-  AlertCircle
+  AlertCircle,
+  Pause,
+  Play
 } from 'lucide-react'
 import { format, parseISO, isBefore, differenceInMonths, differenceInDays } from 'date-fns'
 import { useToaster } from '@/hooks/use-toaster'
@@ -723,7 +725,7 @@ export default function Goals() {
                   {formData.tags.length > 0 && (
                     <div className="flex flex-wrap gap-2 mt-2">
                       {formData.tags.map(tag => (
-                        <Badge key={tag} variant="secondary" className="gap-1">
+                        <Badge key={tag} variant="outline" className="gap-1 bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40">
                           {tag}
                           <button
                             type="button"
@@ -1019,7 +1021,7 @@ export default function Goals() {
                   <p className="text-sm font-medium">Tags</p>
                   <div className="flex flex-wrap gap-2">
                     {selectedGoal.tags.map((tag: string) => (
-                      <Badge key={tag} variant="outline" className="text-xs">{tag}</Badge>
+                      <Badge key={tag} variant="outline" className="text-xs bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40">{tag}</Badge>
                     ))}
                   </div>
                 </div>
@@ -1052,19 +1054,22 @@ export default function Goals() {
                     <MoreVertical className="h-4 w-4" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="bg-white dark:bg-zinc-900">
+                <DropdownMenuContent
+                  align="end"
+                  className="bg-white/95 dark:bg-zinc-900/95 border border-slate-200/80 dark:border-zinc-700/70 shadow-xl"
+                >
                   <DropdownMenuLabel>Actions</DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     onClick={() => setDetailsGoalId(goal.id)}
-                    className="cursor-pointer hover:bg-blue-500/10 focus:bg-blue-500/10"
+                    className="cursor-pointer text-blue-700 hover:bg-blue-500/10 focus:bg-blue-500/10 dark:text-blue-300"
                   >
                     <Eye className="mr-2 h-4 w-4" />
                     View Details
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => handleEdit(goal)}
-                    className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
+                    className="cursor-pointer text-emerald-700 hover:bg-emerald-500/10 focus:bg-emerald-500/10 dark:text-emerald-300"
                   >
                     <Edit className="mr-2 h-4 w-4" />
                     Edit
@@ -1073,16 +1078,26 @@ export default function Goals() {
                   {(goal.status === 'active' || goal.status === 'paused') && (
                     <DropdownMenuItem
                       onClick={() => handleStatusChange(goal.id, goal.status === 'active' ? 'paused' : 'active')}
-                      className="cursor-pointer hover:bg-yellow-500/10 focus:bg-yellow-500/10"
+                      className="cursor-pointer text-amber-700 hover:bg-amber-500/10 focus:bg-amber-500/10 dark:text-amber-300"
                     >
-                      {goal.status === 'active' ? 'Pause' : 'Resume'}
+                      {goal.status === 'active' ? (
+                        <>
+                          <Pause className="mr-2 h-4 w-4" />
+                          Pause
+                        </>
+                      ) : (
+                        <>
+                          <Play className="mr-2 h-4 w-4" />
+                          Resume
+                        </>
+                      )}
                     </DropdownMenuItem>
                   )}
 
                   {goal.status !== 'completed' && (
                     <DropdownMenuItem
                       onClick={() => handleStatusChange(goal.id, 'completed')}
-                      className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
+                      className="cursor-pointer text-emerald-700 hover:bg-emerald-500/10 focus:bg-emerald-500/10 dark:text-emerald-300"
                     >
                       <CheckCircle className="mr-2 h-4 w-4 text-green-500" />
                       Mark Complete
@@ -1092,7 +1107,7 @@ export default function Goals() {
                   {goal.status === 'completed' && (
                     <DropdownMenuItem
                       onClick={() => handleStatusChange(goal.id, 'active')}
-                      className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
+                      className="cursor-pointer text-blue-700 hover:bg-blue-500/10 focus:bg-blue-500/10 dark:text-blue-300"
                     >
                       <Target className="mr-2 h-4 w-4 text-blue-500" />
                       Reactivate
@@ -1102,7 +1117,7 @@ export default function Goals() {
                   {goal.status === 'archived' && (
                     <DropdownMenuItem
                       onClick={() => handleStatusChange(goal.id, 'active')}
-                      className="cursor-pointer hover:bg-green-500/10 focus:bg-green-500/10"
+                      className="cursor-pointer text-blue-700 hover:bg-blue-500/10 focus:bg-blue-500/10 dark:text-blue-300"
                     >
                       <Target className="mr-2 h-4 w-4 text-blue-500" />
                       Restore
@@ -1111,7 +1126,7 @@ export default function Goals() {
 
                   <DropdownMenuItem
                     onClick={() => handleDelete(goal.id)}
-                    className="cursor-pointer hover:bg-gray-500/10 focus:bg-gray-500/10"
+                    className="cursor-pointer text-amber-700 hover:bg-amber-500/10 focus:bg-amber-500/10 dark:text-amber-300"
                   >
                     <Archive className="mr-2 h-4 w-4" />
                     Archive
@@ -1212,12 +1227,12 @@ export default function Goals() {
                 {goal.tags && goal.tags.length > 0 && (
                   <div className="flex flex-wrap gap-1">
                     {goal.tags.slice(0, 3).map((tag: string) => (
-                      <Badge key={tag} variant="outline" className="text-xs">
+                      <Badge key={tag} variant="outline" className="text-xs bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40">
                         {tag}
                       </Badge>
                     ))}
                     {goal.tags.length > 3 && (
-                      <Badge variant="outline" className="text-xs">
+                      <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40">
                         +{goal.tags.length - 3}
                       </Badge>
                     )}

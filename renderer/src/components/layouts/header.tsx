@@ -260,7 +260,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
     const now = new Date()
     const todayStart = startOfToday()
     const todayEnd = endOfDay(todayStart)
-    const upcomingWindowEnd = addDays(todayStart, 2)
+    const upcomingWindowEnd = addDays(todayStart, 1)
 
     const activeTasks = tasks.filter((task: any) => !task.deleted_at)
     const overdueTasks = activeTasks.filter((task: any) => {
@@ -277,6 +277,18 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
       const due = toDateSafe(task.due_date)
       return !!due && due >= todayStart && due <= todayEnd
     })
+
+    // Helper function to create priority breakdown message
+    const getPriorityBreakdown = (taskList: any[]) => {
+      const highPriority = taskList.filter((t: any) => t.priority === 'high').length
+      const mediumPriority = taskList.filter((t: any) => t.priority === 'medium').length
+      const lowPriority = taskList.filter((t: any) => t.priority === 'low').length
+      const parts = []
+      if (highPriority > 0) parts.push(`${highPriority} high`)
+      if (mediumPriority > 0) parts.push(`${mediumPriority} medium`)
+      if (lowPriority > 0) parts.push(`${lowPriority} low`)
+      return parts.length > 0 ? ` (${parts.join(', ')})` : ''
+    }
 
     const blockedTasks = activeTasks.filter((task: any) => task.status === 'blocked')
 
@@ -322,7 +334,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
       alerts.push({
         id: 'critical-overdue-tasks',
         title: 'Overdue Tasks',
-        message: `${overdueTasks.length} task${overdueTasks.length === 1 ? '' : 's'} became overdue yesterday`,
+        message: `${overdueTasks.length} task${overdueTasks.length === 1 ? '' : 's'} became overdue yesterday${getPriorityBreakdown(overdueTasks)}`,
         type: 'error',
         time: 'Yesterday',
         read: false,
@@ -338,7 +350,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
       alerts.push({
         id: 'high-blocked-tasks',
         title: 'Blocked Tasks',
-        message: `${blockedTasks.length} blocked task${blockedTasks.length === 1 ? '' : 's'} slowing progress.`,
+        message: `${blockedTasks.length} blocked task${blockedTasks.length === 1 ? '' : 's'} slowing progress${getPriorityBreakdown(blockedTasks)}`,
         type: 'warning',
         time: 'Now',
         read: false,
@@ -354,7 +366,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
       alerts.push({
         id: 'high-due-soon',
         title: 'Upcoming Deadlines',
-        message: `${dueSoonTasks.length} task${dueSoonTasks.length === 1 ? '' : 's'} due within 48 hours.`,
+        message: `${dueSoonTasks.length} task${dueSoonTasks.length === 1 ? '' : 's'} due within 24 hours${getPriorityBreakdown(dueSoonTasks)}`,
         type: 'warning',
         time: 'Soon',
         read: false,
@@ -370,7 +382,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
       alerts.push({
         id: 'medium-due-today',
         title: 'Task Reminders',
-        message: `${dueTodayTasks.length} task${dueTodayTasks.length === 1 ? '' : 's'} due today.`,
+        message: `${dueTodayTasks.length} task${dueTodayTasks.length === 1 ? '' : 's'} due today${getPriorityBreakdown(dueTodayTasks)}`,
         type: 'info',
         time: 'Today',
         read: false,
@@ -911,6 +923,19 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
     }
   }
 
+  const getTypeBadgeClass = (type: SearchResult['type']) => {
+    switch (type) {
+      case 'task':
+        return 'bg-blue-50 text-blue-700 ring-1 ring-blue-200/70 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-400/30'
+      case 'habit':
+        return 'bg-violet-50 text-violet-700 ring-1 ring-violet-200/70 dark:bg-violet-500/15 dark:text-violet-300 dark:ring-violet-400/30'
+      case 'goal':
+        return 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/70 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/30'
+      case 'note':
+        return 'bg-amber-50 text-amber-700 ring-1 ring-amber-200/70 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-400/30'
+    }
+  }
+
   // Get status badge variant
   const getStatusVariant = (status?: string): 'default' | 'secondary' | 'destructive' | 'outline' => {
     if (!status) return 'secondary'
@@ -919,6 +944,23 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
     if (s === 'active' || s === 'in-progress') return 'secondary'
     if (s === 'overdue' || s === 'paused') return 'destructive'
     return 'outline'
+  }
+
+  const getStatusBadgeClass = (status?: string) => {
+    if (!status) return 'bg-slate-100 text-slate-700 ring-1 ring-slate-200/80 dark:bg-zinc-800 dark:text-zinc-200 dark:ring-zinc-700/80'
+    const s = status.toLowerCase()
+
+    if (s === 'completed' || s === 'done') {
+      return 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/70 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/30'
+    }
+    if (s === 'active' || s === 'in-progress' || s === 'daily' || s === 'weekly' || s === 'monthly') {
+      return 'bg-sky-50 text-sky-700 ring-1 ring-sky-200/70 dark:bg-sky-500/15 dark:text-sky-300 dark:ring-sky-400/30'
+    }
+    if (s === 'overdue' || s === 'paused' || s === 'blocked') {
+      return 'bg-rose-50 text-rose-700 ring-1 ring-rose-200/70 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-400/30'
+    }
+
+    return 'bg-slate-100 text-slate-700 ring-1 ring-slate-200/80 dark:bg-zinc-800 dark:text-zinc-200 dark:ring-zinc-700/80'
   }
 
   const highlightSearchMatch = useCallback((value: string, query: string) => {
@@ -1021,18 +1063,18 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
             {searchOpen && searchQuery.trim() && (
               <div 
                 ref={resultsRef}
-                className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-zinc-950 backdrop-blur-sm rounded-lg shadow-lg border border-border/60 overflow-hidden z-50"
+                className="absolute top-full left-0 right-0 mt-2 rounded-xl bg-white/95 dark:bg-zinc-950/95 backdrop-blur-md shadow-[0_18px_45px_-18px_rgba(15,23,42,0.35)] dark:shadow-[0_20px_55px_-22px_rgba(0,0,0,0.75)] ring-1 ring-slate-200/70 dark:ring-zinc-800/90 overflow-hidden z-50"
               >
                 {searchResults.length > 0 ? (
-                  <div className="max-h-96 overflow-y-auto py-1">
+                  <div className="max-h-96 overflow-y-auto p-2">
                     {searchResults.map((result, index) => (
                       <div
                         key={`${result.type}-${result.id}`}
                         className={cn(
-                          "flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors duration-150",
+                          "group flex items-center gap-3 rounded-lg px-3 py-2.5 cursor-pointer transition-all duration-150",
                           index === selectedIndex 
-                            ? "bg-green-500/12" 
-                            : "hover:bg-green-500/8"
+                            ? "bg-emerald-50/85 text-foreground shadow-sm ring-1 ring-emerald-200/70 dark:bg-emerald-500/10 dark:ring-emerald-400/25"
+                            : "hover:bg-slate-100/85 dark:hover:bg-zinc-900/80"
                         )}
                         onClick={() => handleSelectResult(result)}
                         onMouseEnter={() => setSelectedIndex(index)}
@@ -1044,23 +1086,35 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                         
                         {/* Content */}
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2.5">
                             <span className="font-medium truncate">{highlightSearchMatch(result.title, searchQuery)}</span>
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 flex-shrink-0">
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                'h-5 flex-shrink-0 rounded-md px-1.5 py-0 text-[10px] font-semibold tracking-wide uppercase border-0',
+                                getTypeBadgeClass(result.type)
+                              )}
+                            >
                               {getTypeLabel(result.type)}
                             </Badge>
                           </div>
                           
                           {/* Status and Tags */}
-                          <div className="flex items-center gap-2 mt-0.5">
+                          <div className="mt-1 flex items-center gap-2">
                             {result.status && (
-                              <Badge variant={getStatusVariant(result.status)} className="text-[10px] px-1.5 py-0 h-4">
+                              <Badge
+                                variant={getStatusVariant(result.status)}
+                                className={cn(
+                                  'h-5 rounded-md px-1.5 py-0 text-[10px] font-medium border-0',
+                                  getStatusBadgeClass(result.status)
+                                )}
+                              >
                                 {result.status}
                               </Badge>
                             )}
                             {result.tags && result.tags.length > 0 && (
-                              <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                                <Tag className="h-3 w-3" />
+                              <div className="flex items-center gap-1 text-xs text-muted-foreground/90">
+                                <Tag className="h-3 w-3 text-muted-foreground/70" />
                                 <span className="truncate max-w-[120px]">
                                   {highlightSearchMatch(result.tags.slice(0, 2).join(', '), searchQuery)}
                                   {result.tags.length > 2 && ` +${result.tags.length - 2}`}
@@ -1073,7 +1127,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                         {/* Keyboard hint */}
                         {index === selectedIndex && (
                           <div className="flex-shrink-0 text-xs text-muted-foreground">
-                            <kbd className="px-1.5 py-0.5 rounded bg-secondary/50 dark:bg-zinc-800/50">↵</kbd>
+                            <kbd className="rounded-md bg-slate-100/90 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-zinc-800/90 dark:text-zinc-300">↵</kbd>
                           </div>
                         )}
                       </div>
@@ -1091,18 +1145,18 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                 
                 {/* Footer hint */}
                 {searchResults.length > 0 && (
-                  <div className="px-3 py-2 border-t border-border/40 bg-muted/30 dark:bg-zinc-900/40 dark:border-border/25">
+                  <div className="px-3.5 py-2 bg-slate-50/80 shadow-[inset_0_1px_0_rgba(148,163,184,0.2)] dark:bg-zinc-900/70 dark:shadow-[inset_0_1px_0_rgba(63,63,70,0.45)]">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <div className="flex items-center gap-2">
-                        <kbd className="px-1.5 py-0.5 rounded bg-secondary/40 dark:bg-zinc-800/60 border border-border/30 dark:border-border/20">↑↓</kbd>
+                        <kbd className="rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-600 ring-1 ring-slate-200/70 dark:bg-zinc-800 dark:text-zinc-300 dark:ring-zinc-700/70">↑↓</kbd>
                         <span>Navigate</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <kbd className="px-1.5 py-0.5 rounded bg-secondary/40 dark:bg-zinc-800/60 border border-border/30 dark:border-border/20">↵</kbd>
+                        <kbd className="rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-600 ring-1 ring-slate-200/70 dark:bg-zinc-800 dark:text-zinc-300 dark:ring-zinc-700/70">↵</kbd>
                         <span>Select</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <kbd className="px-1.5 py-0.5 rounded bg-secondary/40 dark:bg-zinc-800/60 border border-border/30 dark:border-border/20">Esc</kbd>
+                        <kbd className="rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-600 ring-1 ring-slate-200/70 dark:bg-zinc-800 dark:text-zinc-300 dark:ring-zinc-700/70">Esc</kbd>
                         <span>Close</span>
                       </div>
                     </div>
@@ -1154,15 +1208,15 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
-            <DropdownMenuContent align="end" className="w-64 border-slate-200 bg-white text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 p-2">
-              <DropdownMenuLabel className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Open Filters</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/tasks')}>Tasks</DropdownMenuItem>
-              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/habits')}>Habits</DropdownMenuItem>
-              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/goals')}>Goals</DropdownMenuItem>
-              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/notes')}>Notes</DropdownMenuItem>
-              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100" onClick={() => navigate('/analytics')}>Analytics</DropdownMenuItem>
-              <DropdownMenuSeparator />
+            <DropdownMenuContent align="end" className="w-64 border-slate-200 bg-white text-slate-900 shadow-xl dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 p-2">
+              <DropdownMenuLabel className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-zinc-400">Open Filters</DropdownMenuLabel>
+              <DropdownMenuSeparator className="dark:bg-zinc-700" />
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100 dark:focus:bg-zinc-800 dark:focus:text-zinc-50" onClick={() => navigate('/tasks')}>Tasks</DropdownMenuItem>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100 dark:focus:bg-zinc-800 dark:focus:text-zinc-50" onClick={() => navigate('/habits')}>Habits</DropdownMenuItem>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100 dark:focus:bg-zinc-800 dark:focus:text-zinc-50" onClick={() => navigate('/goals')}>Goals</DropdownMenuItem>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100 dark:focus:bg-zinc-800 dark:focus:text-zinc-50" onClick={() => navigate('/notes')}>Notes</DropdownMenuItem>
+              <DropdownMenuItem className="rounded-md px-3 py-2 text-sm font-medium focus:bg-slate-100 dark:focus:bg-zinc-800 dark:focus:text-zinc-50" onClick={() => navigate('/analytics')}>Analytics</DropdownMenuItem>
+              <DropdownMenuSeparator className="dark:bg-zinc-700" />
               <DropdownMenuItem onClick={() => {
                 setSearchOpen(true)
                 searchInputRef.current?.focus()
@@ -1174,9 +1228,9 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-semibold text-slate-900 dark:text-zinc-50">Focus Search</span>
-                      <kbd className="inline-flex h-5 items-center rounded bg-green-500/12 px-1.5 text-[10px] font-medium text-green-700 dark:bg-green-500/15 dark:text-green-300">⌘K</kbd>
+                      <kbd className="inline-flex h-5 items-center rounded bg-green-500/12 px-1.5 text-[10px] font-medium text-green-700 dark:bg-green-500/20 dark:text-green-300">⌘K</kbd>
                     </div>
-                    <span className="mt-0.5 block text-xs leading-relaxed text-slate-600 dark:text-zinc-400">Quickly find tasks, habits, goals, and notes with smart match highlighting.</span>
+                    <span className="mt-0.5 block text-xs leading-relaxed text-slate-600 dark:text-zinc-300">Quickly find tasks, habits, goals, and notes with smart match highlighting.</span>
                   </div>
                 </div>
               </DropdownMenuItem>
@@ -1199,15 +1253,15 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                 )}
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-[22rem] border-slate-200 bg-white text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 p-2">
-              <DropdownMenuLabel className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Notifications</DropdownMenuLabel>
-              <DropdownMenuSeparator />
+            <DropdownMenuContent align="end" className="w-[22rem] border-slate-200 bg-white text-slate-900 shadow-xl dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 p-2 max-h-[32rem] overflow-y-auto">
+              <DropdownMenuLabel className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-zinc-400">Notifications</DropdownMenuLabel>
+              <DropdownMenuSeparator className="dark:bg-zinc-700" />
               {dropdownNotifications.map((notification) => (
                 <DropdownMenuItem
                   key={notification.id}
                   className={cn(
-                    'rounded-lg px-3 py-3 focus:bg-slate-100',
-                    notification.priority === 'critical' && 'bg-red-50/80'
+                    'rounded-lg px-3 py-3 focus:bg-slate-100 dark:focus:bg-zinc-800',
+                    notification.priority === 'critical' && 'bg-red-50/80 dark:bg-red-950/30'
                   )}
                   onClick={() => handleNotificationClick(notification)}
                 >
@@ -1217,11 +1271,11 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-sm font-medium leading-5">{notification.title}</p>
+                        <p className="text-sm font-medium leading-5 dark:text-zinc-50">{notification.title}</p>
                         {renderPriorityBadge(notification.priority)}
                       </div>
-                      <p className="text-xs text-slate-600">{notification.message}</p>
-                      <span className="text-xs text-slate-500">
+                      <p className="text-xs text-slate-600 dark:text-zinc-400">{notification.message}</p>
+                      <span className="text-xs text-slate-500 dark:text-zinc-500">
                         {notification.time}
                       </span>
                     </div>
@@ -1229,20 +1283,20 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                 </DropdownMenuItem>
               ))}
               {dropdownNotifications.length === 0 && (
-                <div className="py-6 px-3 text-center text-sm text-slate-600">No active alerts</div>
+                <div className="py-6 px-3 text-center text-sm text-slate-600 dark:text-zinc-400">No active alerts</div>
               )}
               {notifications.length > 5 && (
                 <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem className="rounded-md text-center text-sm font-medium text-primary focus:bg-slate-100" onClick={() => navigate('/settings?tab=notifications')}>
+                  <DropdownMenuSeparator className="dark:bg-zinc-700" />
+                  <DropdownMenuItem className="rounded-md text-center text-sm font-medium text-primary focus:bg-slate-100 dark:focus:bg-zinc-800 dark:focus:text-primary" onClick={() => navigate('/settings?tab=notifications')}>
                     View all notifications
                   </DropdownMenuItem>
                 </>
               )}
               {notifications.length > 0 && (
                 <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={clearNotifications} className="rounded-md text-destructive focus:bg-slate-100 focus:text-destructive">
+                  <DropdownMenuSeparator className="dark:bg-zinc-700" />
+                  <DropdownMenuItem onClick={clearNotifications} className="rounded-md text-destructive focus:bg-slate-100 focus:text-destructive dark:focus:bg-zinc-800 dark:focus:text-destructive">
                     Clear notifications
                   </DropdownMenuItem>
                 </>

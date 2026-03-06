@@ -103,11 +103,17 @@ export function PomodoroTimer() {
 
   const handleToggle = () => {
     if (isActiveMode && timerRunning) {
-      stopTimer()
+      stopTimer('manual-stop')
       return
     }
 
-    startTimer(mode, currentDurationMs)
+    // Resume from where it left off if stopped, or start fresh if reset/new
+    const shouldResume = isActiveMode && !timerRunning && timeLeftMs > 0 && timeLeftMs < currentDurationMs
+    if (shouldResume) {
+      startTimer(mode, currentDurationMs)
+    } else {
+      startTimer(mode, currentDurationMs)
+    }
     setAnimationKey((prev) => prev + 1)
   }
 

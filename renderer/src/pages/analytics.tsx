@@ -22,7 +22,7 @@ import {
   Repeat,
   Timer
 } from 'lucide-react'
-import { format, parseISO, startOfWeek, startOfMonth, addMonths } from 'date-fns'
+import { format, parseISO, startOfWeek, startOfMonth, endOfMonth, addMonths, addDays, addWeeks, startOfQuarter, endOfQuarter, startOfYear, endOfYear } from 'date-fns'
 import { useStore } from '@/store'
 import { useElectron } from '@/hooks/use-electron'
 import { useSharedTimer } from '@/hooks/use-shared-timer'
@@ -48,6 +48,7 @@ import {
   calculateHabitDueMetricsForDay,
   calculateHabitDueSeries,
   getDateRange,
+  getDateRangeDisplay,
   calculateGoalAnalytics,
   calculateTimeAnalytics,
   calculateProductivityScore,
@@ -127,8 +128,10 @@ export default function Analytics() {
   const [timeRange, setTimeRange] = useState<TimeRange>('month')
   const isProductiveTimerMode = timerMode === 'pomodoro' || timerMode === 'custom'
   
-  // Strict rolling windows from today
+  // Calendar-based ranges ending today (for data calculations)
   const dateRange = useMemo(() => getDateRange(timeRange), [timeRange])
+  // Full calendar period (for display labels)
+  const displayRange = useMemo(() => getDateRangeDisplay(timeRange), [timeRange])
   const taskDateRange = dateRange
   const habitDateRange = dateRange
   
@@ -371,6 +374,7 @@ export default function Analytics() {
   }, [dateRange.end, dateRange.start, liveElapsedSeconds, timeBlocksAnalytics])
   
   const productivityDateRange = taskDateRange
+  const productivityDisplayRange = displayRange
 
   const productivityHabitSeries = useMemo(
     () => calculateHabitDueSeries(habits, allHabitCompletions, productivityDateRange, timeRange === 'week' ? 'short' : 'medium'),
@@ -431,8 +435,42 @@ export default function Analytics() {
         }
       })
 
-    if (timeRange === 'day' || timeRange === 'week' || timeRange === 'month') {
+    if (timeRange === 'day' || timeRange === 'week') {
       return daily
+    }
+
+    if (timeRange === 'month') {
+      // Fill in ALL days of the month (complete calendar), not just up to today
+      const monthStart = startOfMonth(productivityDisplayRange.start)
+      const monthEnd = endOfMonth(productivityDisplayRange.end)
+      const dailyByKey = new Map(daily.map(d => [d.fullDate, d]))
+      
+      const result = []
+      let cursor = monthStart
+      
+      while (cursor <= monthEnd) {
+        const dateKey = format(cursor, 'yyyy-MM-dd')
+        const existing = dailyByKey.get(dateKey)
+        
+        if (existing) {
+          result.push(existing)
+        } else {
+          // Add zero-value entry for missing day
+          result.push({
+            date: format(cursor, 'MMM d'),
+            fullDate: dateKey,
+            taskPlannedWeight: 0,
+            taskEarnedWeight: 0,
+            dueHabits: 0,
+            completedDueHabits: 0,
+            productivity: 0,
+          })
+        }
+        
+        cursor = addDays(cursor, 1)
+      }
+      
+      return result
     }
 
     if (timeRange === 'quarter') {
@@ -450,10 +488,20 @@ export default function Analytics() {
         byWeek.set(bucketKey, current)
       })
 
-      return Array.from(byWeek.entries())
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([bucketKey, value]) => ({
-          date: format(parseISO(bucketKey), 'MMM d'),
+      // Fill in ALL weeks of the quarter (complete calendar), not just up to today
+      const quarterStart = startOfQuarter(productivityDisplayRange.start)
+      const quarterEnd = endOfQuarter(productivityDisplayRange.end)
+      
+      const result = []
+      let cursor = quarterStart
+      
+      while (cursor <= quarterEnd) {
+        const weekStart = startOfWeek(cursor, { weekStartsOn: 1 })
+        const bucketKey = format(weekStart, 'yyyy-MM-dd')
+        const value = byWeek.get(bucketKey) || { taskPlannedWeight: 0, taskEarnedWeight: 0, dueHabits: 0, completedDueHabits: 0 }
+        
+        result.push({
+          date: format(weekStart, 'MMM d'),
           fullDate: bucketKey,
           taskPlannedWeight: value.taskPlannedWeight,
           taskEarnedWeight: value.taskEarnedWeight,
@@ -465,9 +513,15 @@ export default function Analytics() {
             value.dueHabits,
             value.completedDueHabits
           ),
-        }))
+        })
+        
+        cursor = addWeeks(cursor, 1)
+      }
+      
+      return result
     }
 
+    // Year view - aggregate by ALL 12 months (complete calendar), not just up to today
     const byMonth = new Map<string, { taskPlannedWeight: number; taskEarnedWeight: number; dueHabits: number; completedDueHabits: number }>()
     daily.forEach((point) => {
       const pointDate = parseISO(point.fullDate)
@@ -482,10 +536,10 @@ export default function Analytics() {
     })
 
     const monthBuckets: Array<{ date: string; fullDate: string; taskPlannedWeight: number; taskEarnedWeight: number; dueHabits: number; completedDueHabits: number; productivity: number }> = []
-    let monthCursor = startOfMonth(productivityDateRange.start)
-    const monthEndKey = format(startOfMonth(productivityDateRange.end), 'yyyy-MM')
+    let monthCursor = startOfYear(productivityDisplayRange.start)
+    const yearEnd = endOfYear(productivityDisplayRange.end)
 
-    while (format(monthCursor, 'yyyy-MM') <= monthEndKey) {
+    while (monthCursor <= yearEnd) {
       const bucketKey = format(monthCursor, 'yyyy-MM')
       const value = byMonth.get(bucketKey) || { taskPlannedWeight: 0, taskEarnedWeight: 0, dueHabits: 0, completedDueHabits: 0 }
       monthBuckets.push({
@@ -506,7 +560,7 @@ export default function Analytics() {
     }
 
     return monthBuckets
-  }, [productivityDateRange.end, productivityHabitSeries, taskRangeSnapshot.daily, timeRange])
+  }, [productivityDateRange.end, productivityHabitSeries, taskRangeSnapshot.daily, timeRange, productivityDisplayRange.start, productivityDisplayRange.end])
 
   const habitDueSeries = useMemo(
     () => calculateHabitDueSeries(
@@ -524,7 +578,7 @@ export default function Analytics() {
   )
 
   const habitDueChartData = useMemo(() => {
-    if (timeRange === 'day' || timeRange === 'week' || timeRange === 'month') {
+    if (timeRange === 'day' || timeRange === 'week') {
       return habitDueSeries.map((point) => ({
         date: point.date,
         fullDate: point.fullDate,
@@ -532,6 +586,38 @@ export default function Analytics() {
         completedDueHabits: point.completedDueHabits,
         consistency: point.consistency,
       }))
+    }
+
+    if (timeRange === 'month') {
+      // Fill in ALL days of the month (complete calendar), not just up to today
+      const monthStart = startOfMonth(displayRange.start)
+      const monthEnd = endOfMonth(displayRange.end)
+      const duSeriesByKey = new Map(habitDueSeries.map(d => [d.fullDate, d]))
+      
+      const result = []
+      let cursor = monthStart
+      
+      while (cursor <= monthEnd) {
+        const dateKey = format(cursor, 'yyyy-MM-dd')
+        const existing = duSeriesByKey.get(dateKey)
+        
+        if (existing) {
+          result.push(existing)
+        } else {
+          // Add zero-value entry for missing day
+          result.push({
+            date: format(cursor, 'MMM d'),
+            fullDate: dateKey,
+            dueHabits: 0,
+            completedDueHabits: 0,
+            consistency: 0,
+          })
+        }
+        
+        cursor = addDays(cursor, 1)
+      }
+      
+      return result
     }
 
     const aggregateBy = timeRange === 'quarter' ? 'week' : 'month'
@@ -558,15 +644,65 @@ export default function Analytics() {
       grouped[periodKey].completedDueHabits += point.completedDueHabits
     })
 
-    return Object.values(grouped)
-      .sort((a, b) => a.fullDate.localeCompare(b.fullDate))
-      .map((group) => ({
-        ...group,
-        consistency: group.dueHabits > 0
-          ? Math.round((group.completedDueHabits / group.dueHabits) * 100)
+    /* For Quarter view, fill in ALL weeks (complete calendar), not just up to today */
+    if (timeRange === 'quarter') {
+      const quarterStart = startOfQuarter(displayRange.start)
+      const quarterEnd = endOfQuarter(displayRange.end)
+      
+      const result = []
+      let cursor = quarterStart
+      
+      while (cursor <= quarterEnd) {
+        const weekStart = startOfWeek(cursor, { weekStartsOn: 1 })
+        const periodKey = format(weekStart, 'yyyy-MM-dd')
+        const value = grouped[periodKey] || {
+          date: format(weekStart, 'MMM d'),
+          fullDate: periodKey,
+          dueHabits: 0,
+          completedDueHabits: 0,
+          consistency: 0,
+        }
+        
+        result.push({
+          ...value,
+          consistency: value.dueHabits > 0
+            ? Math.round((value.completedDueHabits / value.dueHabits) * 100)
+            : 0,
+        })
+        
+        cursor = addWeeks(cursor, 1)
+      }
+      
+      return result
+    }
+
+    /* For Year view, fill in ALL 12 months (complete calendar), not just up to today */
+    const result = []
+    let monthCursor = startOfYear(displayRange.start)
+    const yearEnd = endOfYear(displayRange.end)
+    
+    while (monthCursor <= yearEnd) {
+      const periodKey = format(monthCursor, 'yyyy-MM')
+      const value = grouped[periodKey] || {
+        date: format(monthCursor, 'MMM'),
+        fullDate: periodKey,
+        dueHabits: 0,
+        completedDueHabits: 0,
+        consistency: 0,
+      }
+      
+      result.push({
+        ...value,
+        consistency: value.dueHabits > 0
+          ? Math.round((value.completedDueHabits / value.dueHabits) * 100)
           : 0,
-      }))
-  }, [habitDueSeries, timeRange])
+      })
+      
+      monthCursor = addMonths(monthCursor, 1)
+    }
+    
+    return result
+  }, [habitDueSeries, timeRange, displayRange.start, displayRange.end])
 
   const taskChartData = useMemo(() => {
     const daily = taskRangeSnapshot.daily.map((point) => ({
@@ -587,8 +723,40 @@ export default function Analytics() {
       }]
     }
 
-    if (timeRange === 'week' || timeRange === 'month') {
+    if (timeRange === 'week') {
       return daily
+    }
+
+    if (timeRange === 'month') {
+      // Fill in ALL days of the month (complete calendar), not just up to today
+      const monthStart = startOfMonth(displayRange.start)
+      const monthEnd = endOfMonth(displayRange.end)
+      const dailyByKey = new Map(daily.map(d => [d.fullDate, d]))
+      
+      const result = []
+      let cursor = monthStart
+      
+      while (cursor <= monthEnd) {
+        const dateKey = format(cursor, 'yyyy-MM-dd')
+        const existing = dailyByKey.get(dateKey)
+        
+        if (existing) {
+          result.push(existing)
+        } else {
+          // Add zero-value entry for missing day
+          result.push({
+            date: format(cursor, 'MMM d'),
+            fullDate: dateKey,
+            completed: 0,
+            partiallyCompleted: 0,
+            skipped: 0,
+          })
+        }
+        
+        cursor = addDays(cursor, 1)
+      }
+      
+      return result
     }
 
     const aggregateBy = timeRange === 'quarter' ? 'week' : 'month'
@@ -616,8 +784,53 @@ export default function Analytics() {
       grouped[periodKey].skipped += point.skipped
     })
 
-    return Object.values(grouped).sort((a, b) => a.fullDate.localeCompare(b.fullDate))
-  }, [taskAnalytics.completed, taskAnalytics.partiallyCompleted, taskAnalytics.skipped, taskDateRange.start, taskRangeSnapshot.daily, timeRange])
+    /* For Quarter view, fill in ALL weeks (complete calendar), not just up to today */
+    if (timeRange === 'quarter') {
+      const quarterStart = startOfQuarter(displayRange.start)
+      const quarterEnd = endOfQuarter(displayRange.end)
+      
+      const result = []
+      let cursor = quarterStart
+      
+      while (cursor <= quarterEnd) {
+        const weekStart = startOfWeek(cursor, { weekStartsOn: 1 })
+        const periodKey = format(weekStart, 'yyyy-MM-dd')
+        const value = grouped[periodKey] || {
+          date: format(weekStart, 'MMM d'),
+          fullDate: periodKey,
+          completed: 0,
+          partiallyCompleted: 0,
+          skipped: 0,
+        }
+        
+        result.push(value)
+        cursor = addWeeks(cursor, 1)
+      }
+      
+      return result
+    }
+
+    /* For Year view, fill in ALL 12 months (complete calendar), not just up to today */
+    const result = []
+    let monthCursor = startOfYear(displayRange.start)
+    const yearEnd = endOfYear(displayRange.end)
+    
+    while (monthCursor <= yearEnd) {
+      const periodKey = format(monthCursor, 'yyyy-MM')
+      const value = grouped[periodKey] || {
+        date: format(monthCursor, 'MMM'),
+        fullDate: periodKey,
+        completed: 0,
+        partiallyCompleted: 0,
+        skipped: 0,
+      }
+      
+      result.push(value)
+      monthCursor = addMonths(monthCursor, 1)
+    }
+    
+    return result
+  }, [taskAnalytics.completed, taskAnalytics.partiallyCompleted, taskAnalytics.skipped, taskDateRange.start, taskRangeSnapshot.daily, timeRange, displayRange.start, displayRange.end])
   
   // ============================================
   // PIE CHART DATA
@@ -678,7 +891,7 @@ export default function Analytics() {
               <Filter className="h-4 w-4" />
               <span className="text-sm font-medium">Time Range:</span>
               <span className="text-xs text-muted-foreground">
-                ({format(dateRange.start, 'MMM d, yyyy')} - {format(dateRange.end, 'MMM d, yyyy')})
+                ({format(displayRange.start, 'MMM d, yyyy')} - {format(displayRange.end, 'MMM d, yyyy')})
               </span>
             </div>
             <div className="flex gap-2">
