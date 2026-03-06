@@ -29,42 +29,28 @@ const Time = lazy(() => import('@/pages/time'));
 const Archive = lazy(() => import('@/pages/archive'));
 const Reviews = lazy(() => import('@/pages/reviews'));
 
-// Configure QueryClient with offline resilience and refetch settings
+// Configure QueryClient with offline-first resilience
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       // Refetch on window focus (handles reload scenarios)
       refetchOnWindowFocus: true,
-      // Refetch when connection is restored
-      refetchOnReconnect: true,
-      // Retry failed queries when back online
-      retry: (failureCount, error) => {
-        // Don't retry on explicit errors (e.g., 404)
-        if (error instanceof Error && error.message.includes('not found')) {
-          return false
-        }
-        // Retry up to 3 times for network errors
-        return failureCount < 3
-      },
-      // Stale time: 0 means always refetch on mount/focus (ensures fresh data after reload)
-      staleTime: 0,
-      // Cache time: Keep data in cache for 5 minutes for offline access
-      gcTime: 5 * 60 * 1000,
-      // Network mode: Always fetch when online, use cache when offline
-      networkMode: 'online',
+      // Refetch when connection is restored (optional: for sync features only)
+      refetchOnReconnect: false,
+      // Don't retry on network errors - use local cache
+      retry: false,
+      // Stale time: Keep data fresh for offline access
+      staleTime: 1000 * 60 * 60, // 1 hour
+      // Cache time: Keep data in cache indefinitely for offline access
+      gcTime: Infinity,
+      // Network mode: ALWAYS execute (works offline with local db)
+      networkMode: 'always',
     },
     mutations: {
-      // Retry failed mutations when connection is restored
-      retry: (failureCount, error) => {
-        // Don't retry on explicit errors
-        if (error instanceof Error && error.message.includes('not found')) {
-          return false
-        }
-        // Retry up to 2 times for network errors
-        return failureCount < 2
-      },
-      // Network mode: Allow mutations to queue when offline
-      networkMode: 'online',
+      // CRITICAL: Don't retry mutations - they should succeed locally
+      retry: false,
+      // Network mode: ALWAYS execute mutations (all operations are local-first)
+      networkMode: 'always',
     },
   },
 });

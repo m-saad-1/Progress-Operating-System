@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   Card, 
@@ -228,13 +228,15 @@ const getPreviewContent = (content: string, maxChars = 220) => {
   return `${normalized.substring(0, maxChars).trimEnd()}...`
 }
 
-function NoteCardGrid({ note, onEdit, onArchive, onView, onTogglePin }: { 
-  note: NoteWithDetails, 
+type NoteCardProps = {
+  note: NoteWithDetails,
   onEdit: (note: NoteWithDetails) => void,
   onArchive: (id: string) => void,
   onView: (note: NoteWithDetails) => void,
   onTogglePin: (id: string, pinned: boolean) => void
-}) {
+}
+
+function NoteCardGridBase({ note, onEdit, onArchive, onView, onTogglePin }: NoteCardProps) {
   const truncatedContent = getPreviewContent(note.content)
 
   return (
@@ -374,13 +376,9 @@ function NoteCardGrid({ note, onEdit, onArchive, onView, onTogglePin }: {
   )
 }
 
-function NoteCardList({ note, onEdit, onArchive, onView, onTogglePin }: { 
-  note: NoteWithDetails, 
-  onEdit: (note: NoteWithDetails) => void,
-  onArchive: (id: string) => void,
-  onView: (note: NoteWithDetails) => void,
-  onTogglePin: (id: string, pinned: boolean) => void
-}) {
+const NoteCardGrid = memo(NoteCardGridBase, (prev, next) => prev.note === next.note)
+
+function NoteCardListBase({ note, onEdit, onArchive, onView, onTogglePin }: NoteCardProps) {
   const truncatedContent = getPreviewContent(note.content, 140)
 
   return (
@@ -490,6 +488,7 @@ export default function Notes() {
   const [activeTab, setActiveTab] = useState('all')
   const [viewingNote, setViewingNote] = useState<NoteWithDetails | null>(null)
   const [formErrors, setFormErrors] = useState<NoteFormErrors>({})
+  const deferredSearchQuery = useDeferredValue(searchQuery)
   
   // Fetch notes using database service for consistent data handling
   const { data: notes, isLoading, error: notesError } = useQuery<NoteWithDetails[]>({
@@ -541,55 +540,88 @@ export default function Notes() {
     },
   })
 
-  // Filter and sort notes
-  const filteredNotes = notes?.filter((note: NoteWithDetails) => {
-    const searchableContent = getSearchableContent(note.content).toLowerCase()
-    const matchesSearch = searchQuery === '' || 
-      note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      searchableContent.includes(searchQuery.toLowerCase()) ||
-      note.tags.some((tag: string) => tag.toLowerCase().includes(searchQuery.toLowerCase()))
-    
-    const matchesType = selectedType === 'all' || note.type === selectedType
-    const matchesMood = selectedMood === 'all' || 
-      (selectedMood === 'none' && !note.mood) ||
-      note.mood === selectedMood
-    const matchesGoal = selectedGoal === 'all' || 
-      (selectedGoal === 'none' && !note.goal_id) ||
-      note.goal_id === selectedGoal
-    const matchesTab = activeTab === 'all' || note.type === activeTab
-    
-    return matchesSearch && matchesType && matchesMood && matchesGoal && matchesTab
-  }).sort((a, b) => {
-    // Pinned notes always come first
-    if (a.pinned && !b.pinned) return -1
-    if (!a.pinned && b.pinned) return 1
-    
-    // Then sort by selected criterion
-    switch (sortBy) {
-      case 'updated':
-        return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-      case 'created':
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      case 'title':
-        return a.title.localeCompare(b.title)
-      default:
-        return 0
-    }
-  })
+  // Filter/sort can be expensive with rich text content, so memoize and defer search updates.
+  const filteredNotes = useMemo(() => {
+    if (!notes) return []
 
-  // Calculate statistics
-  const stats: NoteStats = {
-    total: notes?.length || 0,
-    free: notes?.filter(n => n.type === 'free').length || 0,
-    daily: notes?.filter(n => n.type === 'daily').length || 0,
-    weekly: notes?.filter(n => n.type === 'weekly').length || 0,
-    goal: notes?.filter(n => n.type === 'goal').length || 0,
-    task: notes?.filter(n => n.type === 'task').length || 0,
-    challenge: notes?.filter(n => n.type === 'challenge').length || 0,
-    career: notes?.filter(n => n.type === 'career').length || 0,
-    withMood: notes?.filter(n => n.mood).length || 0,
-    withTags: notes?.filter(n => n.tags && n.tags.length > 0).length || 0,
-  }
+    const normalizedQuery = deferredSearchQuery.trim().toLowerCase()
+
+    return notes
+      .filter((note: NoteWithDetails) => {
+        const searchableContent = getSearchableContent(note.content).toLowerCase()
+        const matchesSearch =
+          normalizedQuery === '' ||
+          note.title.toLowerCase().includes(normalizedQuery) ||
+          searchableContent.includes(normalizedQuery) ||
+          note.tags.some((tag: string) => tag.toLowerCase().includes(normalizedQuery))
+
+        const matchesType = selectedType === 'all' || note.type === selectedType
+        const matchesMood = selectedMood === 'all' || (selectedMood === 'none' && !note.mood) || note.mood === selectedMood
+        const matchesGoal = selectedGoal === 'all' || (selectedGoal === 'none' && !note.goal_id) || note.goal_id === selectedGoal
+        const matchesTab = activeTab === 'all' || note.type === activeTab
+
+        return matchesSearch && matchesType && matchesMood && matchesGoal && matchesTab
+      })
+      .sort((a, b) => {
+        if (a.pinned && !b.pinned) return -1
+        if (!a.pinned && b.pinned) return 1
+
+        switch (sortBy) {
+          case 'updated':
+            return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+          case 'created':
+            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+          case 'title':
+            return a.title.localeCompare(b.title)
+          default:
+            return 0
+        }
+      })
+  }, [notes, deferredSearchQuery, selectedType, selectedMood, selectedGoal, activeTab, sortBy])
+
+  const stats: NoteStats = useMemo(() => {
+    if (!notes || notes.length === 0) {
+      return {
+        total: 0,
+        free: 0,
+        daily: 0,
+        weekly: 0,
+        goal: 0,
+        task: 0,
+        challenge: 0,
+        career: 0,
+        withMood: 0,
+        withTags: 0,
+      }
+    }
+
+    const next: NoteStats = {
+      total: notes.length,
+      free: 0,
+      daily: 0,
+      weekly: 0,
+      goal: 0,
+      task: 0,
+      challenge: 0,
+      career: 0,
+      withMood: 0,
+      withTags: 0,
+    }
+
+    for (const note of notes) {
+      if (note.type === 'free') next.free += 1
+      if (note.type === 'daily') next.daily += 1
+      if (note.type === 'weekly') next.weekly += 1
+      if (note.type === 'goal') next.goal += 1
+      if (note.type === 'task') next.task += 1
+      if (note.type === 'challenge') next.challenge += 1
+      if (note.type === 'career') next.career += 1
+      if (note.mood) next.withMood += 1
+      if (note.tags && note.tags.length > 0) next.withTags += 1
+    }
+
+    return next
+  }, [notes])
 
   // Create note mutation
   const createNoteMutation = useMutation({
@@ -704,7 +736,7 @@ export default function Notes() {
     setFormErrors({})
   }
 
-  const handleEdit = (note: NoteWithDetails) => {
+  const handleEdit = useCallback((note: NoteWithDetails) => {
     setIsEditing(note.id)
     setFormErrors({})
     setFormData({
@@ -718,7 +750,18 @@ export default function Notes() {
       pinned: note.pinned || false,
     })
     setIsCreating(true)
-  }
+  }, [])
+
+  useEffect(() => {
+    const openCreateNote = () => {
+      setIsEditing(null)
+      resetForm()
+      setIsCreating(true)
+    }
+
+    window.addEventListener('app:new-note', openCreateNote as EventListener)
+    return () => window.removeEventListener('app:new-note', openCreateNote as EventListener)
+  }, [])
 
   const validateForm = () => {
     const errors: NoteFormErrors = {}
@@ -754,7 +797,11 @@ export default function Notes() {
     }
   }
 
-  const addTag = () => {
+  const isFormContentEmpty = useMemo(() => {
+    return !getSearchableContent(formData.content).trim()
+  }, [formData.content])
+
+  const addTag = useCallback(() => {
     if (newTag.trim() && !formData.tags.includes(newTag.trim())) {
       setFormData({
         ...formData,
@@ -762,25 +809,22 @@ export default function Notes() {
       })
       setNewTag('')
     }
+  }, [formData, newTag])
 
-    useEffect(() => {
-      const openCreateNote = () => {
-        setIsEditing(null)
-        resetForm()
-        setIsCreating(true)
-      }
-
-      window.addEventListener('app:new-note', openCreateNote as EventListener)
-      return () => window.removeEventListener('app:new-note', openCreateNote as EventListener)
-    }, [])
-  }
-
-  const removeTag = (tagToRemove: string) => {
+  const removeTag = useCallback((tagToRemove: string) => {
     setFormData({
       ...formData,
       tags: formData.tags.filter(tag => tag !== tagToRemove),
     })
-  }
+  }, [formData])
+
+  const handleArchiveNote = useCallback((id: string) => {
+    deleteNoteMutation.mutate(id)
+  }, [deleteNoteMutation])
+
+  const handleTogglePin = useCallback((id: string, pinned: boolean) => {
+    togglePinMutation.mutate({ id, pinned })
+  }, [togglePinMutation])
 
   if (notesError) {
     return (
@@ -1050,7 +1094,7 @@ export default function Notes() {
                     updateNoteMutation.isPending ||
                     !formData.title.trim() ||
                     !formData.type ||
-                    !getSearchableContent(formData.content).trim()
+                    isFormContentEmpty
                   }
                 >
                   {isEditing ? 'Update Note' : 'Create Note'}
@@ -1449,9 +1493,9 @@ export default function Notes() {
               key={note.id} 
               note={note} 
               onEdit={handleEdit}
-              onArchive={(id) => deleteNoteMutation.mutate(id)}
+              onArchive={handleArchiveNote}
               onView={setViewingNote}
-              onTogglePin={(id, pinned) => togglePinMutation.mutate({ id, pinned })}
+              onTogglePin={handleTogglePin}
             />
           ))}
         </div>
@@ -1465,12 +1509,14 @@ export default function Notes() {
             key={note.id} 
             note={note} 
             onEdit={handleEdit}
-            onArchive={(id) => deleteNoteMutation.mutate(id)}
+            onArchive={handleArchiveNote}
             onView={setViewingNote}
-            onTogglePin={(id, pinned) => togglePinMutation.mutate({ id, pinned })}
+            onTogglePin={handleTogglePin}
           />
         ))}
       </div>
     )
   }
 }
+
+const NoteCardList = memo(NoteCardListBase, (prev, next) => prev.note === next.note)

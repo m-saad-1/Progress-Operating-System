@@ -3,23 +3,31 @@ import { format } from 'date-fns'
 import { normalizeDailyProgress } from '@/lib/daily-reset'
 import type { Task, TaskProgress, TaskStatus } from '@/types'
 
-export const invalidateTaskRelatedQueries = (queryClient: QueryClient) => {
+export const invalidateTaskCoreQueries = (queryClient: QueryClient) => {
   queryClient.invalidateQueries({ queryKey: ['dashboard'] })
   queryClient.invalidateQueries({ queryKey: ['analytics'] })
   queryClient.invalidateQueries({ queryKey: ['task-stats'] })
-  queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
-  queryClient.invalidateQueries({ queryKey: ['task-analytics-chart-rolling'] })
-  queryClient.invalidateQueries({ queryKey: ['task-analytics-chart-daily-activity'] })
-  queryClient.invalidateQueries({ queryKey: ['task-analytics-chart-consistency'] })
   queryClient.invalidateQueries({ queryKey: ['task-tab-stats-snapshot'] })
-  queryClient.invalidateQueries({ queryKey: ['task-range-analytics'] })
-  queryClient.invalidateQueries({ queryKey: ['task-monthly-history'] })
   queryClient.invalidateQueries({ queryKey: ['today-tasks'] })
   queryClient.invalidateQueries({ queryKey: ['yesterday-tasks'] })
   queryClient.invalidateQueries({ queryKey: ['tasks'] })
   queryClient.invalidateQueries({ queryKey: ['today-analytics-productivity'] })
   queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
   queryClient.invalidateQueries({ queryKey: ['calendar-data'] })
+}
+
+export const invalidateTaskAnalyticsQueries = (queryClient: QueryClient) => {
+  queryClient.invalidateQueries({ queryKey: ['task-analytics-chart'] })
+  queryClient.invalidateQueries({ queryKey: ['task-analytics-chart-rolling'] })
+  queryClient.invalidateQueries({ queryKey: ['task-analytics-chart-daily-activity'] })
+  queryClient.invalidateQueries({ queryKey: ['task-analytics-chart-consistency'] })
+  queryClient.invalidateQueries({ queryKey: ['task-range-analytics'] })
+  queryClient.invalidateQueries({ queryKey: ['task-monthly-history'] })
+}
+
+export const invalidateTaskRelatedQueries = (queryClient: QueryClient) => {
+  invalidateTaskCoreQueries(queryClient)
+  invalidateTaskAnalyticsQueries(queryClient)
 }
 
 export const buildTaskProgressUpdatePayload = (task: Task | any, progress: number) => {

@@ -1,41 +1,38 @@
 /**
  * ONLINE STATUS HOOK
  * ==================
- * Global online/offline detection with automatic query refetch when connection is restored
+ * Tracks online/offline status for informational/UI purposes only
+ * Does NOT block core functionality - all operations are offline-first
  * 
  * KEY FEATURES:
  * - Detects online/offline transitions via browser events
- * - Automatically refetches all queries when connection is restored
- * - Provides real-time online status to components
- * - Ensures data freshness after network recovery
- * - Handles reload scenarios with stale cache invalidation
+ * - Provides real-time status to components (e.g., showing sync status, optional features)
+ * - Does NOT refetch queries or block mutations
+ * - Does NOT impact core task/habit/note/goal operations
+ * - Optional features (feedback, sync) can use this to queue operations
  */
 
 import { useEffect, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
 
 export const useOnlineStatus = () => {
-  const queryClient = useQueryClient()
   const [isOnline, setIsOnline] = useState(() => 
     typeof navigator !== 'undefined' ? navigator.onLine : true
   )
 
   useEffect(() => {
     const handleOnline = () => {
-      console.log('[Online Status] Connection restored - refetching all queries')
+      console.log('[Online Status] Connection restored')
       setIsOnline(true)
-      
-      // Refetch all active queries when connection is restored
-      // This ensures data freshness after network recovery
-      queryClient.refetchQueries({ 
-        type: 'active',
-        stale: true 
-      })
+      // Note: We do NOT refetch queries here because:
+      // 1. All operations are 100% local-first using local database
+      // 2. Any sync/remote features are optional and can be triggered separately
+      // 3. Connection restoration doesn't affect core functionality
     }
 
     const handleOffline = () => {
-      console.log('[Online Status] Connection lost - using cached data')
+      console.log('[Online Status] Connection lost - app continues working offline')
       setIsOnline(false)
+      // Core operations continue unaffected
     }
 
     // Listen for online/offline events
@@ -46,7 +43,7 @@ export const useOnlineStatus = () => {
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('offline', handleOffline)
     }
-  }, [queryClient])
+  }, [])
 
-  return { isOnline }
+  return isOnline
 }

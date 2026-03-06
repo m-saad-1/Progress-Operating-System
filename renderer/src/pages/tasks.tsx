@@ -79,7 +79,7 @@ import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 import { database, CreateTaskDTO, TaskTabStatsSnapshot, TaskAnalyticsChartSnapshot, TaskMonthlyHistoryPoint } from '@/lib/database'
 import { Task, TaskProgress, DailyTaskState, TaskStatus } from '@/types'
-import { invalidateTaskRelatedQueries, buildTaskProgressUpdatePayload } from '@/lib/task-sync'
+import { invalidateTaskCoreQueries, invalidateTaskRelatedQueries, buildTaskProgressUpdatePayload } from '@/lib/task-sync'
 import { 
   ProgressSelector, 
   CircularProgressSelector,
@@ -1182,8 +1182,7 @@ const TaskAnalytics: React.FC<{ dayKey: string }> = React.memo(({ dayKey }) => {
   )
 })
 
-// Task Item Component with Progressive Completion
-const TaskItem: React.FC<{
+type TaskItemProps = {
   task: Task
   goals: any[]
   expanded: boolean
@@ -1196,7 +1195,11 @@ const TaskItem: React.FC<{
   readonly?: boolean
   hideActions?: boolean
   allowProgressEditWhenPaused?: boolean
-}> = ({ task, goals, expanded, onToggleExpand, onProgressChange, onEdit, onDelete, onOpenDetails, onPauseToggle, readonly = false, hideActions = false, allowProgressEditWhenPaused = false }) => {
+}
+
+// Task row rendering is expensive; memoize so unrelated state changes (dialogs/forms)
+// don't force every task card to re-render.
+const TaskItemBase: React.FC<TaskItemProps> = ({ task, goals, expanded, onToggleExpand, onProgressChange, onEdit, onDelete, onOpenDetails, onPauseToggle, readonly = false, hideActions = false, allowProgressEditWhenPaused = false }) => {
   const progress = task.progress ?? 0
   const displayProgress = (task.status ?? 'pending') === 'pending' && progress === 0 ? -1 : progress
   const isCompleted = task.status === 'completed' || progress === 100
@@ -1445,6 +1448,17 @@ const TaskItem: React.FC<{
   )
 }
 
+const TaskItem = React.memo(TaskItemBase, (prev, next) => {
+  return (
+    prev.task === next.task &&
+    prev.goals === next.goals &&
+    prev.expanded === next.expanded &&
+    prev.readonly === next.readonly &&
+    prev.hideActions === next.hideActions &&
+    prev.allowProgressEditWhenPaused === next.allowProgressEditWhenPaused
+  )
+})
+
 export default function Tasks() {
   const queryClient = useQueryClient()
   const { success, error: toastError } = useToaster()
@@ -1637,6 +1651,10 @@ export default function Tasks() {
     invalidateTaskRelatedQueries(queryClient)
   }, [queryClient])
 
+  const invalidateTaskCoreDerivedQueries = useCallback(() => {
+    invalidateTaskCoreQueries(queryClient)
+  }, [queryClient])
+
   // Mutations
   const createTaskMutation = useMutation({
     mutationFn: async (taskData: CreateTaskDTO) => {
@@ -1742,7 +1760,7 @@ export default function Tasks() {
           success('Task completed! 🎉🎊')
         }
         queryClient.invalidateQueries({ queryKey: ['review-insights'] })
-        invalidateTaskDerivedQueries()
+        invalidateTaskCoreDerivedQueries()
       }
     },
     onError: () => toastError('Failed to update progress'),
@@ -1758,7 +1776,7 @@ export default function Tasks() {
       if (updatedTask) {
         updateTask(updatedTask)
         queryClient.invalidateQueries({ queryKey: ['review-insights'] })
-        invalidateTaskDerivedQueries()
+        invalidateTaskCoreDerivedQueries()
       }
     },
     onError: () => toastError('Failed to update daily progress'),
@@ -1882,13 +1900,16 @@ export default function Tasks() {
 
     // Derive proper status from progress value
     const status = progress >= 100 ? 'completed' : progress > 0 ? 'in-progress' : 'pending'
-    const dailyProgress = recordDailyProgress(task, safeParseDate(date), progress as any, status, 'user')
-    updateDailyProgressMutation.mutate({ id: taskId, dailyProgress })
-
-    // For today's date, also update the live task progress/status
+    // For today's date, update once via updateProgressMutation.
+    // It already persists today's daily_progress snapshot in the same DB write.
     if (isToday(safeParseDate(date))) {
       updateProgressMutation.mutate({ id: taskId, progress })
+      return
     }
+
+    // Historical day updates only need daily_progress persistence.
+    const dailyProgress = recordDailyProgress(task, safeParseDate(date), progress as any, status, 'user')
+    updateDailyProgressMutation.mutate({ id: taskId, dailyProgress })
   }, [tasks, updateDailyProgressMutation, updateProgressMutation])
 
   const toggleTaskExpanded = (taskId: string) => {

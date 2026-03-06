@@ -56,9 +56,11 @@ import {
   CheckCircle,
   X,
   Archive,
-  AlertCircle
+  AlertCircle,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react'
-import { format, startOfDay, startOfMonth, endOfMonth, eachDayOfInterval, isAfter, subDays, startOfWeek, endOfWeek } from 'date-fns'
+import { format, startOfDay, startOfMonth, endOfMonth, eachDayOfInterval, isAfter, subDays, startOfWeek, endOfWeek, addMonths, subMonths } from 'date-fns'
 import { safeParseDate } from '@/lib/date-safe'
 import { useToaster } from '@/hooks/use-toaster'
 import { useElectron } from '@/hooks/use-electron'
@@ -1794,24 +1796,83 @@ export default function Habits() {
       <Card className="overflow-hidden">
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center gap-2 text-lg font-semibold">
-              <TrendingUp className="h-4 w-4 text-amber-500" />
-              Due Habit Graph
-            </CardTitle>
-            <div className="text-xs font-medium text-muted-foreground">Rolling 30 days</div>
+            <div className="flex-1">
+              <CardTitle className="flex items-center gap-2 text-lg font-semibold">
+                <TrendingUp className="h-4 w-4 text-amber-500" />
+                Monthly Habit Performance
+              </CardTitle>
+            </div>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setSelectedMonth(prev => subMonths(prev, 1))}
+                title="View previous month"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <div className="min-w-40 text-center">
+                <button
+                  className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-muted"
+                  title={format(selectedMonth, 'MMMM yyyy')}
+                >
+                  {format(selectedMonth, 'MMMM yyyy')}
+                </button>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setSelectedMonth(prev => addMonths(prev, 1))}
+                disabled={format(addMonths(selectedMonth, 1), 'yyyy-MM') > format(new Date(), 'yyyy-MM')}
+                title="View next month"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setSelectedMonth(startOfMonth(new Date()))}
+                title="Go to current month"
+              >
+                <Calendar className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
-          <CardDescription className="text-sm">Due vs Completed habits per day</CardDescription>
+          <CardDescription className="text-sm">Daily completion rate • tracked due habits per day</CardDescription>
         </CardHeader>
         <CardContent className="pt-0 pb-6 px-6">
-          <div className="mb-4 flex items-center justify-between">
-            <div className="text-sm font-medium text-muted-foreground">Completed / Due:</div>
-            <div className="text-sm font-semibold">{monthlyTotalCompleted} / {monthlyTotalDue}</div>
+          <div className="mb-6 flex items-center justify-between">
+            <div className="space-y-2">
+              <div className="text-sm font-medium text-muted-foreground">Performance Metrics</div>
+              <div className="flex items-center gap-6">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-4 rounded-sm" style={{ backgroundColor: '#3b82f6' }} />
+                  <span className="text-sm text-muted-foreground">Due Habits</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-4 rounded-sm" style={{ backgroundColor: '#22c55e' }} />
+                  <span className="text-sm text-muted-foreground">Completed</span>
+                </div>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-sm font-medium text-muted-foreground mb-1">Monthly Total</div>
+              <div className="text-2xl font-bold">
+                <span className="text-green-600">{monthlyTotalCompleted}</span>
+                <span className="text-muted-foreground"> / </span>
+                <span className="text-foreground">{monthlyTotalDue}</span>
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">{monthlyTotalDue > 0 ? Math.round((monthlyTotalCompleted / monthlyTotalDue) * 100) : 0}% completion</div>
+            </div>
           </div>
-          <div className="h-48">
-            {selectedMonthDueSeries.length > 0 ? (
+          <div className="h-56">
+            {selectedMonthDueSeries && selectedMonthDueSeries.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={selectedMonthDueSeries} margin={{ top: 5, right: 12, left: -10, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={true} />
                   <XAxis 
                     dataKey="dayOfMonth" 
                     type="number"
@@ -1819,33 +1880,54 @@ export default function Habits() {
                     ticks={(() => {
                       const daysInMonth = new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() + 1, 0).getDate()
                       const ticks = []
-                      // Show ticks for all dates in the month
-                      for (let i = 1; i <= daysInMonth; i++) ticks.push(i)
+                      // Show ticks strategically based on days in month
+                      const interval = daysInMonth > 25 ? 5 : daysInMonth > 15 ? 3 : 1
+                      for (let i = 1; i <= daysInMonth; i += interval) ticks.push(i)
+                      // Ensure last day is always shown
+                      if (!ticks.includes(daysInMonth)) ticks.push(daysInMonth)
                       return ticks
                     })()}
+                    tickFormatter={(value) => `${value}`}
+                    tick={{ fontSize: 11 }}
                     className="text-xs" 
                   />
-                  <YAxis className="text-xs" />
+                  <YAxis 
+                    tick={{ fontSize: 11 }}
+                    className="text-xs" 
+                  />
                   <RechartsTooltip 
                     content={({ active, payload }) => {
                       if (active && payload && payload.length) {
                         const data = payload[0]?.payload
+                        const dateStr = `${String(selectedMonth.getFullYear())}-${String(selectedMonth.getMonth() + 1).padStart(2, '0')}-${String(data?.dayOfMonth).padStart(2, '0')}`
                         return (
-                          <div className="rounded-lg border bg-popover p-3 shadow-lg">
-                            <p className="font-semibold text-sm mb-2">Day {data?.dayOfMonth}</p>
-                            <div className="space-y-1 text-sm">
-                              <div className="flex items-center justify-between gap-4">
-                                <span className="text-muted-foreground">Due:</span>
-                                <span className="font-bold">{data?.dueHabits || 0}</span>
+                          <div className="rounded-lg border bg-popover p-4 shadow-lg">
+                            <p className="font-semibold text-sm mb-3">
+                              {format(safeParseDate(dateStr + 'T00:00:00'), 'EEEE, MMM d')}
+                            </p>
+                            <div className="space-y-3 text-sm">
+                              <div className="flex items-center justify-between gap-8">
+                                <div className="flex items-center gap-2">
+                                  <div className="h-2 w-3 rounded-sm" style={{ backgroundColor: '#3b82f6' }} />
+                                  <span className="text-muted-foreground">Due:</span>
+                                </div>
+                                <span className="font-bold text-blue-600">{data?.dueHabits || 0}</span>
                               </div>
-                              <div className="flex items-center justify-between gap-4">
-                                <span className="text-muted-foreground">Completed:</span>
-                                <span className="font-bold">{data?.completedDueHabits || 0}</span>
+                              <div className="flex items-center justify-between gap-8">
+                                <div className="flex items-center gap-2">
+                                  <div className="h-2 w-3 rounded-sm" style={{ backgroundColor: '#22c55e' }} />
+                                  <span className="text-muted-foreground">Completed:</span>
+                                </div>
+                                <span className="font-bold text-green-600">{data?.completedDueHabits || 0}</span>
                               </div>
-                              <div className="flex items-center justify-between gap-4">
-                                <span className="text-muted-foreground">Completion Rate:</span>
-                                <span className="font-bold">{data?.completionRate || 0}%</span>
-                              </div>
+                              {data?.dueHabits > 0 && (
+                                <div className="border-t border-border pt-2 mt-2">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-muted-foreground">Rate:</span>
+                                    <span className="font-bold text-green-600">{data?.completionRate || 0}%</span>
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           </div>
                         )
@@ -1859,7 +1941,7 @@ export default function Habits() {
                     name="Due Habits"
                     stroke="#3b82f6" 
                     fill="#3b82f6" 
-                    fillOpacity={0.3}
+                    fillOpacity={0.15}
                     isAnimationActive={true}
                   />
                   <Area 
@@ -1868,19 +1950,25 @@ export default function Habits() {
                     name="Completed"
                     stroke="#22c55e" 
                     fill="#22c55e" 
-                    fillOpacity={0.4}
+                    fillOpacity={0.25}
                     isAnimationActive={true}
                   />
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
               <div className="h-full flex items-center justify-center text-muted-foreground">
-                No due-habit data available
+                <div className="text-center">
+                  <p className="text-sm font-medium mb-1">No habit data for this month</p>
+                  <p className="text-xs">Create habits or complete them to see monthly performance</p>
+                </div>
               </div>
             )}
           </div>
           {selectedMonthEarlyCompletions > 0 && (
-            <div className="mt-3 text-xs text-muted-foreground">Completed Early ✓ {selectedMonthEarlyCompletions}</div>
+            <div className="mt-4 flex items-center justify-between px-4 py-2 bg-green-50 dark:bg-green-950 rounded-lg">
+              <span className="text-sm text-green-700 dark:text-green-300 font-medium">Early Completions</span>
+              <span className="text-sm font-bold text-green-700 dark:text-green-300">{selectedMonthEarlyCompletions} ✓</span>
+            </div>
           )}
         </CardContent>
       </Card>

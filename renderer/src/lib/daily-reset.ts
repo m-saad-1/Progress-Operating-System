@@ -157,6 +157,7 @@ export const getTaskOccurrenceDate = (task: Task, referenceDate: Date = new Date
  * Returns:
  * - Includes today-only tasks created today
  * - Includes continuous tasks (they reset daily)
+ * - Includes PAUSED tasks (they remain frozen in their current context)
  * - Excludes tasks with due_date in the past
  * - Excludes tasks deleted before today
  * 
@@ -174,12 +175,14 @@ export const getTodaysTasks = (tasks: Task[]): Task[] => {
 
     if (task.duration_type === 'continuous') {
       // Continuous tasks are always active on/after their creation date
+      // This includes paused continuous tasks - they remain frozen in Today's view
       if (createdDay.getTime() > today.getTime()) return false
 
       return true
     }
 
     // Today-only tasks only show on their creation day
+    // This includes paused today-only tasks - they remain frozen in Today's view
     if (getDayKey(createdDay) !== todayKey) return false
     
     return true
@@ -211,6 +214,10 @@ export const getYesterdaysTasks = (tasks: Task[]): Task[] => {
   const yesterdayKey = getDayKey(yesterday)
 
   return tasks.filter(task => {
+    // ⚠️ CRITICAL: Paused tasks are frozen and should never appear in Yesterday section
+    // They remain exactly where they were when paused
+    if (task.is_paused) return false
+
     if (task.deleted_at) {
       const deletedDay = startOfDay(safeParseDate(task.deleted_at))
       const deletedKey = getDayKey(deletedDay)
@@ -235,10 +242,6 @@ export const getYesterdaysTasks = (tasks: Task[]): Task[] => {
       const history = normalizeDailyProgress(task)
       const yesterdayEntry = history[yesterdayKey]
       if (!yesterdayEntry) return false
-
-      // Paused state is a Today-context freeze only and should not move into
-      // Yesterday section during rollover.
-      if (yesterdayEntry.source === 'paused') return false
 
       // Restore rules:
       // - Restored same day as deletion => yesterday entry is marked as 'restore' and should be shown
@@ -358,8 +361,13 @@ export const recordDailyProgress = (
 /**
  * Determines if a task should reset for a new day
  * Called during daily reset process at midnight
+ * ⚠️ IMPORTANT: Paused tasks should NEVER be reset - they remain frozen until explicitly resumed
  */
 export const shouldResetTask = (task: Task): boolean => {
+  // Paused tasks are completely frozen and should not participate in daily reset
+  if (task.is_paused) {
+    return false
+  }
   return task.duration_type === 'continuous'
 }
 

@@ -134,9 +134,10 @@ export const useDailyReset = () => {
     // Self-heal pass: if a continuous task has a recorded last_reset_date prior to today,
     // but the matching daily_progress snapshot is missing, backfill it deterministically.
     // This protects Yesterday section classification from legacy missed-rollover states.
+    // ⚠️ SKIP PAUSED TASKS: Paused tasks are frozen and should not be processed
     try {
       for (const task of tasks) {
-        if (task.deleted_at || task.duration_type !== 'continuous') continue
+        if (task.deleted_at || task.duration_type !== 'continuous' || task.is_paused) continue
 
         const resetKey = task.last_reset_date
         if (!isValidDateKey(resetKey)) continue
@@ -194,9 +195,10 @@ export const useDailyReset = () => {
     // PART 1: Snapshot and reset tasks
     // For every task, ensure daily_progress has an entry for the last active day
     // For continuous tasks, also reset their current status/progress
+    // ⚠️ CRITICAL: Skip paused tasks entirely - they are frozen and do not participate in daily processing
     try {
       for (const task of tasks) {
-        if (task.deleted_at) continue
+        if (task.deleted_at || task.is_paused) continue
 
         try {
           const now = new Date()
