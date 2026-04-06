@@ -980,9 +980,6 @@ export class DatabaseService {
         params.push(now);
         updates.push('progress = ?');
         params.push(100);
-      } else if (data.status === 'pending') {
-        updates.push('completed_at = ?');
-        params.push(null);
       }
     }
     if (data.progress !== undefined) {
@@ -990,9 +987,12 @@ export class DatabaseService {
       params.push(data.progress);
     }
     // Handle explicit completed_at when set directly (e.g., clearing it when un-completing)
-    if ('completed_at' in data && data.status === undefined) {
+    if ('completed_at' in data) {
       updates.push('completed_at = ?');
       params.push(data.completed_at || null);
+    } else if (data.status !== undefined && data.status !== 'completed') {
+      updates.push('completed_at = ?');
+      params.push(null);
     }
     if (data.daily_progress !== undefined) {
       updates.push('daily_progress = ?');
@@ -1198,28 +1198,58 @@ export class DatabaseService {
 
   async updateHabit(id: string, data: UpdateHabitDTO): Promise<void> {
     const now = new Date().toISOString();
-    
+
+    const updates: string[] = []
+    const params: any[] = []
+
+    if (data.title !== undefined) {
+      updates.push('title = ?')
+      params.push(data.title)
+    }
+    if (data.description !== undefined) {
+      updates.push('description = ?')
+      params.push(data.description || '')
+    }
+    if (data.frequency !== undefined) {
+      updates.push('frequency = ?')
+      params.push(data.frequency)
+    }
+    if (data.schedule !== undefined) {
+      updates.push('schedule = ?')
+      params.push(JSON.stringify(data.schedule))
+    }
+    if (data.goal_id !== undefined) {
+      updates.push('goal_id = ?')
+      params.push(data.goal_id || null)
+    }
+    if (data.streak_current !== undefined) {
+      updates.push('streak_current = ?')
+      params.push(data.streak_current)
+    }
+    if (data.streak_longest !== undefined) {
+      updates.push('streak_longest = ?')
+      params.push(data.streak_longest)
+    }
+    if (data.consistency_score !== undefined) {
+      updates.push('consistency_score = ?')
+      params.push(data.consistency_score)
+    }
+
+    if (updates.length === 0) {
+      return
+    }
+
+    updates.push('updated_at = ?', 'version = version + 1')
+    params.push(now, id)
+
     await this.executeTransaction([{
       query: `
-        UPDATE habits 
-        SET title = ?, description = ?, frequency = ?, schedule = ?, goal_id = ?,
-            streak_current = ?, streak_longest = ?, consistency_score = ?,
-            updated_at = ?, version = version + 1
+        UPDATE habits
+        SET ${updates.join(', ')}
         WHERE id = ?
       `,
-      params: [
-        data.title,
-        data.description || '',
-        data.frequency || 'daily',
-        JSON.stringify(data.schedule || []),
-        data.goal_id || null,
-        data.streak_current || 0,
-        data.streak_longest || 0,
-        data.consistency_score || 0,
-        now,
-        id,
-      ]
-    }]);
+      params,
+    }])
   }
 
   async markHabitCompleted(habitId: string, completed: boolean): Promise<void> {
@@ -1233,7 +1263,7 @@ export class DatabaseService {
    * - Habit completions can only be set for today or past dates (no future completions)
    * - Uses INSERT OR REPLACE to prevent duplicate entries for same habit/date
    * - Streak is recalculated from actual completion history, not from toggle count
-   * - Consistency score is based on 30-day window from database records
+  * - Consistency score is based on current calendar month from database records
    * - All changes are logged via version increment for audit purposes
    * 
    * NOTE: Toggling a habit completion multiple times on the same day does NOT
@@ -1347,13 +1377,9 @@ export class DatabaseService {
       habitCompletionHistory
     );
 
-    // Calculate consistency: count completions from creation date to 30 days ago (or creation date, whichever is later)
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const thirtyDaysAgoStr = getLocalDateString(thirtyDaysAgo);
-    
-    // The calculation window starts from the later of: habit creation date or 30 days ago
-    const consistencyStartDate = habitCreatedDate > thirtyDaysAgoStr ? habitCreatedDate : thirtyDaysAgoStr;
+    // Calculate consistency from the current calendar month up to today.
+    const monthStartStr = getLocalDateString(startOfMonth(new Date()));
+    const consistencyStartDate = habitCreatedDate > monthStartStr ? habitCreatedDate : monthStartStr;
 
     const consistencyResult = await this.executeQuery<{ count: number }>(`
       SELECT COUNT(*) as count 
@@ -1981,6 +2007,7 @@ export class DatabaseService {
       created_at: string
       updated_at: string
       is_paused?: number | boolean
+      paused_at?: string | null
       daily_progress?: string | Record<string, DailyTaskState> | null
       deleted_at?: string | null
     }
@@ -1997,10 +2024,15 @@ export class DatabaseService {
       normalizedHistory: Record<string, DailyTaskState>
     ): boolean => {
       const historyEntry = normalizedHistory[dayKey]
-      if (historyEntry) return historyEntry.source === 'paused'
+      if (historyEntry) return (historyEntry as any).source === 'paused'
       const rawIsPaused = task.is_paused
       const isPausedNow = rawIsPaused === 1 || rawIsPaused === true
-      return dayKey === todayKey && isPausedNow
+      if (!isPausedNow) return false
+
+      if (!task.paused_at) return true
+
+      const pausedKey = toLocalDayKey(task.paused_at)
+      return dayKey >= pausedKey && dayKey <= todayKey
     }
 
     const getTaskLifecycleEndKey = (task: RawDashboardTaskRecord): string => {
@@ -2084,7 +2116,7 @@ export class DatabaseService {
       // Overdue task candidates (finalized state evaluated below)
       {
         query: `
-          SELECT id, due_date, status, progress, created_at, updated_at, is_paused, daily_progress, deleted_at
+          SELECT id, due_date, status, progress, created_at, updated_at, is_paused, paused_at, daily_progress, deleted_at
           FROM tasks 
           WHERE due_date IS NOT NULL
           AND deleted_at IS NULL
@@ -2326,6 +2358,7 @@ export class DatabaseService {
       updated_at: string;
       deleted_at: string | null;
       is_paused?: number | boolean;
+      paused_at?: string | null;
       duration_type?: 'today' | 'continuous';
       daily_progress?: string | Record<string, DailyTaskState> | null;
     };
@@ -2414,12 +2447,17 @@ export class DatabaseService {
     ): boolean => {
       const historyEntry = normalizedHistory[dayKey];
       if (historyEntry) {
-        return historyEntry.source === 'paused';
+        return (historyEntry as any).source === 'paused';
       }
 
       const rawIsPaused = task.is_paused;
       const isPausedNow = rawIsPaused === 1 || rawIsPaused === true;
-      return dayKey === todayKey && isPausedNow;
+      if (!isPausedNow) return false;
+
+      if (!task.paused_at) return true;
+
+      const pausedKey = toLocalDayKey(task.paused_at);
+      return dayKey >= pausedKey && dayKey <= todayKey;
     };
 
     const buildDayKeys = (startKey: string, endKey: string): string[] => {
@@ -2553,7 +2591,7 @@ export class DatabaseService {
     };
 
     const taskRecords = await this.executeQuery<RawTaskStatsRecord>(`
-      SELECT id, title, priority, status, progress, created_at, updated_at, deleted_at, is_paused, duration_type, daily_progress
+      SELECT id, title, priority, status, progress, created_at, updated_at, deleted_at, is_paused, paused_at, duration_type, daily_progress
       FROM tasks
     `);
 
@@ -2640,6 +2678,7 @@ export class DatabaseService {
       updated_at: string;
       deleted_at: string | null;
       is_paused?: number | boolean;
+      paused_at?: string | null;
       duration_type?: 'today' | 'continuous';
       daily_progress?: string | Record<string, DailyTaskState> | null;
     };
@@ -2717,12 +2756,17 @@ export class DatabaseService {
     ): boolean => {
       const historyEntry = normalizedHistory[dayKey];
       if (historyEntry) {
-        return historyEntry.source === 'paused';
+        return (historyEntry as any).source === 'paused';
       }
 
       const rawIsPaused = task.is_paused;
       const isPausedNow = rawIsPaused === 1 || rawIsPaused === true;
-      return dayKey === todayKey && isPausedNow;
+      if (!isPausedNow) return false;
+
+      if (!task.paused_at) return true;
+
+      const pausedKey = toLocalDayKey(task.paused_at);
+      return dayKey >= pausedKey && dayKey <= todayKey;
     };
 
     const buildDayKeys = (startKey: string, endKey: string): string[] => {
@@ -2825,7 +2869,7 @@ export class DatabaseService {
     };
 
     const taskRecords = await this.executeQuery<RawTaskStatsRecord>(`
-      SELECT id, title, due_date, priority, status, progress, created_at, updated_at, deleted_at, is_paused, duration_type, daily_progress
+      SELECT id, title, due_date, priority, status, progress, created_at, updated_at, deleted_at, is_paused, paused_at, duration_type, daily_progress
       FROM tasks
     `);
 
@@ -2945,6 +2989,7 @@ export class DatabaseService {
       updated_at: string;
       deleted_at: string | null;
       is_paused?: number | boolean;
+      paused_at?: string | null;
       duration_type?: 'today' | 'continuous';
       daily_progress?: string | Record<string, DailyTaskState> | null;
     };
@@ -3031,7 +3076,7 @@ export class DatabaseService {
     };
 
     const taskRecords = await this.executeQuery<RawTaskStatsRecord>(`
-      SELECT id, priority, status, progress, created_at, updated_at, deleted_at, is_paused, duration_type, daily_progress
+      SELECT id, priority, status, progress, created_at, updated_at, deleted_at, is_paused, paused_at, duration_type, daily_progress
       FROM tasks
     `);
 
@@ -3089,12 +3134,17 @@ export class DatabaseService {
     ): boolean => {
       const historyEntry = normalizedHistory[dayKey];
       if (historyEntry) {
-        return historyEntry.source === 'paused';
+        return (historyEntry as any).source === 'paused';
       }
 
       const rawIsPaused = task.is_paused;
       const isPausedNow = rawIsPaused === 1 || rawIsPaused === true;
-      return dayKey === todayKey && isPausedNow;
+      if (!isPausedNow) return false;
+
+      if (!task.paused_at) return true;
+
+      const pausedKey = toLocalDayKey(task.paused_at);
+      return dayKey >= pausedKey && dayKey <= todayKey;
     };
 
     const computePeriodWeights = (

@@ -22,7 +22,7 @@ import {
   Repeat,
   Timer
 } from 'lucide-react'
-import { format, parseISO, startOfWeek, startOfMonth, endOfMonth, addMonths, addDays, addWeeks, startOfQuarter, endOfQuarter, startOfYear, endOfYear } from 'date-fns'
+import { format, parseISO, startOfMonth, endOfMonth, addMonths, addDays, startOfYear, endOfYear } from 'date-fns'
 import { useStore } from '@/store'
 import { useElectron } from '@/hooks/use-electron'
 import { useSharedTimer } from '@/hooks/use-shared-timer'
@@ -256,6 +256,23 @@ export default function Analytics() {
     return calculateProductivityScore(taskAnalytics, habitAnalytics)
   }, [habitAnalytics, taskAnalytics])
 
+  const getChartProductivityScore = (taskPlannedWeight: number, taskEarnedWeight: number, dueHabits: number, completedDueHabits: number) => {
+    const taskComponent = taskPlannedWeight > 0 ? Math.round((taskEarnedWeight / taskPlannedWeight) * 100) : 0
+    const habitComponent = dueHabits > 0 ? Math.round((completedDueHabits / dueHabits) * 100) : 0
+
+    return calculateProductivityScore(
+      {
+        weightedCompletionRate: taskComponent,
+        totalWeight: taskPlannedWeight,
+      },
+      {
+        avgConsistency: habitComponent,
+        totalHabitWeight: completedDueHabits,
+        total: dueHabits,
+      }
+    ).overall
+  }
+
   // Fetch time_blocks data for the Analytics Time tab — tightly connected to Time page
   const { data: timeBlocksAnalytics } = useQuery({
     queryKey: ['time-analytics', timeRange, dateRange.start.toISOString(), dateRange.end.toISOString()],
@@ -381,29 +398,6 @@ export default function Analytics() {
     [habits, allHabitCompletions, productivityDateRange, timeRange]
   )
 
-  const getWeightedProductivity = (
-    taskPlannedWeight: number,
-    taskEarnedWeight: number,
-    dueHabits: number,
-    completedDueHabits: number
-  ) => {
-    const taskCompletion = taskPlannedWeight > 0
-      ? (taskEarnedWeight / taskPlannedWeight) * 100
-      : 0
-    const habitCompletion = dueHabits > 0
-      ? (completedDueHabits / dueHabits) * 100
-      : 0
-
-    if (dueHabits <= 0) {
-      return Math.round(taskCompletion)
-    }
-
-    const totalCategoryWeight = 20 + 4
-    const taskContribution = taskCompletion * 20
-    const habitContribution = habitCompletion * 4
-    return Math.round((taskContribution + habitContribution) / totalCategoryWeight)
-  }
-
   const productivityChartData = useMemo(() => {
     const habitByDate = new Map(
       productivityHabitSeries.map((point) => [point.fullDate, point])
@@ -417,7 +411,7 @@ export default function Analytics() {
         const taskEarnedWeight = point.earnedWeight
         const dueHabits = habitPoint?.dueHabits || 0
         const completedDueHabits = habitPoint?.completedDueHabits || 0
-        const productivity = getWeightedProductivity(
+        const productivity = getChartProductivityScore(
           taskPlannedWeight,
           taskEarnedWeight,
           dueHabits,
@@ -473,54 +467,6 @@ export default function Analytics() {
       return result
     }
 
-    if (timeRange === 'quarter') {
-      const byWeek = new Map<string, { taskPlannedWeight: number; taskEarnedWeight: number; dueHabits: number; completedDueHabits: number }>()
-
-      daily.forEach((point) => {
-        const pointDate = parseISO(point.fullDate)
-        const bucketStart = startOfWeek(pointDate, { weekStartsOn: 1 })
-        const bucketKey = format(bucketStart, 'yyyy-MM-dd')
-        const current = byWeek.get(bucketKey) || { taskPlannedWeight: 0, taskEarnedWeight: 0, dueHabits: 0, completedDueHabits: 0 }
-        current.taskPlannedWeight += point.taskPlannedWeight
-        current.taskEarnedWeight += point.taskEarnedWeight
-        current.dueHabits += point.dueHabits
-        current.completedDueHabits += point.completedDueHabits
-        byWeek.set(bucketKey, current)
-      })
-
-      // Fill in ALL weeks of the quarter (complete calendar), not just up to today
-      const quarterStart = startOfQuarter(productivityDisplayRange.start)
-      const quarterEnd = endOfQuarter(productivityDisplayRange.end)
-      
-      const result = []
-      let cursor = quarterStart
-      
-      while (cursor <= quarterEnd) {
-        const weekStart = startOfWeek(cursor, { weekStartsOn: 1 })
-        const bucketKey = format(weekStart, 'yyyy-MM-dd')
-        const value = byWeek.get(bucketKey) || { taskPlannedWeight: 0, taskEarnedWeight: 0, dueHabits: 0, completedDueHabits: 0 }
-        
-        result.push({
-          date: format(weekStart, 'MMM d'),
-          fullDate: bucketKey,
-          taskPlannedWeight: value.taskPlannedWeight,
-          taskEarnedWeight: value.taskEarnedWeight,
-          dueHabits: value.dueHabits,
-          completedDueHabits: value.completedDueHabits,
-          productivity: getWeightedProductivity(
-            value.taskPlannedWeight,
-            value.taskEarnedWeight,
-            value.dueHabits,
-            value.completedDueHabits
-          ),
-        })
-        
-        cursor = addWeeks(cursor, 1)
-      }
-      
-      return result
-    }
-
     // Year view - aggregate by ALL 12 months (complete calendar), not just up to today
     const byMonth = new Map<string, { taskPlannedWeight: number; taskEarnedWeight: number; dueHabits: number; completedDueHabits: number }>()
     daily.forEach((point) => {
@@ -542,6 +488,35 @@ export default function Analytics() {
     while (monthCursor <= yearEnd) {
       const bucketKey = format(monthCursor, 'yyyy-MM')
       const value = byMonth.get(bucketKey) || { taskPlannedWeight: 0, taskEarnedWeight: 0, dueHabits: 0, completedDueHabits: 0 }
+      const monthStart = startOfMonth(monthCursor)
+      const monthEnd = endOfMonth(monthCursor)
+      const isFutureMonth = monthStart > productivityDateRange.end
+
+      const monthTaskCompletion = value.taskPlannedWeight > 0
+        ? Math.round((value.taskEarnedWeight / value.taskPlannedWeight) * 100)
+        : 0
+
+      const monthHabitAnalytics = !isFutureMonth
+        ? calculateHabitAnalytics(habits, {
+            start: monthStart,
+            end: monthEnd > productivityDateRange.end ? productivityDateRange.end : monthEnd,
+          }, allHabitCompletions)
+        : null
+
+      const monthProductivity = !isFutureMonth
+        ? calculateProductivityScore(
+            {
+              weightedCompletionRate: monthTaskCompletion,
+              totalWeight: value.taskPlannedWeight,
+            },
+            {
+              avgConsistency: monthHabitAnalytics?.avgConsistency || 0,
+              totalHabitWeight: monthHabitAnalytics?.totalHabitWeight || 0,
+              total: monthHabitAnalytics?.total || 0,
+            }
+          ).overall
+        : 0
+
       monthBuckets.push({
         date: format(monthCursor, 'MMM'),
         fullDate: bucketKey,
@@ -549,18 +524,13 @@ export default function Analytics() {
         taskEarnedWeight: value.taskEarnedWeight,
         dueHabits: value.dueHabits,
         completedDueHabits: value.completedDueHabits,
-        productivity: getWeightedProductivity(
-          value.taskPlannedWeight,
-          value.taskEarnedWeight,
-          value.dueHabits,
-          value.completedDueHabits
-        ),
+        productivity: monthProductivity,
       })
       monthCursor = addMonths(monthCursor, 1)
     }
 
     return monthBuckets
-  }, [productivityDateRange.end, productivityHabitSeries, taskRangeSnapshot.daily, timeRange, productivityDisplayRange.start, productivityDisplayRange.end])
+  }, [allHabitCompletions, habits, productivityDateRange.end, productivityHabitSeries, taskRangeSnapshot.daily, timeRange, productivityDisplayRange.start, productivityDisplayRange.end])
 
   const habitDueSeries = useMemo(
     () => calculateHabitDueSeries(
@@ -620,19 +590,16 @@ export default function Analytics() {
       return result
     }
 
-    const aggregateBy = timeRange === 'quarter' ? 'week' : 'month'
     const grouped: Record<string, { date: string; fullDate: string; dueHabits: number; completedDueHabits: number; consistency: number }> = {}
 
     habitDueSeries.forEach((point) => {
       const date = parseISO(point.fullDate)
-      const periodStart = aggregateBy === 'week'
-        ? startOfWeek(date, { weekStartsOn: 1 })
-        : startOfMonth(date)
-      const periodKey = format(periodStart, aggregateBy === 'week' ? 'yyyy-MM-dd' : 'yyyy-MM')
+      const periodStart = startOfMonth(date)
+      const periodKey = format(periodStart, 'yyyy-MM')
 
       if (!grouped[periodKey]) {
         grouped[periodKey] = {
-          date: aggregateBy === 'week' ? format(periodStart, 'MMM d') : format(periodStart, 'MMM'),
+          date: format(periodStart, 'MMM'),
           fullDate: periodKey,
           dueHabits: 0,
           completedDueHabits: 0,
@@ -643,38 +610,6 @@ export default function Analytics() {
       grouped[periodKey].dueHabits += point.dueHabits
       grouped[periodKey].completedDueHabits += point.completedDueHabits
     })
-
-    /* For Quarter view, fill in ALL weeks (complete calendar), not just up to today */
-    if (timeRange === 'quarter') {
-      const quarterStart = startOfQuarter(displayRange.start)
-      const quarterEnd = endOfQuarter(displayRange.end)
-      
-      const result = []
-      let cursor = quarterStart
-      
-      while (cursor <= quarterEnd) {
-        const weekStart = startOfWeek(cursor, { weekStartsOn: 1 })
-        const periodKey = format(weekStart, 'yyyy-MM-dd')
-        const value = grouped[periodKey] || {
-          date: format(weekStart, 'MMM d'),
-          fullDate: periodKey,
-          dueHabits: 0,
-          completedDueHabits: 0,
-          consistency: 0,
-        }
-        
-        result.push({
-          ...value,
-          consistency: value.dueHabits > 0
-            ? Math.round((value.completedDueHabits / value.dueHabits) * 100)
-            : 0,
-        })
-        
-        cursor = addWeeks(cursor, 1)
-      }
-      
-      return result
-    }
 
     /* For Year view, fill in ALL 12 months (complete calendar), not just up to today */
     const result = []
@@ -759,19 +694,16 @@ export default function Analytics() {
       return result
     }
 
-    const aggregateBy = timeRange === 'quarter' ? 'week' : 'month'
     const grouped: Record<string, { date: string; fullDate: string; completed: number; partiallyCompleted: number; skipped: number }> = {}
 
     daily.forEach((point) => {
       const date = parseISO(point.fullDate)
-      const periodStart = aggregateBy === 'week'
-        ? startOfWeek(date, { weekStartsOn: 1 })
-        : startOfMonth(date)
-      const periodKey = format(periodStart, aggregateBy === 'week' ? 'yyyy-MM-dd' : 'yyyy-MM')
+      const periodStart = startOfMonth(date)
+      const periodKey = format(periodStart, 'yyyy-MM')
 
       if (!grouped[periodKey]) {
         grouped[periodKey] = {
-          date: aggregateBy === 'week' ? format(periodStart, 'MMM d') : format(periodStart, 'MMM'),
+          date: format(periodStart, 'MMM'),
           fullDate: periodKey,
           completed: 0,
           partiallyCompleted: 0,
@@ -783,32 +715,6 @@ export default function Analytics() {
       grouped[periodKey].partiallyCompleted += point.partiallyCompleted
       grouped[periodKey].skipped += point.skipped
     })
-
-    /* For Quarter view, fill in ALL weeks (complete calendar), not just up to today */
-    if (timeRange === 'quarter') {
-      const quarterStart = startOfQuarter(displayRange.start)
-      const quarterEnd = endOfQuarter(displayRange.end)
-      
-      const result = []
-      let cursor = quarterStart
-      
-      while (cursor <= quarterEnd) {
-        const weekStart = startOfWeek(cursor, { weekStartsOn: 1 })
-        const periodKey = format(weekStart, 'yyyy-MM-dd')
-        const value = grouped[periodKey] || {
-          date: format(weekStart, 'MMM d'),
-          fullDate: periodKey,
-          completed: 0,
-          partiallyCompleted: 0,
-          skipped: 0,
-        }
-        
-        result.push(value)
-        cursor = addWeeks(cursor, 1)
-      }
-      
-      return result
-    }
 
     /* For Year view, fill in ALL 12 months (complete calendar), not just up to today */
     const result = []
@@ -830,7 +736,7 @@ export default function Analytics() {
     }
     
     return result
-  }, [taskAnalytics.completed, taskAnalytics.partiallyCompleted, taskAnalytics.skipped, taskDateRange.start, taskRangeSnapshot.daily, timeRange, displayRange.start, displayRange.end])
+  }, [taskAnalytics.completed, taskAnalytics.partiallyCompleted, taskAnalytics.skipped, taskDateRange.start, taskRangeSnapshot.daily, displayRange.start, displayRange.end])
   
   // ============================================
   // PIE CHART DATA
@@ -895,7 +801,7 @@ export default function Analytics() {
               </span>
             </div>
             <div className="flex gap-2">
-              {(['day', 'week', 'month', 'quarter', 'year'] as const).map(range => (
+              {(['day', 'week', 'month', 'year'] as const).map(range => (
                 <Button
                   key={range}
                   variant="ghost"

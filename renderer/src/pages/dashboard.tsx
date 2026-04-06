@@ -252,12 +252,9 @@ export default function Dashboard() {
   // - Maintains task history in daily_progress for analytics
   const allTodaysTasks = useMemo(() => {
     const todaysTasksList = getTodaysTasks(tasks)
-    
-    // Filter out paused tasks
-    const activeTasksList = todaysTasksList.filter(task => !isTaskPausedOnDate(task, startOfDay(today)))
-    
+
     // Sort: incomplete first (by priority), then completed at bottom
-    return activeTasksList.sort((a, b) => {
+    return todaysTasksList.sort((a, b) => {
       // Completed tasks go to the bottom
       const aCompleted = (a.progress || 0) === 100
       const bCompleted = (b.progress || 0) === 100
@@ -592,7 +589,7 @@ export default function Dashboard() {
     }
   }, [allHabitsForDashboard, habitCompletions, today])
 
-  // OVERALL PROGRESS (30 Days): Use Task Tab stats + Habit metrics for 30-day range
+  // OVERALL PROGRESS (Month): Use Task Tab Monthly Progress + month-to-date habit metrics
   const overallProgressScore = useMemo(() => {
     if (!statsSnapshot) {
       return {
@@ -609,14 +606,14 @@ export default function Dashboard() {
       }
     }
 
-    // Use MONTH + PREVIOUS MONTH data from Task Tab to get ~30-day range
+    // Pull the exact same monthly task aggregate used by the Task tab Monthly Progress card.
     const monthTaskStats = statsSnapshot.monthly
     const monthTaskWeight = monthTaskStats.plannedWeight
     const monthTaskEarned = monthTaskStats.earnedWeight
 
-    // Get habit metrics for 30-day range
+    // Use current calendar month (month-to-date), not a rolling 30-day window.
     const range = {
-      start: startOfDay(subDays(today, 29)),
+      start: startOfMonth(today),
       end: endOfDay(today),
     }
     const habitMetrics = calculateHabitRangeMetrics(allHabitsForDashboard, habitCompletions, range)
@@ -899,7 +896,11 @@ export default function Dashboard() {
         toastSuccess('Task completed!')
       }
     },
-    onError: () => {
+    onError: (error) => {
+      if (error instanceof Error && error.message.includes('paused')) {
+        toastError('Task is paused. Resume it to continue progress tracking.')
+        return
+      }
       toastError('Failed to update task progress')
     }
   })
@@ -1147,9 +1148,9 @@ export default function Dashboard() {
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium flex items-center gap-2">
                 <TrendingUp className="h-4 w-4 text-sky-600" />
-                Overall Progress (30 Days)
+                Overall Progress (This Month)
               </CardTitle>
-              <CardDescription>Tasks + habits weighted by real completions</CardDescription>
+              <CardDescription>Task Monthly Progress + month-to-date habits</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-sky-600">{overallProgressScore.overall}%</div>

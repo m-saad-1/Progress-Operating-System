@@ -1,6 +1,38 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
+import { persistSettingsSnapshotToMainProcess } from '@/store'
 
 type Theme = 'dark' | 'light' | 'system'
+
+const SETTINGS_BACKUP_KEY = 'progress-os-settings-backup-v1'
+
+const readThemeFallback = (storageKey: string, defaultTheme: Theme): Theme => {
+  try {
+    const stored = localStorage.getItem(storageKey) as Theme | null
+    if (stored === 'dark' || stored === 'light' || stored === 'system') {
+      return stored
+    }
+
+    const rawBackup = localStorage.getItem(SETTINGS_BACKUP_KEY)
+    if (!rawBackup) return defaultTheme
+
+    const parsed = JSON.parse(rawBackup) as { theme?: 'dark' | 'light' }
+    if (parsed.theme === 'dark' || parsed.theme === 'light') {
+      return parsed.theme
+    }
+  } catch {
+    // Ignore read failures and use default.
+  }
+
+  return defaultTheme
+}
+
+const writeThemeFallback = (storageKey: string, theme: Theme) => {
+  try {
+    localStorage.setItem(storageKey, theme)
+  } catch {
+    // Ignore write failures.
+  }
+}
 
 interface ThemeProviderProps {
   children: React.ReactNode
@@ -27,8 +59,39 @@ export function ThemeProvider({
   ...props
 }: ThemeProviderProps) {
   const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem(storageKey) as Theme) || defaultTheme
+    () => readThemeFallback(storageKey, defaultTheme)
   )
+
+  useEffect(() => {
+    let cancelled = false
+
+    const restoreThemeFromDesktopSnapshot = async () => {
+      if (typeof window === 'undefined' || typeof window.electronAPI?.getSettingsSnapshot !== 'function') {
+        return
+      }
+
+      try {
+        const response = await window.electronAPI.getSettingsSnapshot()
+        if (cancelled || !response || (typeof response === 'object' && 'success' in response && !response.success)) {
+          return
+        }
+
+        const themePreference = response?.data?.themePreference
+        if (themePreference === 'dark' || themePreference === 'light' || themePreference === 'system') {
+          writeThemeFallback(storageKey, themePreference)
+          setTheme(themePreference)
+        }
+      } catch {
+        // Ignore restore failures.
+      }
+    }
+
+    void restoreThemeFromDesktopSnapshot()
+
+    return () => {
+      cancelled = true
+    }
+  }, [storageKey])
 
   useEffect(() => {
     const root = window.document.documentElement
@@ -50,10 +113,14 @@ export function ThemeProvider({
     root.style.setProperty('color-scheme', theme)
   }, [theme])
 
+  useEffect(() => {
+    void persistSettingsSnapshotToMainProcess({ themePreference: theme })
+  }, [theme])
+
   const value = {
     theme,
     setTheme: (theme: Theme) => {
-      localStorage.setItem(storageKey, theme)
+      writeThemeFallback(storageKey, theme)
       setTheme(theme)
     },
   }

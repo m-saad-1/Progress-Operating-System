@@ -1,7 +1,26 @@
+const isProd = process.env.NODE_ENV === 'production';
+// In development, avoid reusing a single native asset path that can remain file-locked on Windows.
+const nativeAssetBase = isProd
+  ? 'native_modules'
+  : `native_modules_dev_${process.pid}_${Date.now()}`;
+
 module.exports = [
+  // Relocate dynamically required assets/native modules into .webpack output
+  {
+    test: /\.(m?js|node)$/,
+    parser: {
+      amd: false,
+    },
+    use: {
+      loader: '@vercel/webpack-asset-relocator-loader',
+      options: {
+        outputAssetBase: nativeAssetBase,
+      },
+    },
+  },
   // Add support for native Node.js modules
   {
-    test: /native_modules\/.+\.(node)$/,
+    test: /native_modules[^/\\]*[\\/].+\.node$/,
     use: 'node-loader',
   },
   {

@@ -19,6 +19,7 @@ import { Progress } from '@/components/ui/progress'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { useStore } from '@/store'
 import { useTodayAnalyticsProductivity } from '@/hooks/use-today-analytics-productivity'
+import { getSafeAvatarSrc } from '@/lib/avatar'
 
 interface SidebarProps {
   collapsed: boolean
@@ -27,9 +28,9 @@ interface SidebarProps {
 
 const navItems = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/' },
-  { icon: Target, label: 'Goals', path: '/goals' },
   { icon: CheckSquare, label: 'Tasks', path: '/tasks' },
   { icon: Calendar, label: 'Habits', path: '/habits' },
+  { icon: Target, label: 'Goals', path: '/goals' },
   { icon: FileText, label: 'Notes', path: '/notes' },
   { icon: BookOpen, label: 'Reviews', path: '/reviews' },
   { icon: BarChart3, label: 'Analytics', path: '/analytics' },
@@ -42,6 +43,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const navigate = useNavigate()
   const store = useStore()
   const todayProductivity = useTodayAnalyticsProductivity()
+  const avatarSrc = useMemo(() => getSafeAvatarSrc(store.userProfile.avatar), [store.userProfile.avatar])
   
   // Get user initials for avatar
   const userInitials = useMemo(() => {
@@ -59,6 +61,20 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     if (!store.userProfile.name) return 'User'
     return store.userProfile.name.split(' ')[0]
   }, [store.userProfile.name])
+
+  const hasOverdueByTab = useMemo(() => {
+    const overdueNotifications = store.notifications.filter((notification) => notification.isOverdue)
+
+    const hasTasks = overdueNotifications.some((notification) => /task/i.test(notification.title) || /task/i.test(notification.message))
+    const hasHabits = overdueNotifications.some((notification) => /habit/i.test(notification.title) || /habit/i.test(notification.message))
+    const hasGoals = overdueNotifications.some((notification) => /goal/i.test(notification.title) || /goal/i.test(notification.message))
+
+    return {
+      '/tasks': hasTasks,
+      '/habits': hasHabits,
+      '/goals': hasGoals,
+    } as Record<string, boolean>
+  }, [store.notifications])
 
   return (
     <aside
@@ -162,6 +178,16 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     )}
                   />
 
+                  {hasOverdueByTab[path] && (
+                    <span
+                      className={cn(
+                        'absolute h-1.5 w-1.5 rounded-full bg-red-600',
+                        collapsed ? 'top-1.5 right-1.5' : 'top-2 left-7'
+                      )}
+                      aria-hidden="true"
+                    />
+                  )}
+
                   <span
                     className={cn(
                       'overflow-hidden whitespace-nowrap text-sm transition-[max-width,opacity,transform] duration-300 ease-out will-change-[max-width,opacity,transform]',
@@ -200,7 +226,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               )}
             >
               <Avatar className="h-9 w-9 border-2 border-primary/30">
-                <AvatarImage src={store.userProfile.avatar} />
+                <AvatarImage src={avatarSrc} />
                 <AvatarFallback className="bg-primary/15 text-primary text-sm font-bold">
                   {userInitials}
                 </AvatarFallback>

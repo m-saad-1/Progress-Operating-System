@@ -33,7 +33,7 @@
  *    - Daily:   Today only
  *    - Weekly:  Last 7 days (rolling window)
  *    - Monthly: Current calendar month
- *    - Quarterly: Current calendar quarter
+ *    - Quarterly: Removed from analytics views
  *    - Yearly:  Current calendar year
  *    - Ranges end at today (no future dates)
  * 
@@ -53,11 +53,9 @@ import {
   startOfDay,
   startOfWeek,
   startOfMonth,
-  startOfQuarter,
   startOfYear,
   endOfDay,
   endOfMonth,
-  endOfQuarter,
   endOfYear,
   subDays,
   addDays,
@@ -728,7 +726,7 @@ export const calculateDailyProgress = (tasks: Task[], habits: Habit[]): DailyPro
   }
 }
 
-export type TimeRange = 'day' | 'week' | 'month' | 'quarter' | 'year'
+export type TimeRange = 'day' | 'week' | 'month' | 'year'
 
 export interface DateRange {
   start: Date
@@ -753,9 +751,6 @@ export const getDateRange = (range: TimeRange): DateRange => {
       break
     case 'month':
       start = startOfMonth(today)
-      break
-    case 'quarter':
-      start = startOfQuarter(today)
       break
     case 'year':
       start = startOfYear(today)
@@ -789,10 +784,6 @@ export const getDateRangeDisplay = (range: TimeRange): DateRange => {
     case 'month':
       start = startOfMonth(today)
       end = endOfMonth(today)
-      break
-    case 'quarter':
-      start = startOfQuarter(today)
-      end = endOfQuarter(today)
       break
     case 'year':
       start = startOfYear(today)
@@ -860,7 +851,7 @@ export const calculateTaskAnalytics = (
   
   // Filter tasks by date range if provided
   // CRITICAL: Filter by due_date (when task is due), not created_at (when it was created)
-  // This ensures weekly/monthly/quarterly analytics show relevant tasks for that period
+  // This ensures weekly/monthly/yearly analytics show relevant tasks for that period
   // CRITICAL: EXCLUDE PAUSED TASKS - they are completely frozen and don't affect progress/analytics
   const filteredTasks = tasks
     .filter(t => {

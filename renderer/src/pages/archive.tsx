@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -857,6 +858,12 @@ function ArchivedItemCard({
   showCheckboxes?: boolean
 }) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const navigate = useNavigate()
+
+  const openHistoryDeletionSettings = () => {
+    setShowDeleteConfirm(false)
+    navigate('/settings?tab=privacy&section=danger-zone&highlight=history-deletion')
+  }
 
   return (
     <Card interactive className="group transition-all duration-200 border-border/50">
@@ -1026,8 +1033,22 @@ function ArchivedItemCard({
                               <span className="block mt-2">Historical progress data will NOT be deleted.</span>
                               <span className="block mt-3">
                                 If you want to delete historical data, enable
-                                <span className="font-medium"> "Allow history deletion" </span>
-                                in Settings.
+                                <button
+                                  type="button"
+                                  onClick={openHistoryDeletionSettings}
+                                  className="mx-1 font-semibold text-red-600 dark:text-red-400 underline underline-offset-2 hover:text-red-700 dark:hover:text-red-300 transition-colors"
+                                >
+                                  "Enable History Deletion"
+                                </button>
+                                in
+                                <button
+                                  type="button"
+                                  onClick={openHistoryDeletionSettings}
+                                  className="ml-1 font-semibold text-red-600 dark:text-red-400 underline underline-offset-2 hover:text-red-700 dark:hover:text-red-300 transition-colors"
+                                >
+                                  Settings {'>'} Privacy
+                                </button>
+                                .
                               </span>
                             </>
                           )

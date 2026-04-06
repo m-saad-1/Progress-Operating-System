@@ -1,2 +1,10 @@
-// This file is not needed for alias resolution.
-// Please configure "paths" in your tsconfig.json instead.
+// Shared renderer global types.
+// Keep desktopAPI as an alias of electronAPI for runtime-swappable desktop wrappers.
+
+export {}
+
+declare global {
+	interface Window {
+		desktopAPI: any
+	}
+}

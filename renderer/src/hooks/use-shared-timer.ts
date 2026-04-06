@@ -13,6 +13,30 @@ import {
 } from '@/store'
 
 const MS_IN_SECOND = 1000
+const COMPLETION_ALARM_GAIN = 0.75
+const ALARM_DURATION_MS = 10000 // 10 seconds
+
+let timerControllerOwner: symbol | null = null
+let activeAlarmContext: AudioContext | null = null
+let activeAlarmStoppers: { stop(): void }[] = []
+
+const stopActiveAlarm = () => {
+  // Stop all active oscillators
+  activeAlarmStoppers.forEach(stopper => {
+    try {
+      stopper.stop()
+    } catch {
+      // Already stopped
+    }
+  })
+  activeAlarmStoppers = []
+  
+  // Close the active context
+  if (activeAlarmContext) {
+    activeAlarmContext.close().catch(() => undefined)
+    activeAlarmContext = null
+  }
+}
 
 export const TIMER_ALARM_OPTIONS: Array<{ value: TimerAlarmSound; label: string }> = [
   { value: 'classic', label: 'Classic' },
@@ -40,9 +64,6 @@ const ALARM_PATTERNS: Record<TimerAlarmSound, number[]> = {
   beep: [1000],
 }
 
-const ALARM_TOTAL_DURATION_SECONDS = 10
-const ALARM_REPEAT_INTERVAL_SECONDS = 1.2
-
 const TRACKED_TIMER_MODES: TimerMode[] = ['pomodoro', 'custom']
 
 const shouldTrackTimerMode = (mode: TimerMode | null): mode is TimerMode => {
@@ -52,18 +73,24 @@ const shouldTrackTimerMode = (mode: TimerMode | null): mode is TimerMode => {
 const playAlarm = (sound: TimerAlarmSound, enabled: boolean) => {
   if (!enabled) return
 
+  // Stop any previously active alarm
+  stopActiveAlarm()
+
   const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
   if (!AudioContextClass) return
 
   const context = new AudioContextClass()
-  const now = context.currentTime
-  const pattern = ALARM_PATTERNS[sound] || ALARM_PATTERNS.classic
+  activeAlarmContext = context
 
-  for (
-    let repeatOffset = 0;
-    repeatOffset < ALARM_TOTAL_DURATION_SECONDS;
-    repeatOffset += ALARM_REPEAT_INTERVAL_SECONDS
-  ) {
+  const pattern = ALARM_PATTERNS[sound] || ALARM_PATTERNS.classic
+  const patternDurationMs = (pattern.length * 0.2 + 0.25) * 1000
+
+  let elapsedMs = 0
+  const startTime = Date.now()
+
+  const playPatternOnce = () => {
+    const now = context.currentTime
+    
     pattern.forEach((frequency, index) => {
       const oscillator = context.createOscillator()
       const gainNode = context.createGain()
@@ -72,21 +99,41 @@ const playAlarm = (sound: TimerAlarmSound, enabled: boolean) => {
       oscillator.connect(gainNode)
       gainNode.connect(context.destination)
 
-      const startAt = now + repeatOffset + index * 0.18
-      const endAt = startAt + 0.16
+      const startAt = now + index * 0.2
+      const endAt = startAt + 0.18
 
       gainNode.gain.setValueAtTime(0.0001, startAt)
-      gainNode.gain.exponentialRampToValueAtTime(0.5, startAt + 0.02)
+      gainNode.gain.exponentialRampToValueAtTime(COMPLETION_ALARM_GAIN, startAt + 0.02)
       gainNode.gain.exponentialRampToValueAtTime(0.0001, endAt)
 
       oscillator.start(startAt)
       oscillator.stop(endAt)
+      
+      activeAlarmStoppers.push(oscillator)
     })
   }
 
+  // Play pattern repeatedly for 10 seconds
+  const alarmInterval = setInterval(() => {
+    const currentElapsedMs = Date.now() - startTime
+    
+    if (currentElapsedMs >= ALARM_DURATION_MS || !activeAlarmContext) {
+      clearInterval(alarmInterval)
+      stopActiveAlarm()
+      return
+    }
+    
+    playPatternOnce()
+  }, patternDurationMs)
+
+  // Initial pattern play
+  playPatternOnce()
+
+  // Failsafe: stop alarm after 10 seconds even if interval doesn't work
   setTimeout(() => {
-    context.close().catch(() => undefined)
-  }, (ALARM_TOTAL_DURATION_SECONDS + 0.5) * 1000)
+    clearInterval(alarmInterval)
+    stopActiveAlarm()
+  }, ALARM_DURATION_MS)
 }
 
 const previewAlarm = (sound: TimerAlarmSound, enabled: boolean) => {
@@ -182,8 +229,27 @@ export function useSharedTimer() {
   }))
 
   const [now, setNow] = useState(Date.now())
+  const [alarmPlaying, setAlarmPlaying] = useState(false)
+  const instanceIdRef = useRef(Symbol('shared-timer-instance'))
   const lastElapsedRef = useRef(0)
   const completionGuardRef = useRef(false)
+
+  const ensureControllerOwnership = useCallback(() => {
+    if (!timerControllerOwner) {
+      timerControllerOwner = instanceIdRef.current
+    }
+    return timerControllerOwner === instanceIdRef.current
+  }, [])
+
+  useEffect(() => {
+    ensureControllerOwnership()
+
+    return () => {
+      if (timerControllerOwner === instanceIdRef.current) {
+        timerControllerOwner = null
+      }
+    }
+  }, [ensureControllerOwnership])
 
   useEffect(() => {
     if (!timerRunning || !timerStartedAt) return
@@ -279,6 +345,8 @@ export function useSharedTimer() {
   }, [persistElapsedSession, startStoreTimer, timerMode, timerRunning])
 
   useEffect(() => {
+    if (!ensureControllerOwnership()) return
+
     if (!timerRunning) {
       completionGuardRef.current = false
       return
@@ -291,16 +359,24 @@ export function useSharedTimer() {
 
     ;(async () => {
       await stopTimer('complete')
-      playAlarm(timerAlarmSound, soundEnabled)
+      setAlarmPlaying(true)
+      playAlarm('classic', soundEnabled)
+      // Auto-stop alarm after 10 seconds
+      setTimeout(() => setAlarmPlaying(false), ALARM_DURATION_MS)
       resetStoreTimer(timerDurationMs)
       completionGuardRef.current = false
     })()
-  }, [elapsedMs, resetStoreTimer, soundEnabled, stopTimer, timerAlarmSound, timerDurationMs, timerRunning])
+  }, [elapsedMs, ensureControllerOwnership, resetStoreTimer, soundEnabled, stopTimer, timerDurationMs, timerRunning])
 
   const progress = useMemo(() => {
     if (!timerDurationMs) return 0
     return Math.min((elapsedMs / timerDurationMs) * 100, 100)
   }, [elapsedMs, timerDurationMs])
+
+  const handleStopAlarm = useCallback(() => {
+    stopActiveAlarm()
+    setAlarmPlaying(false)
+  }, [])
 
   return {
     timerMode,
@@ -314,6 +390,7 @@ export function useSharedTimer() {
     customDurationMs,
     soundEnabled,
     timerAlarmSound,
+    alarmPlaying,
     setSoundEnabled,
     setTimerAlarmSound,
     alarmOptions: TIMER_ALARM_OPTIONS,
@@ -324,6 +401,7 @@ export function useSharedTimer() {
     resetTimer,
     setCustomDurationMs,
     setFloatingTimerPosition,
+    stopAlarm: handleStopAlarm,
   }
 }
 

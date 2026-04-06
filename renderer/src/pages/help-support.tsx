@@ -118,10 +118,16 @@ export default function HelpSupportPage() {
         setFeedbackScreenshotDataUrl('')
       } else if (result.cachedForRetry) {
         info('Feedback was saved and will retry automatically.')
-        setFeedbackSubmitStatus({ type: 'error', message: `Feedback could not be sent right now. ${result.error || ''} It was saved for automatic retry.`.trim() })
+        setFeedbackSubmitStatus({ 
+          type: 'error', 
+          message: `Feedback could not be sent right now. ${result.error || ''} It was saved for automatic retry. If the issue persists, please contact us directly at progressoshelp@gmail.com`.trim() 
+        })
       } else {
         error('Feedback could not be sent. Please try again.')
-        setFeedbackSubmitStatus({ type: 'error', message: result.error || 'Feedback could not be sent.' })
+        setFeedbackSubmitStatus({ 
+          type: 'error', 
+          message: `${result.error || 'Feedback could not be sent.'} If you continue to experience issues, please send your feedback directly to progressoshelp@gmail.com for manual support.` 
+        })
       }
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : 'Unknown error'

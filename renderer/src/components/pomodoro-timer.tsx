@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Play, Pause, RotateCcw, Coffee, BookOpen, Volume2, VolumeX } from 'lucide-react'
+import { Play, Pause, RotateCcw, Coffee, BookOpen, Volume2, VolumeX, BellOff } from 'lucide-react'
 import {
   DEFAULT_LONG_BREAK_DURATION_MS,
   DEFAULT_POMODORO_DURATION_MS,
@@ -71,6 +71,7 @@ export function PomodoroTimer() {
     progress,
     soundEnabled,
     timerAlarmSound,
+    alarmPlaying,
     alarmOptions,
     previewAlarm,
     setSoundEnabled,
@@ -78,6 +79,7 @@ export function PomodoroTimer() {
     startTimer,
     stopTimer,
     resetTimer,
+    stopAlarm,
   } = useSharedTimer()
 
   const timeSettingsMs = useMemo(
@@ -192,6 +194,17 @@ export function PomodoroTimer() {
             )}
             {isActiveMode && timerRunning ? 'Pause' : 'Start'}
           </Button>
+          {alarmPlaying && (
+            <Button
+              onClick={stopAlarm}
+              size="lg"
+              className="bg-red-500 hover:bg-red-600 text-white animate-pulse"
+              aria-label="Stop alarm"
+              title="Stop the alarm"
+            >
+              <BellOff className="h-5 w-5" />
+            </Button>
+          )}
           <Button
             onClick={handleReset}
             variant="secondary"

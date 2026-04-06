@@ -85,14 +85,29 @@ export const normalizeDailyProgress = (task: Task): Record<string, DailyTaskStat
 
 export const getDailyEntry = (task: Task, date: Date = new Date()): DailyTaskState => {
   const key = getDayKey(date)
+  const today = getDayKey(new Date())
   const history = normalizeDailyProgress(task)
+  
+  // If we have a historical entry for this date, use it (most important for historical records)
   if (history[key]) return history[key]
 
-  const progress = (task.progress ?? 0) as TaskProgress
+  // For today or future dates, fall back to current task progress
+  if (key >= today) {
+    const progress = (task.progress ?? 0) as TaskProgress
+    return {
+      progress,
+      status: task.status ?? deriveStatusFromProgress(progress),
+      recorded_at: task.updated_at || task.created_at,
+      source: 'user',
+    }
+  }
+
+  // For past dates without a history entry, return 0 to prevent data corruption
+  // This ensures yesterday/historical sections only show what was explicitly recorded
   return {
-    progress,
-    status: task.status ?? deriveStatusFromProgress(progress),
-    recorded_at: task.updated_at || task.created_at,
+    progress: 0 as TaskProgress,
+    status: 'pending',
+    recorded_at: task.created_at,
     source: 'user',
   }
 }
@@ -106,8 +121,19 @@ export const isTaskPausedOnDate = (task: Task, date: Date = new Date()): boolean
     return dayEntry.source === 'paused'
   }
 
-  const todayKey = getDayKey(startOfDay(new Date()))
-  return dayKey === todayKey && task.is_paused === true
+  // Freeze semantics: while paused, task is excluded from all date-based processing
+  // from the pause date forward.
+  if (task.is_paused) {
+    if (task.paused_at) {
+      const pausedKey = getDayKey(startOfDay(safeParseDate(task.paused_at)))
+      return dayKey >= pausedKey
+    }
+
+    // If paused_at is missing, treat as frozen for safety.
+    return true
+  }
+
+  return false
 }
 
 export const upsertDailyEntry = (
@@ -171,6 +197,9 @@ export const getTodaysTasks = (tasks: Task[]): Task[] => {
   return tasks.filter(task => {
     if (task.deleted_at) return false
 
+    // Paused tasks stay pinned in Today's Tasks until explicitly resumed.
+    if (task.is_paused) return true
+
     const createdDay = startOfDay(safeParseDate(task.created_at))
 
     if (task.duration_type === 'continuous') {
@@ -200,6 +229,7 @@ export const getTodaysTasks = (tasks: Task[]): Task[] => {
  * - Shows continuous tasks that have a daily_progress entry for yesterday
  *   (so the user can see and edit their final state from the prior day)
  * - Excludes tasks with due_date before yesterday
+ * - Excludes paused tasks completely (they stay pinned in Today while frozen)
  * - NEVER shows archived, restored, or duplicated entries
  * - NEVER merges multiple days
  * 
@@ -214,9 +244,8 @@ export const getYesterdaysTasks = (tasks: Task[]): Task[] => {
   const yesterdayKey = getDayKey(yesterday)
 
   return tasks.filter(task => {
-    // ⚠️ CRITICAL: Paused tasks are frozen and should never appear in Yesterday section
-    // They remain exactly where they were when paused
-    if (task.is_paused) return false
+    // Paused tasks must remain frozen in Today and never appear in Yesterday.
+    if (task.is_paused || isTaskPausedOnDate(task, yesterday)) return false
 
     if (task.deleted_at) {
       const deletedDay = startOfDay(safeParseDate(task.deleted_at))
@@ -236,9 +265,10 @@ export const getYesterdaysTasks = (tasks: Task[]): Task[] => {
     }
 
     if (task.duration_type === 'continuous') {
-      // Continuous tasks: show in yesterday ONLY if they have a daily_progress
-      // snapshot for yesterday (written by the rollover process).
-      // This avoids duplicating tasks that already appear in TODAY.
+      // Continuous tasks should appear in Yesterday only when we have an explicit
+      // snapshot for yesterday, guaranteeing deterministic historical rendering.
+      if (createdDay.getTime() > yesterday.getTime()) return false
+
       const history = normalizeDailyProgress(task)
       const yesterdayEntry = history[yesterdayKey]
       if (!yesterdayEntry) return false
@@ -266,6 +296,7 @@ export const getArchivedTasks = (tasks: Task[]): Task[] => {
   
   return tasks.filter(task => {
     if (task.deleted_at) return false
+    if (task.is_paused) return false
     
     const taskCreatedAt = startOfDay(safeParseDate(task.created_at))
     
@@ -294,6 +325,8 @@ export const getTasksInDateRange = (
   const rangeEnd = startOfDay(endDate)
   
   return tasks.filter(task => {
+    if (task.deleted_at) return false
+
     const history = normalizeDailyProgress(task)
 
     const hasHistoryInRange = Object.keys(history).some((dateKey) => {
@@ -304,6 +337,9 @@ export const getTasksInDateRange = (
     if (hasHistoryInRange) return true
 
     // Fallback for tasks without history: use creation date as occurrence
+      // But skip paused tasks in fallback (they won't have future entries to process)
+      if (task.is_paused) return false
+
     const taskCreatedAt = startOfDay(safeParseDate(task.created_at))
     return !isBefore(taskCreatedAt, rangeStart) && !isBefore(rangeEnd, taskCreatedAt)
   })

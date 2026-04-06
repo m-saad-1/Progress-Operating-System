@@ -16,6 +16,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { format } from 'date-fns'
 import { useStore } from '@/store'
 import { database } from '@/lib/database'
+import type { Task, Habit, Goal } from '@/types'
 
 export const useAppLifecycle = () => {
   const queryClient = useQueryClient()
@@ -49,7 +50,11 @@ export const useAppLifecycle = () => {
             database.getHabits(),
             database.getGoals(),
           ])
-          setInitialData({ tasks, habits, goals })
+          setInitialData({
+            tasks: tasks as unknown as Task[],
+            habits: habits as unknown as Habit[],
+            goals: goals as unknown as Goal[],
+          })
           console.log('[App Lifecycle] Store refreshed from database')
         } catch (error) {
           console.error('[App Lifecycle] Failed to refresh store:', error)

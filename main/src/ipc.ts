@@ -12,6 +12,11 @@ import {
   verifyFeedbackConfig,
   initFeedbackAutoRetry,
 } from './feedback-service';
+import {
+  clearSettingsSnapshot,
+  readSettingsSnapshot,
+  writeSettingsSnapshot,
+} from './settings';
 
 export function initializeIpcMain(mainWindow: BrowserWindow) {
   const syncManager = getSyncManager()
@@ -49,6 +54,17 @@ export function initializeIpcMain(mainWindow: BrowserWindow) {
       error: err instanceof Error ? err.message : String(err),
     })
   })
+
+  const resolveNotificationIconPath = (): string | undefined => {
+    const candidates = [
+      path.join(process.resourcesPath, 'build', 'icon.png'),
+      path.join(process.resourcesPath, 'build', 'POS-ICON.ico'),
+      path.join(__dirname, '..', '..', 'build', 'icon.png'),
+      path.join(__dirname, '..', '..', 'build', 'POS-ICON.ico'),
+    ];
+
+    return candidates.find((candidate) => fs.existsSync(candidate));
+  }
 
   // Database operations
   ipcMain.handle('database:execute', async (event, query: string, params?: any[]) => {
@@ -112,6 +128,34 @@ export function initializeIpcMain(mainWindow: BrowserWindow) {
         console.error('Insert failed:', error);
         return { success: false, error: String(error) };
       }
+    }
+  });
+
+  ipcMain.handle('settings:getSnapshot', async () => {
+    try {
+      const snapshot = await readSettingsSnapshot();
+      return { success: true, data: snapshot };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Get settings snapshot failed:', error.message);
+        return { success: false, error: error.message };
+      }
+
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('settings:saveSnapshot', async (_event, snapshot: Record<string, unknown>) => {
+    try {
+      await writeSettingsSnapshot(snapshot as any);
+      return { success: true };
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error('Save settings snapshot failed:', error.message);
+        return { success: false, error: error.message };
+      }
+
+      return { success: false, error: String(error) };
     }
   });
 
@@ -238,34 +282,11 @@ export function initializeIpcMain(mainWindow: BrowserWindow) {
   });
 
   ipcMain.handle('app:getIconPath', () => {
-    // Return platform-specific icon path for notifications
-    let iconFileName: string;
-    
-    if (process.platform === 'win32') {
-      // Windows: use .ico format (or .png as fallback)
-      iconFileName = 'icon.png'; // Windows notifications work better with PNG
-    } else if (process.platform === 'darwin') {
-      // macOS: use .png (icns is for app bundle)
-      iconFileName = 'icon.png';
-    } else {
-      // Linux: use .png format
-      iconFileName = 'icon.png';
-    }
-    
-    const iconPath = path.join(__dirname, '..', '..', 'build', iconFileName);
-    
-    // Verify the icon exists and return absolute path
-    if (fs.existsSync(iconPath)) {
-      // Return as file:// URL for better cross-platform compatibility
+    const iconPath = resolveNotificationIconPath();
+    if (iconPath) {
       return `file://${iconPath.replace(/\\/g, '/')}`;
     }
-    
-    // Fallback to icon.png if platform-specific icon doesn't exist
-    const fallbackPath = path.join(__dirname, '..', '..', 'build', 'icon.png');
-    if (fs.existsSync(fallbackPath)) {
-      return `file://${fallbackPath.replace(/\\/g, '/')}`;
-    }
-    
+
     console.warn('[IPC] Notification icon not found at expected path');
     return undefined;
   });
@@ -273,9 +294,13 @@ export function initializeIpcMain(mainWindow: BrowserWindow) {
   // Native notification with app icon
   ipcMain.handle('app:showNotification', (event, options: { title: string; body: string }) => {
     try {
-      // Get the icon path for notifications
-      const iconPath = path.join(__dirname, '..', '..', 'build', 'icon.png');
-      
+      const { Notification } = require('electron');
+      if (typeof Notification?.isSupported === 'function' && !Notification.isSupported()) {
+        return { success: false, error: 'System notifications are not supported on this environment.' };
+      }
+
+      const iconPath = resolveNotificationIconPath();
+
       // Create notification options
       const notificationOptions: any = {
         title: options.title,
@@ -287,7 +312,7 @@ export function initializeIpcMain(mainWindow: BrowserWindow) {
       // On Windows: this improves icon display in development mode
       // On macOS: the app icon is used automatically via the bundle
       // On Linux: this is required for the icon to display
-      if (fs.existsSync(iconPath)) {
+      if (iconPath && fs.existsSync(iconPath)) {
         notificationOptions.icon = nativeImage.createFromPath(iconPath);
       }
 
@@ -296,7 +321,6 @@ export function initializeIpcMain(mainWindow: BrowserWindow) {
 
       // Create and show the notification
       // Using Electron's native Notification ensures the app icon is displayed correctly
-      const { Notification } = require('electron');
       const notification = new Notification(notificationOptions);
       notification.show();
       
@@ -636,6 +660,7 @@ export function initializeIpcMain(mainWindow: BrowserWindow) {
       const dbShmPath = path.join(userData, 'progress.db-shm');
       const dbWalPath = path.join(userData, 'progress.db-wal');
       const syncConfigPath = path.join(userData, 'sync-config.json');
+      const settingsSnapshotPath = path.join(userData, 'settings-snapshot.json');
       const encryptionKeyPath = path.join(userData, 'encryption.key');
       const legacyJsonPath = path.join(userData, 'progress-data.json');
       const backupDir = path.join(userData, 'backups');
@@ -678,6 +703,7 @@ export function initializeIpcMain(mainWindow: BrowserWindow) {
         dbShmPath,
         dbWalPath,
         syncConfigPath,
+        settingsSnapshotPath,
         encryptionKeyPath,
         legacyJsonPath,
       ];
@@ -706,6 +732,8 @@ export function initializeIpcMain(mainWindow: BrowserWindow) {
       }
       
       console.log('All application data has been reset successfully');
+
+      await clearSettingsSnapshot();
       
       // Wait a moment to ensure all file operations complete
       await new Promise(resolve => setTimeout(resolve, 500));

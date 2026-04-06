@@ -1,6 +1,12 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { Task, Habit, Goal } from '../../../../shared/types'
+import { Task, Habit, Goal } from '@/types'
+
+const USER_PROFILE_BACKUP_KEY = 'progress-os-user-profile-v1'
+const SETTINGS_BACKUP_KEY = 'progress-os-settings-backup-v1'
+const THEME_PREFERENCE_KEY = 'progress-os-theme-v1'
+
+type ThemePreference = 'light' | 'dark' | 'system'
 
 interface Notification {
   id: string
@@ -9,6 +15,7 @@ interface Notification {
   type: 'info' | 'success' | 'warning' | 'error'
   time: string
   read: boolean
+  isOverdue?: boolean
 }
 
 // User Profile Interface
@@ -266,6 +273,71 @@ const defaultUserProfile: UserProfile = {
   createdAt: new Date().toISOString(),
 }
 
+const normalizeUserProfile = (incoming?: Partial<UserProfile>): UserProfile => ({
+  name: typeof incoming?.name === 'string' ? incoming.name : defaultUserProfile.name,
+  email: typeof incoming?.email === 'string' ? incoming.email : defaultUserProfile.email,
+  avatar: typeof incoming?.avatar === 'string' ? incoming.avatar : undefined,
+  createdAt:
+    typeof incoming?.createdAt === 'string' ? incoming.createdAt : defaultUserProfile.createdAt,
+})
+
+const readUserProfileBackup = (): UserProfile => {
+  if (typeof window === 'undefined') {
+    return defaultUserProfile
+  }
+
+  try {
+    const raw = window.localStorage.getItem(USER_PROFILE_BACKUP_KEY)
+    if (!raw) return defaultUserProfile
+
+    const parsed = JSON.parse(raw) as Partial<UserProfile>
+    return normalizeUserProfile(parsed)
+  } catch {
+    return defaultUserProfile
+  }
+}
+
+const writeUserProfileBackup = (profile: UserProfile) => {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(USER_PROFILE_BACKUP_KEY, JSON.stringify(profile))
+  } catch {
+    // Ignore backup write failures (quota/private mode).
+  }
+}
+
+const readStoredThemePreference = (): ThemePreference => {
+  if (typeof window === 'undefined') {
+    return 'light'
+  }
+
+  try {
+    const stored = window.localStorage.getItem(THEME_PREFERENCE_KEY)
+    if (stored === 'dark' || stored === 'light' || stored === 'system') {
+      return stored
+    }
+
+    const rawBackup = window.localStorage.getItem(SETTINGS_BACKUP_KEY)
+    if (!rawBackup) return 'light'
+
+    const parsed = JSON.parse(rawBackup) as { theme?: 'light' | 'dark' }
+    return parsed.theme === 'dark' ? 'dark' : 'light'
+  } catch {
+    return 'light'
+  }
+}
+
+const writeStoredThemePreference = (themePreference: ThemePreference) => {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(THEME_PREFERENCE_KEY, themePreference)
+  } catch {
+    // Ignore write failures.
+  }
+}
+
 const defaultNotificationSettings: NotificationSettings = {
   enabled: true,
   sound: true,
@@ -294,6 +366,186 @@ const defaultPrivacySettings: PrivacySettings = {
   shareUsageData: false,
   localOnly: false,
 }
+
+interface SettingsBackup {
+  theme: 'light' | 'dark'
+  timezone: string
+  weekStart: 'sunday' | 'monday'
+  language: string
+  compactMode: boolean
+  animationsEnabled: boolean
+  soundEnabled: boolean
+  highContrastMode: boolean
+  reduceMotion: boolean
+  notificationSettings: NotificationSettings
+  privacySettings: PrivacySettings
+  allowHistoryDeletion: boolean
+  customReviewQuestions: CustomReviewQuestions
+  keyboardShortcuts: KeyboardShortcut[]
+  keyboardShortcutsEnabled: boolean
+  syncEnabled: boolean
+  syncProvider: 'local' | 'supabase' | 'custom'
+  syncInterval: number
+  autoSync: boolean
+}
+
+interface PersistentSettingsSnapshot {
+  version: number
+  settingsBackup: SettingsBackup
+  userProfile: UserProfile
+  themePreference: ThemePreference
+}
+
+interface SettingsSnapshotApi {
+  getSettingsSnapshot: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+  saveSettingsSnapshot: (snapshot: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>
+}
+
+const getDefaultSettingsBackup = (): SettingsBackup => ({
+  theme: 'light',
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  weekStart: 'monday',
+  language: 'en',
+  compactMode: false,
+  animationsEnabled: true,
+  soundEnabled: true,
+  highContrastMode: false,
+  reduceMotion: false,
+  notificationSettings: { ...defaultNotificationSettings },
+  privacySettings: { ...defaultPrivacySettings },
+  allowHistoryDeletion: false,
+  customReviewQuestions: { ...defaultCustomReviewQuestions },
+  keyboardShortcuts: [...defaultKeyboardShortcuts],
+  keyboardShortcutsEnabled: true,
+  syncEnabled: true,
+  syncProvider: 'local',
+  syncInterval: 5,
+  autoSync: true,
+})
+
+const normalizeSettingsBackup = (incoming?: Partial<SettingsBackup>): SettingsBackup => {
+  const defaults = getDefaultSettingsBackup()
+  return {
+    theme: incoming?.theme === 'dark' ? 'dark' : 'light',
+    timezone: typeof incoming?.timezone === 'string' ? incoming.timezone : defaults.timezone,
+    weekStart: incoming?.weekStart === 'sunday' ? 'sunday' : 'monday',
+    language: typeof incoming?.language === 'string' ? incoming.language : defaults.language,
+    compactMode: typeof incoming?.compactMode === 'boolean' ? incoming.compactMode : defaults.compactMode,
+    animationsEnabled: typeof incoming?.animationsEnabled === 'boolean' ? incoming.animationsEnabled : defaults.animationsEnabled,
+    soundEnabled: typeof incoming?.soundEnabled === 'boolean' ? incoming.soundEnabled : defaults.soundEnabled,
+    highContrastMode: typeof incoming?.highContrastMode === 'boolean' ? incoming.highContrastMode : defaults.highContrastMode,
+    reduceMotion: typeof incoming?.reduceMotion === 'boolean' ? incoming.reduceMotion : defaults.reduceMotion,
+    notificationSettings: {
+      ...defaults.notificationSettings,
+      ...(incoming?.notificationSettings || {}),
+    },
+    privacySettings: {
+      ...defaults.privacySettings,
+      ...(incoming?.privacySettings || {}),
+    },
+    allowHistoryDeletion:
+      typeof incoming?.allowHistoryDeletion === 'boolean'
+        ? incoming.allowHistoryDeletion
+        : defaults.allowHistoryDeletion,
+    customReviewQuestions: {
+      ...defaults.customReviewQuestions,
+      ...(incoming?.customReviewQuestions || {}),
+    },
+    keyboardShortcuts:
+      Array.isArray(incoming?.keyboardShortcuts) && incoming.keyboardShortcuts.length > 0
+        ? incoming.keyboardShortcuts
+        : defaults.keyboardShortcuts,
+    keyboardShortcutsEnabled:
+      typeof incoming?.keyboardShortcutsEnabled === 'boolean'
+        ? incoming.keyboardShortcutsEnabled
+        : defaults.keyboardShortcutsEnabled,
+    syncEnabled: typeof incoming?.syncEnabled === 'boolean' ? incoming.syncEnabled : defaults.syncEnabled,
+    syncProvider:
+      incoming?.syncProvider === 'supabase' || incoming?.syncProvider === 'custom'
+        ? incoming.syncProvider
+        : 'local',
+    syncInterval:
+      typeof incoming?.syncInterval === 'number' && Number.isFinite(incoming.syncInterval)
+        ? incoming.syncInterval
+        : defaults.syncInterval,
+    autoSync: typeof incoming?.autoSync === 'boolean' ? incoming.autoSync : defaults.autoSync,
+  }
+}
+
+const readSettingsBackup = (): SettingsBackup => {
+  if (typeof window === 'undefined') {
+    return getDefaultSettingsBackup()
+  }
+
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_BACKUP_KEY)
+    if (!raw) return getDefaultSettingsBackup()
+    return normalizeSettingsBackup(JSON.parse(raw) as Partial<SettingsBackup>)
+  } catch {
+    return getDefaultSettingsBackup()
+  }
+}
+
+const writeSettingsBackup = (backup: SettingsBackup) => {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(SETTINGS_BACKUP_KEY, JSON.stringify(backup))
+  } catch {
+    // Ignore backup write failures (quota/private mode).
+  }
+}
+
+const selectSettingsBackup = (state: Store): SettingsBackup =>
+  normalizeSettingsBackup({
+    theme: state.theme,
+    timezone: state.timezone,
+    weekStart: state.weekStart,
+    language: state.language,
+    compactMode: state.compactMode,
+    animationsEnabled: state.animationsEnabled,
+    soundEnabled: state.soundEnabled,
+    highContrastMode: state.highContrastMode,
+    reduceMotion: state.reduceMotion,
+    notificationSettings: state.notificationSettings,
+    privacySettings: state.privacySettings,
+    allowHistoryDeletion: state.allowHistoryDeletion,
+    customReviewQuestions: state.customReviewQuestions,
+    keyboardShortcuts: state.keyboardShortcuts,
+    keyboardShortcutsEnabled: state.keyboardShortcutsEnabled,
+    syncEnabled: state.syncEnabled,
+    syncProvider: state.syncProvider,
+    syncInterval: state.syncInterval,
+    autoSync: state.autoSync,
+  })
+
+const getMainProcessSettingsApi = (): SettingsSnapshotApi | null => {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  const api = window.electronAPI as Partial<SettingsSnapshotApi> | undefined
+  if (
+    typeof api?.getSettingsSnapshot === 'function' &&
+    typeof api?.saveSettingsSnapshot === 'function'
+  ) {
+    return api as SettingsSnapshotApi
+  }
+
+  return null
+}
+
+const hasMainProcessSettingsApi = () => getMainProcessSettingsApi() !== null
+
+const buildPersistentSettingsSnapshot = (
+  state: Store,
+  themePreference: ThemePreference = readStoredThemePreference()
+): PersistentSettingsSnapshot => ({
+  version: 1,
+  settingsBackup: selectSettingsBackup(state),
+  userProfile: normalizeUserProfile(state.userProfile),
+  themePreference,
+})
 
 // Default review questions for each type
 const defaultDailyQuestions: ReviewQuestion[] = [
@@ -338,6 +590,8 @@ const defaultCustomReviewQuestions: CustomReviewQuestions = {
   monthly: defaultMonthlyQuestions,
 }
 
+const initialSettingsBackup = readSettingsBackup()
+
 export const DEFAULT_POMODORO_DURATION_MS = 25 * 60 * 1000
 export const DEFAULT_SHORT_BREAK_DURATION_MS = 5 * 60 * 1000
 export const DEFAULT_LONG_BREAK_DURATION_MS = 15 * 60 * 1000
@@ -345,28 +599,32 @@ export const DEFAULT_CUSTOM_DURATION_MS = DEFAULT_POMODORO_DURATION_MS
 
 export const useStore = create<Store>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       // Theme
-      theme: 'light',
+      theme: initialSettingsBackup.theme,
       toggleTheme: () => 
         set((state) => ({ theme: state.theme === 'light' ? 'dark' : 'light' })),
       
       // User Profile
-      userProfile: defaultUserProfile,
+      userProfile: readUserProfileBackup(),
       updateUserProfile: (profile) =>
-        set((state) => ({
-          userProfile: { ...state.userProfile, ...profile }
-        })),
+        set((state) => {
+          const nextProfile = { ...state.userProfile, ...profile }
+          writeUserProfileBackup(nextProfile)
+          return {
+            userProfile: nextProfile,
+          }
+        }),
       
       // User preferences
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      weekStart: 'monday',
-      language: 'en',
-      compactMode: false,
-      animationsEnabled: true,
-      soundEnabled: true,
-      highContrastMode: false,
-      reduceMotion: false,
+      timezone: initialSettingsBackup.timezone,
+      weekStart: initialSettingsBackup.weekStart,
+      language: initialSettingsBackup.language,
+      compactMode: initialSettingsBackup.compactMode,
+      animationsEnabled: initialSettingsBackup.animationsEnabled,
+      soundEnabled: initialSettingsBackup.soundEnabled,
+      highContrastMode: initialSettingsBackup.highContrastMode,
+      reduceMotion: initialSettingsBackup.reduceMotion,
       
       // Preference setters
       setTimezone: (timezone) => set({ timezone }),
@@ -379,25 +637,25 @@ export const useStore = create<Store>()(
       setReduceMotion: (reduceMotion) => set({ reduceMotion }),
       
       // Notification Settings
-      notificationSettings: defaultNotificationSettings,
+      notificationSettings: initialSettingsBackup.notificationSettings,
       updateNotificationSettings: (settings) =>
         set((state) => ({
           notificationSettings: { ...state.notificationSettings, ...settings }
         })),
       
       // Privacy Settings
-      privacySettings: defaultPrivacySettings,
+      privacySettings: initialSettingsBackup.privacySettings,
       updatePrivacySettings: (settings) =>
         set((state) => ({
           privacySettings: { ...state.privacySettings, ...settings }
         })),
 
       // Data deletion safety
-      allowHistoryDeletion: false,
+      allowHistoryDeletion: initialSettingsBackup.allowHistoryDeletion,
       setAllowHistoryDeletion: (allowHistoryDeletion) => set({ allowHistoryDeletion }),
       
       // Custom Review Questions
-      customReviewQuestions: defaultCustomReviewQuestions,
+      customReviewQuestions: initialSettingsBackup.customReviewQuestions,
       updateReviewQuestions: (type, questions) =>
         set((state) => ({
           customReviewQuestions: {
@@ -461,8 +719,8 @@ export const useStore = create<Store>()(
         })),
       
       // Keyboard Shortcuts
-      keyboardShortcuts: defaultKeyboardShortcuts,
-      keyboardShortcutsEnabled: true,
+      keyboardShortcuts: initialSettingsBackup.keyboardShortcuts,
+      keyboardShortcutsEnabled: initialSettingsBackup.keyboardShortcutsEnabled,
       setKeyboardShortcutsEnabled: (enabled) => set({ keyboardShortcutsEnabled: enabled }),
       updateKeyboardShortcut: (id, keys) =>
         set((state) => ({
@@ -489,10 +747,12 @@ export const useStore = create<Store>()(
       timerAlarmSound: 'classic',
 
       startTimer: (mode, durationMs) =>
-        set(() => ({
+        set((state) => ({
           timerMode: mode,
           timerDurationMs: durationMs,
-          timerElapsedMs: 0,
+          // Preserve elapsed time when resuming a paused timer
+          // Only reset to 0 when starting fresh
+          timerElapsedMs: state.timerMode === mode ? state.timerElapsedMs : 0,
           timerStartedAt: Date.now(),
           timerRunning: true,
         })),
@@ -563,8 +823,8 @@ export const useStore = create<Store>()(
       })),
       restoreTask: (task) => set((state) => ({
         tasks: state.tasks.some((t) => t.id === task.id)
-          ? state.tasks.map((t) => (t.id === task.id ? { ...task, deleted_at: null } : t))
-          : [...state.tasks, { ...task, deleted_at: null }],
+          ? state.tasks.map((t) => (t.id === task.id ? { ...task, deleted_at: undefined } : t))
+          : [...state.tasks, { ...task, deleted_at: undefined }],
       })),
 
       // Habit Actions
@@ -596,16 +856,28 @@ export const useStore = create<Store>()(
       // Notifications
       notifications: [],
       addNotification: (notification) =>
-        set((state) => ({
-          notifications: [
-            {
-              ...notification,
-              id: Date.now().toString(),
-              read: false,
-            },
-            ...state.notifications,
-          ],
-        })),
+        set((state) => {
+          const nextNotification: Notification = {
+            ...notification,
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            read: false,
+          }
+
+          const notifications = [nextNotification, ...state.notifications].sort((a, b) => {
+            const aTs = Date.parse(a.time)
+            const bTs = Date.parse(b.time)
+
+            if (!Number.isNaN(aTs) && !Number.isNaN(bTs)) {
+              return bTs - aTs
+            }
+
+            if (!Number.isNaN(aTs)) return -1
+            if (!Number.isNaN(bTs)) return 1
+            return b.id.localeCompare(a.id)
+          })
+
+          return { notifications }
+        }),
       markAsRead: (id) =>
         set((state) => ({
           notifications: state.notifications.map((n) =>
@@ -619,10 +891,10 @@ export const useStore = create<Store>()(
       clearNotifications: () => set({ notifications: [] }),
       
       // Sync state
-      syncEnabled: true,
-      syncProvider: 'local',
-      syncInterval: 5,
-      autoSync: true,
+      syncEnabled: initialSettingsBackup.syncEnabled,
+      syncProvider: initialSettingsBackup.syncProvider,
+      syncInterval: initialSettingsBackup.syncInterval,
+      autoSync: initialSettingsBackup.autoSync,
       lastSync: null,
       syncStatus: 'idle',
       
@@ -645,91 +917,102 @@ export const useStore = create<Store>()(
       updateSyncStatus: (status) => set({ syncStatus: status }),
       
       // Settings reset
-      resetAllSettings: () => set({
-        theme: 'light',
-        userProfile: defaultUserProfile,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        weekStart: 'monday',
-        language: 'en',
-        compactMode: false,
-        animationsEnabled: true,
-        soundEnabled: true,
-        highContrastMode: false,
-        reduceMotion: false,
-        notificationSettings: defaultNotificationSettings,
-        privacySettings: defaultPrivacySettings,
-        allowHistoryDeletion: false,
-        keyboardShortcuts: defaultKeyboardShortcuts,
-        keyboardShortcutsEnabled: true,
-        syncEnabled: true,
-        syncProvider: 'local',
-        syncInterval: 5,
-        autoSync: true,
-      }),
+      resetAllSettings: () => {
+        writeUserProfileBackup(defaultUserProfile)
+        writeSettingsBackup(getDefaultSettingsBackup())
+        writeStoredThemePreference('light')
+        set({
+          theme: 'light',
+          userProfile: defaultUserProfile,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          weekStart: 'monday',
+          language: 'en',
+          compactMode: false,
+          animationsEnabled: true,
+          soundEnabled: true,
+          highContrastMode: false,
+          reduceMotion: false,
+          notificationSettings: defaultNotificationSettings,
+          privacySettings: defaultPrivacySettings,
+          allowHistoryDeletion: false,
+          customReviewQuestions: defaultCustomReviewQuestions,
+          keyboardShortcuts: defaultKeyboardShortcuts,
+          keyboardShortcutsEnabled: true,
+          syncEnabled: true,
+          syncProvider: 'local',
+          syncInterval: 5,
+          autoSync: true,
+        })
+      },
       
       // Complete data reset - clears everything
-      resetAllData: () => set({
-        // Reset theme and UI
-        theme: 'light',
-        sidebarOpen: true,
-        commandPaletteOpen: false,
-        focusMode: false,
-        
-        // Reset user profile
-        userProfile: defaultUserProfile,
-        
-        // Reset preferences
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        weekStart: 'monday',
-        language: 'en',
-        compactMode: false,
-        animationsEnabled: true,
-        soundEnabled: true,
-        highContrastMode: false,
-        reduceMotion: false,
-        
-        // Reset notification settings
-        notificationSettings: defaultNotificationSettings,
-        
-        // Reset privacy settings
-        privacySettings: defaultPrivacySettings,
+      resetAllData: () => {
+        writeUserProfileBackup(defaultUserProfile)
+        writeSettingsBackup(getDefaultSettingsBackup())
+        writeStoredThemePreference('light')
+        set({
+          // Reset theme and UI
+          theme: 'light',
+          sidebarOpen: true,
+          commandPaletteOpen: false,
+          focusMode: false,
+          
+          // Reset user profile
+          userProfile: defaultUserProfile,
+          
+          // Reset preferences
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          weekStart: 'monday',
+          language: 'en',
+          compactMode: false,
+          animationsEnabled: true,
+          soundEnabled: true,
+          highContrastMode: false,
+          reduceMotion: false,
+          
+          // Reset notification settings
+          notificationSettings: defaultNotificationSettings,
+          
+          // Reset privacy settings
+          privacySettings: defaultPrivacySettings,
 
-        // Reset data deletion safety
-        allowHistoryDeletion: false,
-        
-        // Reset custom review questions
-        customReviewQuestions: defaultCustomReviewQuestions,
-        
-        // Reset keyboard shortcuts
-        keyboardShortcuts: defaultKeyboardShortcuts,
-        keyboardShortcutsEnabled: true,
-        
-        // Reset timer
-        timerMode: null,
-        timerDurationMs: DEFAULT_POMODORO_DURATION_MS,
-        timerElapsedMs: 0,
-        timerStartedAt: null,
-        timerRunning: false,
-        customDurationMs: DEFAULT_CUSTOM_DURATION_MS,
-        floatingTimerPosition: 'bottom-right',
-        timerAlarmSound: 'classic',
-        
-        // Clear all data
-        tasks: [],
-        habits: [],
-        goals: [],
-        
-        // Clear notifications
-        notifications: [],
-        
-        // Reset sync state
-        syncEnabled: true,
-        syncProvider: 'local',
-        syncInterval: 5,
-        autoSync: true,
-        lastSync: null,
-        syncStatus: 'idle',
-      }),
+          // Reset data deletion safety
+          allowHistoryDeletion: false,
+          
+          // Reset custom review questions
+          customReviewQuestions: defaultCustomReviewQuestions,
+          
+          // Reset keyboard shortcuts
+          keyboardShortcuts: defaultKeyboardShortcuts,
+          keyboardShortcutsEnabled: true,
+          
+          // Reset timer
+          timerMode: null,
+          timerDurationMs: DEFAULT_POMODORO_DURATION_MS,
+          timerElapsedMs: 0,
+          timerStartedAt: null,
+          timerRunning: false,
+          customDurationMs: DEFAULT_CUSTOM_DURATION_MS,
+          floatingTimerPosition: 'bottom-right',
+          timerAlarmSound: 'classic',
+          
+          // Clear all data
+          tasks: [],
+          habits: [],
+          goals: [],
+          
+          // Clear notifications
+          notifications: [],
+          
+          // Reset sync state
+          syncEnabled: true,
+          syncProvider: 'local',
+          syncInterval: 5,
+          autoSync: true,
+          lastSync: null,
+          syncStatus: 'idle',
+        })
+      },
     }),
     {
       name: 'progress-os-store',
@@ -765,6 +1048,157 @@ export const useStore = create<Store>()(
         floatingTimerPosition: state.floatingTimerPosition,
         timerAlarmSound: state.timerAlarmSound,
       }),
+      onRehydrateStorage: () => (state) => {
+        if (!state) return
+
+        const backup = readUserProfileBackup()
+        const hasProfileData = Boolean(
+          state.userProfile?.name || state.userProfile?.email || state.userProfile?.avatar
+        )
+
+        if (!hasProfileData && (backup.name || backup.email || backup.avatar)) {
+          state.userProfile = backup
+        }
+
+        writeUserProfileBackup(state.userProfile)
+        writeSettingsBackup(selectSettingsBackup(state))
+      },
     }
   )
 )
+
+let hasCompletedMainProcessSettingsHydration = !hasMainProcessSettingsApi()
+let lastMainProcessSettingsSnapshotSerialized = ''
+
+const applyPersistentSettingsSnapshot = (snapshot: Partial<PersistentSettingsSnapshot>) => {
+  const normalizedSettings = normalizeSettingsBackup(snapshot.settingsBackup)
+  const normalizedProfile = normalizeUserProfile(snapshot.userProfile)
+
+  useStore.setState({
+    theme: normalizedSettings.theme,
+    userProfile: normalizedProfile,
+    timezone: normalizedSettings.timezone,
+    weekStart: normalizedSettings.weekStart,
+    language: normalizedSettings.language,
+    compactMode: normalizedSettings.compactMode,
+    animationsEnabled: normalizedSettings.animationsEnabled,
+    soundEnabled: normalizedSettings.soundEnabled,
+    highContrastMode: normalizedSettings.highContrastMode,
+    reduceMotion: normalizedSettings.reduceMotion,
+    notificationSettings: normalizedSettings.notificationSettings,
+    privacySettings: normalizedSettings.privacySettings,
+    allowHistoryDeletion: normalizedSettings.allowHistoryDeletion,
+    customReviewQuestions: normalizedSettings.customReviewQuestions,
+    keyboardShortcuts: normalizedSettings.keyboardShortcuts,
+    keyboardShortcutsEnabled: normalizedSettings.keyboardShortcutsEnabled,
+    syncEnabled: normalizedSettings.syncEnabled,
+    syncProvider: normalizedSettings.syncProvider,
+    syncInterval: normalizedSettings.syncInterval,
+    autoSync: normalizedSettings.autoSync,
+  })
+
+  writeUserProfileBackup(normalizedProfile)
+  writeSettingsBackup(normalizedSettings)
+
+  if (snapshot.themePreference === 'dark' || snapshot.themePreference === 'light' || snapshot.themePreference === 'system') {
+    writeStoredThemePreference(snapshot.themePreference)
+  }
+}
+
+export const persistSettingsSnapshotToMainProcess = async (
+  options?: { themePreference?: ThemePreference; state?: Store }
+) => {
+  const mainProcessSettingsApi = getMainProcessSettingsApi()
+  if (!hasCompletedMainProcessSettingsHydration || !mainProcessSettingsApi) {
+    return
+  }
+
+  const state = options?.state ?? useStore.getState()
+  const snapshot = buildPersistentSettingsSnapshot(
+    state,
+    options?.themePreference ?? readStoredThemePreference()
+  )
+  const serialized = JSON.stringify(snapshot)
+
+  if (serialized === lastMainProcessSettingsSnapshotSerialized) {
+    return
+  }
+
+  lastMainProcessSettingsSnapshotSerialized = serialized
+
+  try {
+    const response = await mainProcessSettingsApi.saveSettingsSnapshot(
+      snapshot as unknown as Record<string, unknown>
+    )
+    if (response && typeof response === 'object' && 'success' in response && !response.success) {
+      throw new Error(response.error || 'Failed to save settings snapshot')
+    }
+  } catch (error) {
+    console.warn('Failed to persist settings snapshot to main process:', error)
+  }
+}
+
+const hydrateSettingsFromMainProcess = async () => {
+  const mainProcessSettingsApi = getMainProcessSettingsApi()
+  if (!mainProcessSettingsApi) {
+    hasCompletedMainProcessSettingsHydration = true
+    return
+  }
+
+  try {
+    const response = await mainProcessSettingsApi.getSettingsSnapshot()
+    if (response && typeof response === 'object' && 'success' in response && !response.success) {
+      throw new Error(response.error || 'Failed to load settings snapshot')
+    }
+
+    const snapshot = response?.data as Partial<PersistentSettingsSnapshot> | null | undefined
+    if (snapshot?.settingsBackup || snapshot?.userProfile || snapshot?.themePreference) {
+      applyPersistentSettingsSnapshot(snapshot)
+      lastMainProcessSettingsSnapshotSerialized = JSON.stringify(
+        buildPersistentSettingsSnapshot(
+          useStore.getState(),
+          snapshot.themePreference === 'dark' || snapshot.themePreference === 'light' || snapshot.themePreference === 'system'
+            ? snapshot.themePreference
+            : readStoredThemePreference()
+        )
+      )
+    }
+  } catch (error) {
+    console.warn('Failed to hydrate settings from main process:', error)
+  } finally {
+    hasCompletedMainProcessSettingsHydration = true
+    void persistSettingsSnapshotToMainProcess()
+  }
+}
+
+if (typeof window !== 'undefined') {
+  let lastSettingsMirrorSerialized = ''
+
+  useStore.subscribe((state) => {
+    const backup = selectSettingsBackup(state)
+    const profile = normalizeUserProfile(state.userProfile)
+    const serialized = JSON.stringify({
+      backup,
+      profile,
+    })
+    if (serialized === lastSettingsMirrorSerialized) {
+      return
+    }
+
+    lastSettingsMirrorSerialized = serialized
+    writeSettingsBackup(backup)
+    writeUserProfileBackup(profile)
+    void persistSettingsSnapshotToMainProcess({ state })
+  })
+
+  const flushPersistentSettings = () => {
+    const state = useStore.getState()
+    writeSettingsBackup(selectSettingsBackup(state))
+    writeUserProfileBackup(normalizeUserProfile(state.userProfile))
+    void persistSettingsSnapshotToMainProcess({ state })
+  }
+
+  flushPersistentSettings()
+  window.addEventListener('beforeunload', flushPersistentSettings)
+  void hydrateSettingsFromMainProcess()
+}

@@ -112,9 +112,14 @@ export const isTaskPausedOnDate = (
     return historyEntry.source === 'paused' || historyEntry.status === 'paused'
   }
   
-  // Check current pause status (only for today)
-  const today = toLocalDateString(new Date())
-  if (dateKey === today && (task.is_paused || task.paused_at)) {
+  // Freeze semantics: while paused, task is excluded from date-based processing
+  // from pause date onward.
+  if (task.is_paused || task.paused_at) {
+    if (task.paused_at) {
+      const pausedDateKey = toLocalDateString(new Date(task.paused_at))
+      return dateKey >= pausedDateKey
+    }
+
     return true
   }
   

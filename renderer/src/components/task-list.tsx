@@ -50,6 +50,7 @@ export const TaskList: React.FC<TaskListProps> = ({
       {tasksToShow.map((task) => {
         const progress = task.progress || 0;
         const isCompleted = progress === 100;
+        const isPaused = task.is_paused === true;
         return (
         <Card key={task.id} interactive={false} className={cn(
           "transition-all duration-300 border border-green-500/10 shadow-sm",
@@ -64,14 +65,15 @@ export const TaskList: React.FC<TaskListProps> = ({
                 value={(task.progress || 0) as ProgressValue}
                 onChange={(progress) => onProgressChange?.(task.id, progress)}
                 size={compact ? "sm" : "md"}
-                disabled={!onProgressChange}
+                disabled={!onProgressChange || isPaused}
               />
               <div className="flex-1 min-w-0">
                 <label 
                   htmlFor={`task-${task.id}`} 
                   className={cn(
                     "font-medium cursor-pointer transition-all duration-300",
-                    isCompleted && "line-through text-muted-foreground"
+                    isCompleted && "line-through text-muted-foreground",
+                    isPaused && "line-through text-muted-foreground"
                   )}
                 >
                   {task.title}
@@ -102,6 +104,11 @@ export const TaskList: React.FC<TaskListProps> = ({
               >
                 {task.progress || 0}%
               </Badge>
+              {isPaused && (
+                <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
+                  Paused
+                </Badge>
+              )}
               {showPriority && task.priority && (
                 <Badge 
                   variant="outline"

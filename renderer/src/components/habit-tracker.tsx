@@ -119,8 +119,11 @@ export function HabitTracker({ habits, habitCompletions = [], compact = false }:
         queryClient.refetchQueries({ queryKey: ['dashboard'] }),
         queryClient.refetchQueries({ queryKey: ['habits'] }),
         queryClient.refetchQueries({ queryKey: ['habit-completions'] }),
+        queryClient.refetchQueries({ queryKey: ['habit-completions-all'] }),
         queryClient.refetchQueries({ queryKey: ['analytics'] }),
         queryClient.refetchQueries({ queryKey: ['review-insights'] }),
+        queryClient.refetchQueries({ queryKey: ['today-analytics-productivity'] }),
+        queryClient.refetchQueries({ queryKey: ['dashboard-stats'] }),
       ]
       await Promise.all(promises)
       queryClient.invalidateQueries({ queryKey: ['goals'] })

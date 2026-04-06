@@ -31,8 +31,13 @@ export const invalidateTaskRelatedQueries = (queryClient: QueryClient) => {
 }
 
 export const buildTaskProgressUpdatePayload = (task: Task | any, progress: number) => {
+  if (task?.is_paused) {
+    throw new Error('Task is paused and cannot be updated')
+  }
+
   const isCompleted = progress === 100
-  const status: TaskStatus = isCompleted ? 'completed' : progress > 0 ? 'in-progress' : 'pending'
+  // 0% from the progress selector is an explicit "Skipped" user action.
+  const status: TaskStatus = isCompleted ? 'completed' : progress > 0 ? 'in-progress' : 'skipped'
   const todayKey = format(new Date(), 'yyyy-MM-dd')
   const dailyProgress = normalizeDailyProgress(task as Task)
 

@@ -1,4 +1,4 @@
-import React, { useRef, useState, useCallback, useEffect } from 'react'
+import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react'
 import {
   Bold,
   Italic,
@@ -47,7 +47,22 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   const autoSaveTimeoutRef = useRef<NodeJS.Timeout>()
   const historyRef = useRef<{ undoStack: string[], redoStack: string[] }>({ undoStack: [], redoStack: [] })
   const lastInputRef = useRef<string>('')
+  const isApplyingHistoryRef = useRef(false)
   const [, setHistoryUpdate] = useState(0) // Force re-render on history changes
+  const MAX_HISTORY_SIZE = 200
+
+  const plainTextValue = useMemo(() => {
+    if (!value) return ''
+
+    const parsed = new DOMParser().parseFromString(value, 'text/html')
+    return (parsed.body.textContent || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }, [value])
+
+  const wordCount = plainTextValue ? plainTextValue.split(/\s+/).length : 0
+  const characterCount = plainTextValue.length
 
   // Initialize editor with external value
   useEffect(() => {
@@ -58,6 +73,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
       if (currentHTML !== nextValue) {
         editorRef.current.innerHTML = nextValue
       }
+      lastInputRef.current = nextValue
     }
   }, [value])
 
@@ -99,45 +115,65 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     }, autoSaveDelay)
   }, [autoSaveDelay, onAutoSave])
 
-  const handleInput = useCallback(() => {
-    const currentContent = editorRef.current?.innerHTML || ''
-    if (lastInputRef.current !== currentContent) {
-      onChange(currentContent)
-      lastInputRef.current = currentContent
-      triggerAutoSave(currentContent)
+  const pushUndoSnapshot = useCallback((snapshot: string) => {
+    const { undoStack } = historyRef.current
+    if (undoStack.length > 0 && undoStack[undoStack.length - 1] === snapshot) {
+      return
     }
+    undoStack.push(snapshot)
+    if (undoStack.length > MAX_HISTORY_SIZE) {
+      undoStack.splice(0, undoStack.length - MAX_HISTORY_SIZE)
+    }
+  }, [MAX_HISTORY_SIZE])
+
+  const commitContentChange = useCallback((content: string) => {
+    lastInputRef.current = content
+    onChange(content)
+    triggerAutoSave(content)
   }, [onChange, triggerAutoSave])
 
-  const executeCommand = (command: string, value?: string) => {
-    if (lastInputRef.current !== '') {
-      historyRef.current.undoStack.push(lastInputRef.current)
+  const handleInput = useCallback(() => {
+    if (isApplyingHistoryRef.current) return
+
+    const currentContent = editorRef.current?.innerHTML || ''
+    if (lastInputRef.current !== currentContent) {
+      pushUndoSnapshot(lastInputRef.current)
+      historyRef.current.redoStack = []
+      setHistoryUpdate(prev => prev + 1)
+      commitContentChange(currentContent)
     }
-    historyRef.current.redoStack = []
-    setHistoryUpdate(prev => prev + 1)
-    
+  }, [commitContentChange, pushUndoSnapshot])
+
+  const executeCommand = (command: string, value?: string) => {
+    if (disabled || !editorRef.current) return
+
+    const beforeContent = editorRef.current.innerHTML || ''
+
     restoreSelection()
     document.execCommand(command, false, value)
     saveSelection()
     editorRef.current?.focus()
-    
+
     const content = editorRef.current?.innerHTML || ''
-    lastInputRef.current = content
-    onChange(content)
-    triggerAutoSave(content)
+    if (content === beforeContent) return
+
+    pushUndoSnapshot(beforeContent)
+    historyRef.current.redoStack = []
+    setHistoryUpdate(prev => prev + 1)
+    commitContentChange(content)
   }
 
   const handleUndo = () => {
     if (historyRef.current.undoStack.length > 0) {
       const currentContent = editorRef.current?.innerHTML || ''
-      if (currentContent) {
-        historyRef.current.redoStack.push(currentContent)
-      }
       const previousContent = historyRef.current.undoStack.pop()
       if (previousContent !== undefined && editorRef.current) {
+        historyRef.current.redoStack.push(currentContent)
+        isApplyingHistoryRef.current = true
         editorRef.current.innerHTML = previousContent
-        lastInputRef.current = previousContent
-        onChange(previousContent)
-        triggerAutoSave(previousContent)
+        isApplyingHistoryRef.current = false
+        commitContentChange(previousContent)
+        saveSelection()
         setHistoryUpdate(prev => prev + 1)
       }
     }
@@ -146,15 +182,14 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   const handleRedo = () => {
     if (historyRef.current.redoStack.length > 0) {
       const currentContent = editorRef.current?.innerHTML || ''
-      if (currentContent) {
-        historyRef.current.undoStack.push(currentContent)
-      }
       const nextContent = historyRef.current.redoStack.pop()
       if (nextContent !== undefined && editorRef.current) {
+        pushUndoSnapshot(currentContent)
+        isApplyingHistoryRef.current = true
         editorRef.current.innerHTML = nextContent
-        lastInputRef.current = nextContent
-        onChange(nextContent)
-        triggerAutoSave(nextContent)
+        isApplyingHistoryRef.current = false
+        commitContentChange(nextContent)
+        saveSelection()
         setHistoryUpdate(prev => prev + 1)
       }
     }
@@ -286,6 +321,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     e.preventDefault()
     restoreSelection()
 
+    const beforeContent = editorRef.current?.innerHTML || ''
+
     const html = e.clipboardData.getData('text/html')
     const plainText = e.clipboardData.getData('text/plain')
 
@@ -302,9 +339,12 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
 
     saveSelection()
     const content = editorRef.current?.innerHTML || ''
-    lastInputRef.current = content
-    onChange(content)
-    triggerAutoSave(content)
+    if (content === beforeContent) return
+
+    pushUndoSnapshot(beforeContent)
+    historyRef.current.redoStack = []
+    setHistoryUpdate(prev => prev + 1)
+    commitContentChange(content)
   }
 
   const insertList = (ordered: boolean) => {
@@ -354,14 +394,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   }
 
   const highlightText = (color: string = 'yellow') => {
-    restoreSelection()
-    document.execCommand('backColor', false, color === 'yellow' ? '#fef08a' : color)
-    saveSelection()
-    editorRef.current?.focus()
-    const content = editorRef.current?.innerHTML || ''
-    lastInputRef.current = content
-    onChange(content)
-    triggerAutoSave(content)
+    executeCommand('backColor', color === 'yellow' ? '#fef08a' : color)
   }
 
   const handleToolbarMouseDown = (e: React.MouseEvent) => {
@@ -734,7 +767,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         {/* Footer Info */}
         <div className="flex-shrink-0 border-t bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
           <div className="flex justify-between">
-            <span>{value?.length || 0} characters</span>
+            <span>{wordCount} words • {characterCount} characters</span>
             <span>Tip: Use Ctrl+Z to undo, Ctrl+Y to redo</span>
           </div>
         </div>

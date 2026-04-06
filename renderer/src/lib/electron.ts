@@ -28,6 +28,8 @@ interface ElectronAPI {
   getAppPath: (name: string) => Promise<string>
   getPlatform: () => string
   getIconPath: () => Promise<string>
+  getSettingsSnapshot: () => Promise<{ success: boolean; data?: any; error?: string }>
+  saveSettingsSnapshot: (snapshot: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>
   showNotification: (options: { title: string; body: string }) => Promise<{ success: boolean; error?: string }>
   resetAllData: () => Promise<any>
   
@@ -277,19 +279,19 @@ export const useElectron = () => {
     },
     onSyncUpdate: (callback: (status: any) => void) => {
       if (!isElectron()) return () => {}
-      const handler = (event: any, status: any) => callback(status)
+      const handler = (_event: any, status: any) => callback(status)
       window.electronAPI.onSyncUpdate(handler)
       return () => window.electronAPI.removeSyncUpdate(handler)
     },
     onBackupCreated: (callback: (backup: any) => void) => {
       if (!isElectron()) return () => {}
-      const handler = (event: any, backup: any) => callback(backup)
+      const handler = (_event: any, backup: any) => callback(backup)
       window.electronAPI.onBackupCreated(handler)
       return () => window.electronAPI.removeBackupCreated(handler)
     },
     onDatabaseError: (callback: (error: any) => void) => {
       if (!isElectron()) return () => {}
-      const handler = (event: any, error: any) => callback(error)
+      const handler = (_event: any, error: any) => callback(error)
       window.electronAPI.onDatabaseError(handler)
       return () => window.electronAPI.removeDatabaseError(handler)
     },
@@ -850,7 +852,7 @@ export const db = {
         query: `
           UPDATE tasks 
           SET title = ?, description = ?, due_date = ?, priority = ?, status = ?,
-              progress = ?, estimated_time = ?, actual_time = ?, goal_id = ?, 
+              progress = ?, completed_at = ?, estimated_time = ?, actual_time = ?, goal_id = ?, 
               tags = ?, updated_at = ?, version = version + 1
           WHERE id = ?
         `,
@@ -861,6 +863,7 @@ export const db = {
           updates.priority,
           updates.status,
           updates.progress || 0,
+          updates.completed_at ?? (updates.status === 'completed' ? new Date().toISOString() : null),
           updates.estimated_time,
           updates.actual_time,
           updates.goal_id,
@@ -1040,16 +1043,22 @@ export const db = {
         }
       }
 
+      const monthStart = new Date(now)
+      monthStart.setDate(1)
+      const monthStartStr = monthStart.toISOString().slice(0, 10)
+      const todayStr = now.slice(0, 10)
+
       const consistencyResult = await window.electronAPI.executeQuery(`
         SELECT COUNT(*) as count 
         FROM habit_completions 
         WHERE habit_id = ? 
         AND completed = 1 
-        AND date >= date('now', '-30 days')
-      `, [habitId])
+        AND date >= ? AND date <= ?
+      `, [habitId, monthStartStr, todayStr])
 
       const consistencyCount = consistencyResult?.[0]?.count || 0
-      const consistencyScore = Math.min(100, Math.round((consistencyCount / 30) * 100))
+      const expectedDays = Math.max(1, Math.floor((new Date(todayStr).getTime() - new Date(monthStartStr).getTime()) / (1000 * 60 * 60 * 24)) + 1)
+      const consistencyScore = Math.min(100, Math.round((consistencyCount / expectedDays) * 100))
 
       await window.electronAPI.executeQuery(`
         UPDATE habits 
@@ -1249,7 +1258,7 @@ export const events = {
   onSyncUpdate: (callback: (status: any) => void) => {
     if (!isElectron()) return () => {}
     
-    const handler = (event: any, status: any) => callback(status)
+    const handler = (_event: any, status: any) => callback(status)
     window.electronAPI.onSyncUpdate(handler)
     
     return () => {
@@ -1260,7 +1269,7 @@ export const events = {
   onBackupCreated: (callback: (backup: any) => void) => {
     if (!isElectron()) return () => {}
     
-    const handler = (event: any, backup: any) => callback(backup)
+    const handler = (_event: any, backup: any) => callback(backup)
     window.electronAPI.onBackupCreated(handler)
     
     return () => {
@@ -1271,7 +1280,7 @@ export const events = {
   onDatabaseError: (callback: (error: any) => void) => {
     if (!isElectron()) return () => {}
     
-    const handler = (event: any, error: any) => callback(error)
+    const handler = (_event: any, error: any) => callback(error)
     window.electronAPI.onDatabaseError(handler)
     
     return () => {

@@ -176,6 +176,7 @@ export default function Habits() {
   const [newTag, setNewTag] = useState('')
   const [selectedMonth, setSelectedMonth] = useState(new Date())
   const [habitPendingUndoneConfirm, setHabitPendingUndoneConfirm] = useState<Habit | null>(null)
+  const [selectedHabitDetails, setSelectedHabitDetails] = useState<Habit | null>(null)
 
   useEffect(() => {
     const openCreateHabit = () => {
@@ -879,6 +880,42 @@ export default function Habits() {
     setIsCreating(true)
   }
 
+  const getHabitScheduleText = (habit: Habit): string => {
+    const rawSchedule = (habit as any)?.schedule
+    const parsedSchedule = Array.isArray(rawSchedule)
+      ? rawSchedule
+      : typeof rawSchedule === 'string'
+        ? (() => {
+            try {
+              const parsed = JSON.parse(rawSchedule)
+              return Array.isArray(parsed) ? parsed : []
+            } catch {
+              return []
+            }
+          })()
+        : []
+
+    if (habit.frequency === 'daily') {
+      return 'Every day'
+    }
+
+    if (habit.frequency === 'weekly') {
+      const days = parsedSchedule.map((value: unknown) => String(value))
+      return days.length > 0 ? days.join(', ') : 'Weekly schedule not set'
+    }
+
+    if (habit.frequency === 'monthly') {
+      const days = parsedSchedule
+        .map((value: unknown) => Number(value))
+        .filter((value: number) => Number.isFinite(value) && value > 0)
+      return days.length > 0
+        ? `Day ${days.join(', ')}`
+        : 'Monthly schedule not set'
+    }
+
+    return 'Schedule not set'
+  }
+
   const handleSubmit = () => {
     // Clear previous errors
     setFormErrors({})
@@ -1052,11 +1089,12 @@ export default function Habits() {
     <Card 
       key={cardKey} 
       className={cn(
-        "overflow-hidden transition-all duration-300 group",
+        "overflow-hidden transition-all duration-300 group cursor-pointer",
         "bg-gradient-to-br from-card to-card/80",
         "border-0 shadow-md hover:shadow-lg",
         isCompletedForAction && "ring-2 ring-green-500/30"
       )}
+      onClick={() => setSelectedHabitDetails(habit)}
     >
       <CardHeader className="pb-2">
         <div className="flex items-start justify-between">
@@ -1070,9 +1108,6 @@ export default function Habits() {
             <CardDescription className="truncate text-xs">
               {habit.description || 'Build this habit consistently'}
             </CardDescription>
-            <div className="mt-1 text-xs text-muted-foreground">
-              Created: {format(safeParseDate(habit.created_at), 'MMM d, yyyy, h:mm a')}
-            </div>
           </div>
           {/* Direct Action Icons */}
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1080,7 +1115,10 @@ export default function Habits() {
               variant="ghost" 
               size="icon" 
               className="h-7 w-7 hover:bg-primary/10"
-              onClick={() => handleEdit(habit)}
+              onClick={(event) => {
+                event.stopPropagation()
+                handleEdit(habit)
+              }}
             >
               <Edit className="h-3.5 w-3.5" />
             </Button>
@@ -1090,6 +1128,7 @@ export default function Habits() {
                   variant="ghost" 
                   size="icon" 
                   className="h-7 w-7 hover:bg-orange-500/10 text-orange-500"
+                  onClick={(event) => event.stopPropagation()}
                 >
                   <Archive className="h-3.5 w-3.5" />
                 </Button>
@@ -1201,7 +1240,8 @@ export default function Habits() {
               : "text-green-700 border-green-500/40 hover:bg-green-500/10 hover:text-green-700 hover:border-green-500/50 dark:bg-transparent dark:text-zinc-100 dark:border-zinc-700/70 dark:hover:bg-green-500/20 dark:hover:text-green-200 dark:hover:border-green-500/45"
           )}
           disabled={toggleHabitCompletionMutation.isPending}
-          onClick={() => {
+          onClick={(event) => {
+            event.stopPropagation()
             if (isCompletedForAction) {
               setHabitPendingUndoneConfirm(habit)
               return
@@ -1972,6 +2012,83 @@ export default function Habits() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog
+        open={selectedHabitDetails !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedHabitDetails(null)
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl bg-card">
+          {selectedHabitDetails && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  {selectedHabitDetails.title}
+                  <Badge
+                    className={cn(
+                      'text-[10px] px-2 py-0.5 h-5 border-0',
+                      selectedHabitDetails.frequency === 'daily' && 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+                      selectedHabitDetails.frequency === 'weekly' && 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+                      selectedHabitDetails.frequency === 'monthly' && 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                    )}
+                  >
+                    {selectedHabitDetails.frequency}
+                  </Badge>
+                </DialogTitle>
+                <DialogDescription>
+                  Habit details and progress snapshot.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg bg-muted/40 p-3">
+                    <p className="text-xs text-muted-foreground">Current streak</p>
+                    <p className="text-xl font-semibold">{habitComputedMetrics.get(selectedHabitDetails.id)?.streakCurrent ?? selectedHabitDetails.streak_current}</p>
+                  </div>
+                  <div className="rounded-lg bg-muted/40 p-3">
+                    <p className="text-xs text-muted-foreground">Consistency</p>
+                    <p className="text-xl font-semibold">{Math.round(habitComputedMetrics.get(selectedHabitDetails.id)?.consistency ?? selectedHabitDetails.consistency_score)}%</p>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Description</p>
+                  <div className="max-h-36 overflow-y-auto rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+                    {selectedHabitDetails.description?.trim() || 'No description provided.'}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Schedule</p>
+                  <p className="text-sm text-muted-foreground">{getHabitScheduleText(selectedHabitDetails)}</p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2 text-sm text-muted-foreground sm:grid-cols-2">
+                  <p>Created: {format(safeParseDate(selectedHabitDetails.created_at), 'MMM d, yyyy')}</p>
+                  <p>Updated: {format(safeParseDate(selectedHabitDetails.updated_at), 'MMM d, yyyy')}</p>
+                </div>
+
+                {!!(selectedHabitDetails as any).tags?.length && (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium">Tags</p>
+                    <div className="flex flex-wrap gap-2">
+                      {((selectedHabitDetails as any).tags as string[]).map((tag) => (
+                        <Badge key={tag} className="bg-slate-200 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300 border-0">
+                          {tag}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog
         open={habitPendingUndoneConfirm !== null}

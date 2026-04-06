@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
 
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
-contextBridge.exposeInMainWorld('electronAPI', {
+const electronAPI = {
   // Database operations
   executeQuery: (query: string, params?: any[]) => 
     ipcRenderer.invoke('database:execute', query, params),
@@ -24,6 +24,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // Generic IPC invoke for custom channels
   invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args),
+  on: (channel: string, callback: (...args: any[]) => void) => {
+    const handler = (_event: IpcRendererEvent, ...args: any[]) => callback(...args);
+    ipcRenderer.on(channel, handler);
+    return () => ipcRenderer.removeListener(channel, handler);
+  },
+  off: (channel: string, callback: (...args: any[]) => void) => {
+    ipcRenderer.removeListener(channel, callback as any);
+  },
   
   // Backup operations
   createBackup: () => ipcRenderer.invoke('backup:create'),
@@ -52,6 +60,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPlatform: () => process.platform,
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
   getIconPath: () => ipcRenderer.invoke('app:getIconPath'),
+  getSettingsSnapshot: () => ipcRenderer.invoke('settings:getSnapshot'),
+  saveSettingsSnapshot: (snapshot: Record<string, unknown>) =>
+    ipcRenderer.invoke('settings:saveSnapshot', snapshot),
   showNotification: (options: { title: string; body: string }) => 
     ipcRenderer.invoke('app:showNotification', options),
   relaunch: () => ipcRenderer.invoke('app:relaunch'),
@@ -108,7 +119,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   removeDatabaseError: (callback: (event: IpcRendererEvent, error: any) => void) =>
     ipcRenderer.removeListener('database:error', callback),
-});
+};
+
+// Keep the legacy name for existing code.
+contextBridge.exposeInMainWorld('electronAPI', electronAPI);
+
+// New runtime-agnostic alias for gradual Tauri migration.
+contextBridge.exposeInMainWorld('desktopAPI', electronAPI);
 
 // Expose versions for debugging
 contextBridge.exposeInMainWorld('versions', {
@@ -131,6 +148,8 @@ declare global {
       
       // Generic IPC invoke
       invoke: (channel: string, ...args: any[]) => Promise<any>;
+      on: (channel: string, callback: (...args: any[]) => void) => () => void;
+      off: (channel: string, callback: (...args: any[]) => void) => void;
       
       // Backup
       createBackup: () => Promise<string>;
@@ -152,6 +171,8 @@ declare global {
       getPlatform: () => string;
       getVersion: () => Promise<string>;
       getIconPath: () => Promise<string>;
+      getSettingsSnapshot: () => Promise<{ success: boolean; data?: any; error?: string }>;
+      saveSettingsSnapshot: (snapshot: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>;
       showNotification: (options: { title: string; body: string }) => Promise<{ success: boolean; error?: string }>;
       relaunch: () => Promise<void>;
       
@@ -190,6 +211,7 @@ declare global {
       removeBackupCreated: (callback: (event: IpcRendererEvent, backup: any) => void) => void;
       removeDatabaseError: (callback: (event: IpcRendererEvent, error: any) => void) => void;
     };
+    desktopAPI: Window['electronAPI'];
     versions: {
       node: () => string;
       chrome: () => string;

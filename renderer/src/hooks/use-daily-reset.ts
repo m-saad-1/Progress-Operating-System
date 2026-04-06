@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useRef, useCallback } from 'react'
-import { format, startOfDay, differenceInCalendarDays } from 'date-fns'
+import { format, startOfDay, startOfMonth, differenceInCalendarDays } from 'date-fns'
 import { safeParseDate } from '@/lib/date-safe'
 import { useQueryClient } from '@tanstack/react-query'
 import { useStore } from '@/store'
@@ -193,12 +193,13 @@ export const useDailyReset = () => {
     const daysMissed = differenceInCalendarDays(todayDay, lastResetDay)
 
     // PART 1: Snapshot and reset tasks
-    // For every task, ensure daily_progress has an entry for the last active day
-    // For continuous tasks, also reset their current status/progress
-    // ⚠️ CRITICAL: Skip paused tasks entirely - they are frozen and do not participate in daily processing
+    // For every non-paused task, ensure daily_progress has an entry for missed days.
+    // For continuous tasks, also reset their current status/progress.
+    // The immediately previous day (lastResetDate) is always replaced during rollover
+    // so Yesterday reflects the final live state at midnight.
     try {
       for (const task of tasks) {
-        if (task.deleted_at || task.is_paused) continue
+        if (task.deleted_at) continue
 
         try {
           const now = new Date()
@@ -221,22 +222,43 @@ export const useDailyReset = () => {
               snapshotDay.setDate(snapshotDay.getDate() + i)
               const snapshotKey = format(snapshotDay, 'yyyy-MM-dd')
 
-              if (!history[snapshotKey]) {
+              const shouldReplaceSnapshot = snapshotKey === lastResetDate
+              if (shouldReplaceSnapshot || !history[snapshotKey]) {
                 // For today-only tasks: only snapshot on their creation day
                 if (task.duration_type === 'today') {
                   const createdKey = format(startOfDay(safeParseDate(task.created_at)), 'yyyy-MM-dd')
                   if (snapshotKey !== createdKey) continue
                 }
 
+                // Paused tasks stay frozen in Today and are excluded from Yesterday.
+                // Never copy paused tasks into rollover history.
+                if (task.is_paused) {
+                  continue
+                }
+
                 history[snapshotKey] = {
                   progress: (task.progress || 0) as TaskProgress,
-                  status: task.is_paused ? 'skipped' : (task.status || 'pending'),
+                  status: task.status || 'pending',
                   recorded_at: now.toISOString(),
-                  source: task.is_paused ? 'paused' : 'rollover',
+                  source: 'rollover',
                 }
                 needsUpdate = true
               }
             }
+          }
+
+          if (task.is_paused) {
+            if (needsUpdate) {
+              const updatedTask = {
+                ...task,
+                daily_progress: history,
+                updated_at: now.toISOString(),
+              }
+
+              await database.updateTask(task.id, { daily_progress: history })
+              updateTask(updatedTask)
+            }
+            continue
           }
 
           // For continuous tasks: reset for the new day
@@ -297,7 +319,8 @@ export const useDailyReset = () => {
           habitCompletions,
           habit.created_at,
           habit.frequency,
-          habit.schedule
+          habit.schedule,
+          { start: startOfMonth(new Date()), end: new Date() }
         )
 
         // Only update if values changed

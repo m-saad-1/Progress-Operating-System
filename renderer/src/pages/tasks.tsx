@@ -77,9 +77,9 @@ import { safeParseDate, safeToDayKeyParts } from '@/lib/date-safe'
 import { useToaster } from '@/hooks/use-toaster'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
-import { database, CreateTaskDTO, TaskTabStatsSnapshot, TaskAnalyticsChartSnapshot, TaskMonthlyHistoryPoint } from '@/lib/database'
+import { database, CreateTaskDTO, UpdateTaskDTO, TaskTabStatsSnapshot, TaskAnalyticsChartSnapshot, TaskMonthlyHistoryPoint } from '@/lib/database'
 import { Task, TaskProgress, DailyTaskState, TaskStatus } from '@/types'
-import { invalidateTaskCoreQueries, invalidateTaskRelatedQueries, buildTaskProgressUpdatePayload } from '@/lib/task-sync'
+import { invalidateTaskRelatedQueries, buildTaskProgressUpdatePayload } from '@/lib/task-sync'
 import { 
   ProgressSelector, 
   CircularProgressSelector,
@@ -199,6 +199,23 @@ const CalendarMatrixView: React.FC<{
   onTaskClick: (task: Task) => void
 }> = ({ tasks, onProgressChange, onTaskClick }) => {
   const [currentMonth, setCurrentMonth] = useState(new Date())
+
+  const { data: checkboxDailyActivity = [] } = useQuery<TaskAnalyticsChartSnapshot['dailyActivity']>({
+    queryKey: ['task-analytics-chart-checkbox-daily-activity', format(currentMonth, 'yyyy-MM')],
+    queryFn: async () => {
+      const snapshot = await database.getTaskAnalyticsChartSnapshot(currentMonth)
+      return snapshot.dailyActivity || []
+    },
+    staleTime: 30 * 1000,
+  })
+  
+  // Transform daily activity data to include weight labels for chart display
+  const checkboxChartData = useMemo(() => {
+    return checkboxDailyActivity.map(point => ({
+      ...point,
+      weightLabel: `${Math.round(point.completed)}/${Math.round(point.updates)}`
+    } as any))
+  }, [checkboxDailyActivity])
   
   // Sort tasks: continuous/multi-day first, today-only last
   // Also exclude deleted tasks and non-paused tasks
@@ -450,6 +467,43 @@ const CalendarMatrixView: React.FC<{
             </div>
           </div>
         </div>
+
+        <div className="px-4 pt-3 pb-1">
+          <div className="overflow-x-auto">
+            <div style={{ display: 'flex', flexDirection: 'column', minWidth: `${checkboxChartData.length * 30}px` }}>
+              {/* Weight labels row - aligned with chart bars */}
+              <div className="flex h-6 text-[10px] font-medium text-foreground/70 mb-2" style={{ marginLeft: '0px' }}>
+                {checkboxChartData.map((point, idx) => (
+                  <div key={idx} style={{ flex: 1, textAlign: 'center', paddingBottom: '4px' }}>
+                    {point.weightLabel}
+                  </div>
+                ))}
+              </div>
+              
+              {/* Chart */}
+              <div className="h-24">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={checkboxChartData} margin={{ top: 0, right: 0, left: 0, bottom: 20 }}>
+                    <XAxis 
+                      dataKey="date" 
+                      tick={{ fontSize: 10 }}
+                      angle={0}
+                      textAnchor="middle"
+                      height={40}
+                    />
+                    <Bar
+                      dataKey="completed"
+                      fill="hsl(142 76% 36%)"
+                      radius={[2, 2, 0, 0]}
+                      isAnimationActive={false}
+                      maxBarSize={20}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        </div>
         
         {/* Legend - Clean minimal style */}
         <div className="px-4 py-2 bg-slate-50/80 dark:bg-zinc-900/75 flex items-center justify-center gap-4">
@@ -592,7 +646,7 @@ const CheckboxView: React.FC<{
 })
 
 // Task Analytics Charts - Enhanced
-const TaskAnalytics: React.FC<{ dayKey: string }> = React.memo(({ dayKey }) => {
+const TaskAnalytics: React.FC<{ dayKey: string; showDailyActivity?: boolean }> = React.memo(({ dayKey, showDailyActivity = true }) => {
   // Daily Activity section has independent month navigation
   const [selectedDailyActivityMonth, setSelectedDailyActivityMonth] = useState(new Date())
   // Previous Months Progress section has independent year navigation
@@ -643,6 +697,7 @@ const TaskAnalytics: React.FC<{ dayKey: string }> = React.memo(({ dayKey }) => {
     queryKey: ['task-analytics-chart-daily-activity', format(selectedDailyActivityMonth, 'yyyy-MM'), dayKey],
     queryFn: () => database.getTaskAnalyticsChartSnapshot(selectedDailyActivityMonth),
     staleTime: 30 * 1000,
+    enabled: showDailyActivity,
   })
   
   // Fetch analytics data for Consistency section (current year only)
@@ -780,60 +835,7 @@ const TaskAnalytics: React.FC<{ dayKey: string }> = React.memo(({ dayKey }) => {
   
   return (
     <div className="space-y-5">
-      <Card className="overflow-hidden">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center gap-2 text-lg font-semibold">
-              <TrendingUp className="h-4 w-4 text-amber-500" />
-              Progress Trend
-            </CardTitle>
-            <div className="text-xs font-medium text-muted-foreground">Rolling 30 days</div>
-          </div>
-          <CardDescription className="text-sm">Daily weight completion score • rolling earned/planned trend</CardDescription>
-        </CardHeader>
-        <CardContent className="pt-0 pb-6 px-6">
-          <div className="mb-4 flex items-center justify-between">
-            <div className="text-sm font-medium text-muted-foreground">Earned / Planned Weight:</div>
-            <div className="text-sm font-semibold">{Math.round(monthlyTotalEarned * 10) / 10} / {Math.round(monthlyTotalPlanned * 10) / 10}</div>
-          </div>
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={monthlyData} margin={{ top: 5, right: 12, left: -10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="dateKey" className="text-xs" tickFormatter={(value) => String(value).slice(8, 10)} />
-                <YAxis domain={[0, 100]} className="text-xs" />
-                <RechartsTooltip 
-                  content={({ active, payload }) => {
-                    if (active && payload && payload.length) {
-                      const data = payload[0]?.payload
-                      return (
-                        <div className="rounded-lg border bg-popover p-3 shadow-lg">
-                          <p className="font-semibold text-sm mb-2">{data?.fullMonth}</p>
-                          <div className="flex items-center justify-between gap-4 text-sm">
-                            <span className="text-muted-foreground">Progress:</span>
-                            <span className="font-bold">{data?.completionRate}%</span>
-                          </div>
-                        </div>
-                      )
-                    }
-                    return null
-                  }}
-                />
-                <Area 
-                  type="monotone" 
-                  dataKey="completionRate" 
-                  name="Completion Rate (%)"
-                  stroke="#22c55e" 
-                  fill="#22c55e" 
-                  fillOpacity={0.4}
-                  isAnimationActive={true}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </CardContent>
-      </Card>
-      
+      {showDailyActivity && (
       <Card className="overflow-hidden">
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
@@ -945,6 +947,61 @@ const TaskAnalytics: React.FC<{ dayKey: string }> = React.memo(({ dayKey }) => {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+          </div>
+        </CardContent>
+      </Card>
+      )}
+      
+      <Card className="overflow-hidden">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-lg font-semibold">
+              <TrendingUp className="h-4 w-4 text-amber-500" />
+              Progress Trend
+            </CardTitle>
+            <div className="text-xs font-medium text-muted-foreground">Rolling 30 days</div>
+          </div>
+          <CardDescription className="text-sm">Daily weight completion score • rolling earned/planned trend</CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0 pb-6 px-6">
+          <div className="mb-4 flex items-center justify-between">
+            <div className="text-sm font-medium text-muted-foreground">Earned / Planned Weight:</div>
+            <div className="text-sm font-semibold">{Math.round(monthlyTotalEarned * 10) / 10} / {Math.round(monthlyTotalPlanned * 10) / 10}</div>
+          </div>
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={monthlyData} margin={{ top: 5, right: 12, left: -10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="dateKey" className="text-xs" tickFormatter={(value) => String(value).slice(8, 10)} />
+                <YAxis domain={[0, 100]} className="text-xs" />
+                <RechartsTooltip 
+                  content={({ active, payload }) => {
+                    if (active && payload && payload.length) {
+                      const data = payload[0]?.payload
+                      return (
+                        <div className="rounded-lg border bg-popover p-3 shadow-lg">
+                          <p className="font-semibold text-sm mb-2">{data?.fullMonth}</p>
+                          <div className="flex items-center justify-between gap-4 text-sm">
+                            <span className="text-muted-foreground">Progress:</span>
+                            <span className="font-bold">{data?.completionRate}%</span>
+                          </div>
+                        </div>
+                      )
+                    }
+                    return null
+                  }}
+                />
+                <Area 
+                  type="monotone" 
+                  dataKey="completionRate" 
+                  name="Completion Rate (%)"
+                  stroke="#22c55e" 
+                  fill="#22c55e" 
+                  fillOpacity={0.4}
+                  isAnimationActive={true}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
         </CardContent>
       </Card>
@@ -1419,13 +1476,15 @@ const TaskItemBase: React.FC<TaskItemProps> = ({ task, goals, expanded, onToggle
                             {displayProgress === -1 ? 'Not set' : getProgressLabel(progress)}
                           </span>
                         </div>
-                        <button
-                          type="button"
-                          onClick={onOpenDetails}
-                          className="text-sm font-medium text-muted-foreground hover:text-foreground hover:underline transition-colors"
-                        >
-                          Details
-                        </button>
+                        {!hideActions && (
+                          <button
+                            type="button"
+                            onClick={onOpenDetails}
+                            className="text-sm font-medium text-muted-foreground hover:text-foreground hover:underline transition-colors"
+                          >
+                            Details
+                          </button>
+                        )}
                       </div>
                       
                       {task.tags && task.tags.length > 0 && (
@@ -1510,8 +1569,10 @@ export default function Tasks() {
     // In list view mode, only show today's and yesterday's tasks using daily reset logic
     if (viewMode === 'list') {
       const todaysTasks = getTodaysTasks(tasks)
+      const pausedTasks = tasks.filter((task) => !task.deleted_at && task.is_paused)
+      const todaysPinned = Array.from(new Map([...todaysTasks, ...pausedTasks].map((task) => [task.id, task])).values())
       const yesterdaysTasks = getYesterdaysTasks(tasks)
-      return [...todaysTasks, ...yesterdaysTasks].sort((a, b) => {
+      return [...todaysPinned, ...yesterdaysTasks].sort((a, b) => {
         // Sort by due date if available, otherwise by created date
         const aDate = a.due_date ? safeParseDate(a.due_date) : safeParseDate(a.created_at)
         const bDate = b.due_date ? safeParseDate(b.due_date) : safeParseDate(b.created_at)
@@ -1526,6 +1587,8 @@ export default function Tasks() {
     return tasks
       .filter(task => !task.deleted_at)
       .filter(task => {
+        if (task.is_paused) return true
+
         if (task.duration_type === 'today') {
           const taskCreatedAt = startOfDay(safeParseDate(task.created_at))
           return taskCreatedAt.getTime() === todayDay.getTime()
@@ -1554,12 +1617,14 @@ export default function Tasks() {
     // Use helper functions as single source of truth
     // This ensures consistent behavior across the app
     const todaysTasks = getTodaysTasks(tasks)
+    const pausedTasks = tasks.filter((task) => !task.deleted_at && task.is_paused)
+    const todaysPinned = Array.from(new Map([...todaysTasks, ...pausedTasks].map((task) => [task.id, task])).values())
     const yesterdaysTasks = getYesterdaysTasks(tasks)
     
     const groups: Record<string, Task[]> = {}
     
-    if (todaysTasks.length > 0) {
-      groups["Today's Tasks"] = todaysTasks.sort((a, b) => {
+    if (todaysPinned.length > 0) {
+      groups["Today's Tasks"] = todaysPinned.sort((a, b) => {
         // Sort by due date if available, otherwise by created date
         const aDate = a.due_date ? safeParseDate(a.due_date) : safeParseDate(a.created_at)
         const bDate = b.due_date ? safeParseDate(b.due_date) : safeParseDate(b.created_at)
@@ -1651,10 +1716,6 @@ export default function Tasks() {
     invalidateTaskRelatedQueries(queryClient)
   }, [queryClient])
 
-  const invalidateTaskCoreDerivedQueries = useCallback(() => {
-    invalidateTaskCoreQueries(queryClient)
-  }, [queryClient])
-
   // Mutations
   const createTaskMutation = useMutation({
     mutationFn: async (taskData: CreateTaskDTO) => {
@@ -1664,7 +1725,7 @@ export default function Tasks() {
     },
     onSuccess: (newTask) => {
       if (newTask) {
-        addTask(newTask)
+        addTask(newTask as any)
         success('Task created successfully! 🎉')
         setIsCreating(false)
         resetForm()
@@ -1682,7 +1743,7 @@ export default function Tasks() {
     },
     onSuccess: (updatedTask) => {
       if (updatedTask) {
-        updateTask(updatedTask)
+        updateTask(updatedTask as any)
         success('Task updated!')
         setIsCreating(false)
         setIsEditing(null)
@@ -1697,25 +1758,66 @@ export default function Tasks() {
   const pauseToggleMutation = useMutation({
     mutationFn: async ({ id, isPaused }: { id: string; isPaused: boolean }) => {
       const existingTask = tasks.find(task => task.id === id)
-      const updates: Partial<Task> = {
+      const updates: UpdateTaskDTO = {
         is_paused: isPaused,
       }
       if (existingTask) {
+        const now = new Date()
+        const nowIso = now.toISOString()
         const todayKey = format(new Date(), 'yyyy-MM-dd')
         const dailyProgress = normalizeDailyProgress(existingTask)
         const currentEntry = dailyProgress[todayKey]
 
-        dailyProgress[todayKey] = {
-          progress: (currentEntry?.progress ?? existingTask.progress ?? 0) as TaskProgress,
-          status: (currentEntry?.status ?? existingTask.status ?? 'pending') as TaskStatus,
-          recorded_at: new Date().toISOString(),
-          source: isPaused ? 'paused' : 'user',
-        }
+        if (isPaused) {
+          dailyProgress[todayKey] = {
+            progress: (currentEntry?.progress ?? existingTask.progress ?? 0) as TaskProgress,
+            status: (currentEntry?.status ?? existingTask.status ?? 'pending') as TaskStatus,
+            recorded_at: nowIso,
+            source: 'paused',
+          }
 
-        updates.daily_progress = dailyProgress
+          updates.daily_progress = dailyProgress
+        } else {
+          // Backfill every paused calendar day so skipped frozen days never count in analytics.
+          const pausedAt = existingTask.paused_at ? safeParseDate(existingTask.paused_at) : null
+          if (pausedAt) {
+            const frozenDayKey = format(startOfDay(pausedAt), 'yyyy-MM-dd')
+            const frozenEntry = dailyProgress[frozenDayKey]
+            const frozenProgress = (frozenEntry?.progress ?? existingTask.progress ?? 0) as TaskProgress
+            const frozenStatus = (frozenEntry?.status ?? existingTask.status ?? 'pending') as TaskStatus
+
+            const cursor = startOfDay(pausedAt)
+            const yesterday = startOfDay(now)
+            yesterday.setDate(yesterday.getDate() - 1)
+
+            let wroteBackfill = false
+            while (cursor.getTime() <= yesterday.getTime()) {
+              const dayKey = format(cursor, 'yyyy-MM-dd')
+              const existingEntry = dailyProgress[dayKey]
+
+              if (!existingEntry || existingEntry.source !== 'paused') {
+                dailyProgress[dayKey] = {
+                  progress: frozenProgress,
+                  status: frozenStatus,
+                  recorded_at: nowIso,
+                  source: 'paused',
+                }
+                wroteBackfill = true
+              }
+
+              cursor.setDate(cursor.getDate() + 1)
+            }
+
+            if (wroteBackfill) {
+              updates.daily_progress = dailyProgress
+            }
+          }
+        }
       }
       if (isPaused) {
         updates.paused_at = new Date().toISOString()
+      } else {
+        updates.paused_at = null
       }
       await database.updateTask(id, updates)
       const updatedTask = await database.getTaskById(id)
@@ -1723,7 +1825,7 @@ export default function Tasks() {
     },
     onSuccess: ({ updatedTask, isPaused }) => {
       if (updatedTask) {
-        updateTask(updatedTask)
+        updateTask(updatedTask as any)
         if (isPaused) {
           success('Task paused ⏸️ Progress frozen')
         } else {
@@ -1754,13 +1856,14 @@ export default function Tasks() {
     },
     onSuccess: ({ updatedTask, progress }) => {
       if (updatedTask) {
-        updateTask(updatedTask)
-        // Task is completed only at 100%
+        updateTask(updatedTask as any)
         if (progress === 100) {
           success('Task completed! 🎉🎊')
+        } else if (progress === 0) {
+          success('Task skipped.')
         }
         queryClient.invalidateQueries({ queryKey: ['review-insights'] })
-        invalidateTaskCoreDerivedQueries()
+        invalidateTaskDerivedQueries()
       }
     },
     onError: () => toastError('Failed to update progress'),
@@ -1774,9 +1877,9 @@ export default function Tasks() {
     },
     onSuccess: (updatedTask) => {
       if (updatedTask) {
-        updateTask(updatedTask)
+        updateTask(updatedTask as any)
         queryClient.invalidateQueries({ queryKey: ['review-insights'] })
-        invalidateTaskCoreDerivedQueries()
+        invalidateTaskDerivedQueries()
       }
     },
     onError: () => toastError('Failed to update daily progress'),
@@ -1899,7 +2002,7 @@ export default function Tasks() {
     if (targetDay.getTime() < taskCreatedDay.getTime()) return
 
     // Derive proper status from progress value
-    const status = progress >= 100 ? 'completed' : progress > 0 ? 'in-progress' : 'pending'
+    const status = progress >= 100 ? 'completed' : progress > 0 ? 'in-progress' : 'skipped'
     // For today's date, update once via updateProgressMutation.
     // It already persists today's daily_progress snapshot in the same DB write.
     if (isToday(safeParseDate(date))) {
@@ -2230,7 +2333,7 @@ export default function Tasks() {
                 <span className="font-semibold text-red-500">{stats.weeklyStats.skipped}</span>
               </div>
               <div className="flex justify-between pt-1">
-                <span>Weight (earned/planned)</span>
+                <span>Weight</span>
                 <span className="font-semibold text-purple-500">
                   {Math.round(stats.weeklyStats.earnedWeight)}/{Math.round(stats.weeklyStats.plannedWeight)}
                 </span>
@@ -2266,7 +2369,7 @@ export default function Tasks() {
                 <span className="font-semibold text-red-500">{stats.monthlyStats.skipped}</span>
               </div>
               <div className="flex justify-between pt-1">
-                <span>Weight (earned/planned)</span>
+                <span>Weight</span>
                 <span className="font-semibold text-purple-500">
                   {Math.round(stats.monthlyStats.earnedWeight)}/{Math.round(stats.monthlyStats.plannedWeight)}
                 </span>
@@ -2300,7 +2403,7 @@ export default function Tasks() {
                 <span className="font-semibold text-red-500">{stats.skipped}</span>
               </div>
               <div className="flex justify-between pt-1">
-                <span>Weight (earned/planned)</span>
+                <span>Weight</span>
                 <span className="font-semibold text-purple-500">
                   {Math.round(stats.completedWeight)}/{Math.round(stats.totalWeight)}
                 </span>
@@ -2417,6 +2520,7 @@ export default function Tasks() {
                     return {
                       ...task,
                       progress: getDailyProgress(task, displayDate) as ProgressValue,
+                      status: yesterdayEntry?.status ?? task.status,
                       is_paused: yesterdayEntry?.source === 'paused',
                     }
                   })() : task
@@ -2435,7 +2539,7 @@ export default function Tasks() {
                       onPauseToggle={(isPaused) => pauseToggleMutation.mutate({ id: task.id, isPaused })}
                       readonly={false}
                       hideActions={isYesterdaySection}
-                      allowProgressEditWhenPaused={isYesterdaySection}
+                      allowProgressEditWhenPaused={false}
                     />
                   )
                 })}
@@ -2449,7 +2553,7 @@ export default function Tasks() {
 
       {/* Analytics Section */}
       <div className="animate-in fade-in slide-in-from-top-4 duration-300">
-        <TaskAnalytics dayKey={dayKey} />
+        <TaskAnalytics dayKey={dayKey} showDailyActivity={viewMode !== 'checkbox'} />
       </div>
 
       {/* Task Detail Modal */}
@@ -2574,31 +2678,27 @@ export default function Tasks() {
                     <TrendingUp className="h-4 w-4" />
                     All-Time Progress
                   </label>
-                  <div className="space-y-1">
-                    {(() => {
-                      const dailyProgress = taskDetailModal.daily_progress
-                      const completedDays = Object.values(dailyProgress).filter((p: any) => p.progress === 100 || p.status === 'completed').length
-                      const totalDays = Object.keys(dailyProgress).length
-                      const avgProgress = Math.round(
-                        Object.values(dailyProgress).reduce((sum: number, val: any) => sum + (val.progress || 0), 0) / totalDays
-                      )
-                      return (
-                        <>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Completed Days</span>
-                            <span className="font-semibold text-green-600 dark:text-green-400">{completedDays} / {totalDays}</span>
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Average Progress</span>
-                            <span className={cn("font-semibold", getProgressTextColor(avgProgress))}>{avgProgress}%</span>
-                          </div>
-                          <div className="mt-2 space-y-1">
-                            <AnimatedProgressBar value={avgProgress as ProgressValue} height="sm" />
-                          </div>
-                        </>
-                      )
-                    })()}
-                  </div>
+                  {(() => {
+                    const dailyProgress = Object.values(taskDetailModal.daily_progress || {}) as Array<DailyTaskState>
+                    const activeDays = dailyProgress.filter((entry) => entry?.source !== 'paused')
+                    const completedDays = activeDays.filter((entry) => (entry.progress ?? 0) >= 100 || entry.status === 'completed').length
+                    const partialDays = activeDays.filter((entry) => {
+                      const progress = entry.progress ?? 0
+                      return progress > 0 && progress < 100 && entry.status !== 'completed'
+                    }).length
+                    const skippedDays = activeDays.filter((entry) => {
+                      const progress = entry.progress ?? 0
+                      const status = entry.status ?? 'pending'
+                      return status === 'skipped' || (progress <= 0 && status !== 'completed')
+                    }).length
+                    const totalDays = activeDays.length
+
+                    return (
+                      <p className="text-sm text-foreground/90">
+                        Total: <span className="font-semibold">{totalDays}</span>, Completed: <span className="font-semibold text-green-600 dark:text-green-400">{completedDays}</span>, Partial: <span className="font-semibold text-amber-600 dark:text-amber-400">{partialDays}</span>, Skipped: <span className="font-semibold text-rose-600 dark:text-rose-400">{skippedDays}</span>
+                      </p>
+                    )
+                  })()}
                 </div>
               )}
               

@@ -10,11 +10,24 @@ import { useAppRuntime } from '@/hooks/use-app-runtime'
 
 export function MainLayout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [isInitialized, setIsInitialized] = useState(false)
   const location = useLocation()
   const mainScrollRef = useRef<HTMLElement | null>(null)
   const { timerMode, timerRunning, elapsedMs } = useSharedTimer()
 
+  // Mount global runtime side effects (reminders, notifications, shortcuts, sync).
   useAppRuntime()
+
+  // Safely initialize app runtime hooks
+  useEffect(() => {
+    console.log('[MainLayout] Initializing');
+    try {
+      // Only run heavy hooks if we're ready
+      setIsInitialized(true);
+    } catch (error) {
+      console.error('[MainLayout] Error during initialization:', error);
+    }
+  }, []);
 
   const onTimeTab = location.pathname === '/time'
   const shouldShowFloatingTimer = !onTimeTab && timerMode !== null && (timerRunning || elapsedMs > 0)
@@ -33,6 +46,14 @@ export function MainLayout() {
 
     return () => cancelAnimationFrame(frame)
   }, [location.pathname, location.search, location.key])
+
+  if (!isInitialized) {
+    return (
+      <div className="flex items-center justify-center h-screen w-screen">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative min-h-screen w-full bg-background text-foreground transition-colors duration-300">

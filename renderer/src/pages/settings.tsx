@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -62,6 +62,7 @@ import { useBackup } from '@/hooks/use-backup'
 import { cn } from '@/lib/utils'
 import { format } from 'date-fns'
 import { getFeedbackRuntimeMetadata, queueFeedbackForRetry, retryQueuedFeedback, submitFeedback } from '@/lib/feedback-service'
+import { getSafeAvatarSrc } from '@/lib/avatar'
 
 // Setting Item Component for consistent styling
 interface SettingItemProps {
@@ -71,6 +72,15 @@ interface SettingItemProps {
   children: React.ReactNode
   className?: string
 }
+
+type SettingsTab =
+  | 'profile'
+  | 'appearance'
+  | 'notifications'
+  | 'sync'
+  | 'privacy'
+  | 'keyboard'
+  | 'help-support'
 
 const SettingItem = ({ icon, title, description, children, className }: SettingItemProps) => (
   <div className={cn("flex items-center justify-between py-4", className)}>
@@ -211,16 +221,22 @@ export default function Settings() {
   const [profileEmail, setProfileEmail] = useState(userProfile?.email || '')
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const settingsTabs = useMemo(
-    () => new Set(['profile', 'appearance', 'notifications', 'sync', 'privacy', 'keyboard']),
+    () => new Set<SettingsTab>(['profile', 'appearance', 'notifications', 'sync', 'privacy', 'keyboard', 'help-support']),
     []
   )
-  const [activeTab, setActiveTab] = useState(() => {
+  const getTabFromSearchParams = (): SettingsTab => {
     const tabParam = searchParams.get('tab')
-    return tabParam && settingsTabs.has(tabParam) ? tabParam : 'profile'
+    return tabParam && settingsTabs.has(tabParam as SettingsTab)
+      ? (tabParam as SettingsTab)
+      : 'profile'
+  }
+  const [activeTab, setActiveTab] = useState(() => {
+    return getTabFromSearchParams()
   })
   const [resetDialogOpen, setResetDialogOpen] = useState(false)
   const [resetConfirmation, setResetConfirmation] = useState('')
   const [isClearingCaches, setIsClearingCaches] = useState(false)
+  const [highlightHistoryDeletion, setHighlightHistoryDeletion] = useState(false)
   const [feedbackType, setFeedbackType] = useState<'bug-report' | 'suggestion' | 'feature-request' | 'general-feedback'>('general-feedback')
   const [feedbackMessage, setFeedbackMessage] = useState('')
   const [feedbackEmail, setFeedbackEmail] = useState(userProfile?.email || '')
@@ -231,6 +247,11 @@ export default function Settings() {
   const [hasRetriedQueuedFeedback, setHasRetriedQueuedFeedback] = useState(false)
   const [isOnline, setIsOnline] = useState(() => typeof navigator === 'undefined' ? true : navigator.onLine)
   const [feedbackSubmitStatus, setFeedbackSubmitStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const dangerZoneRef = useRef<HTMLDivElement | null>(null)
+  const avatarInputRef = useRef<HTMLInputElement | null>(null)
+  const profileAutosaveTimerRef = useRef<number | null>(null)
+  const latestProfileDraftRef = useRef({ name: '', email: '' })
+  const avatarSrc = useMemo(() => getSafeAvatarSrc(userProfile?.avatar), [userProfile?.avatar])
 
   // Sync local state with store changes when userProfile updates
   useEffect(() => {
@@ -254,19 +275,48 @@ export default function Settings() {
     }
   }, [])
 
-  // Sync activeTab to URL when user changes it (one-way: state → URL only)
+  // Sync active tab to URL, preserving unrelated query parameters.
   useEffect(() => {
-    const current = searchParams.get('tab') || 'profile'
-    if (current === activeTab) return
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      const current = next.get('tab') || 'profile'
+      if (current === activeTab) {
+        return prev
+      }
 
-    const next = new URLSearchParams(searchParams)
-    if (activeTab === 'profile') {
-      next.delete('tab')
-    } else {
-      next.set('tab', activeTab)
-    }
-    setSearchParams(next, { replace: true })
+      if (activeTab === 'profile') {
+        next.delete('tab')
+      } else {
+        next.set('tab', activeTab)
+      }
+
+      return next
+    }, { replace: true })
   }, [activeTab, setSearchParams])
+
+  // React to incoming deep links or external URL tab changes only.
+  useEffect(() => {
+    const nextTab = getTabFromSearchParams()
+    setActiveTab((currentTab) => (currentTab === nextTab ? currentTab : nextTab))
+  }, [searchParams, settingsTabs])
+
+  useEffect(() => {
+    if (activeTab !== 'privacy') return
+
+    const sectionParam = searchParams.get('section')
+    const highlightParam = searchParams.get('highlight')
+    if (sectionParam !== 'danger-zone' && highlightParam !== 'history-deletion') return
+
+    const timer = window.setTimeout(() => {
+      dangerZoneRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      if (highlightParam === 'history-deletion') {
+        setHighlightHistoryDeletion(true)
+        window.setTimeout(() => setHighlightHistoryDeletion(false), 4000)
+      }
+    }, 100)
+
+    return () => window.clearTimeout(timer)
+  }, [activeTab, searchParams])
 
   // Track unsaved changes
   useEffect(() => {
@@ -277,6 +327,60 @@ export default function Settings() {
       profileEmail !== (userProfile.email || '')
     setHasUnsavedChanges(hasChanges)
   }, [profileName, profileEmail, userProfile])
+
+  useEffect(() => {
+    latestProfileDraftRef.current = {
+      name: profileName,
+      email: profileEmail,
+    }
+  }, [profileEmail, profileName])
+
+  useEffect(() => {
+    if (!userProfile) return
+
+    const nextName = profileName
+    const nextEmail = profileEmail
+    const currentName = userProfile.name || ''
+    const currentEmail = userProfile.email || ''
+
+    if (nextName === currentName && nextEmail === currentEmail) {
+      return
+    }
+
+    if (profileAutosaveTimerRef.current) {
+      window.clearTimeout(profileAutosaveTimerRef.current)
+    }
+
+    profileAutosaveTimerRef.current = window.setTimeout(() => {
+      useStore.getState().updateUserProfile({
+        name: nextName,
+        email: nextEmail,
+      })
+    }, 450)
+
+    return () => {
+      if (profileAutosaveTimerRef.current) {
+        window.clearTimeout(profileAutosaveTimerRef.current)
+      }
+    }
+  }, [profileName, profileEmail, userProfile?.email, userProfile?.name])
+
+  useEffect(() => {
+    return () => {
+      if (profileAutosaveTimerRef.current) {
+        window.clearTimeout(profileAutosaveTimerRef.current)
+      }
+
+      const { name, email } = latestProfileDraftRef.current
+      const persisted = useStore.getState().userProfile
+      const persistedName = persisted?.name || ''
+      const persistedEmail = persisted?.email || ''
+
+      if (name !== persistedName || email !== persistedEmail) {
+        useStore.getState().updateUserProfile({ name, email })
+      }
+    }
+  }, [])
 
   // Save profile changes
   const handleSaveProfile = () => {
@@ -445,6 +549,42 @@ export default function Settings() {
 
   const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 
+  const handleAvatarChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+
+    if (!file) {
+      return
+    }
+
+    if (!file.type.startsWith('image/')) {
+      error('Please choose an image file')
+      event.target.value = ''
+      return
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      error('Avatar must be 5MB or smaller')
+      event.target.value = ''
+      return
+    }
+
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(new Error('Failed to read avatar file'))
+        reader.readAsDataURL(file)
+      })
+
+      store.updateUserProfile({ avatar: dataUrl })
+      success('Avatar updated successfully')
+    } catch {
+      error('Failed to upload avatar')
+    } finally {
+      event.target.value = ''
+    }
+  }
+
   const handleFeedbackScreenshotChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) {
@@ -517,10 +657,16 @@ export default function Settings() {
         setFeedbackScreenshotDataUrl('')
       } else if (result.cachedForRetry) {
         info('Feedback was saved and will retry automatically.')
-        setFeedbackSubmitStatus({ type: 'error', message: `Feedback could not be sent right now. ${result.error || ''} It was saved for automatic retry.`.trim() })
+        setFeedbackSubmitStatus({ 
+          type: 'error', 
+          message: `Feedback could not be sent right now. ${result.error || ''} It was saved for automatic retry. If the issue persists, please contact us directly at progressoshelp@gmail.com`.trim() 
+        })
       } else {
         error('Feedback could not be sent. Please try again.')
-        setFeedbackSubmitStatus({ type: 'error', message: result.error || 'Feedback could not be sent.' })
+        setFeedbackSubmitStatus({ 
+          type: 'error', 
+          message: `${result.error || 'Feedback could not be sent.'} If you continue to experience issues, please send your feedback directly to progressoshelp@gmail.com for manual support.` 
+        })
       }
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : 'Unknown error'
@@ -536,7 +682,10 @@ export default function Settings() {
       })
 
       info('Feedback was saved and will retry automatically.')
-      setFeedbackSubmitStatus({ type: 'error', message: `Could not send feedback. ${message}. Saved for retry.` })
+      setFeedbackSubmitStatus({ 
+        type: 'error', 
+        message: `Could not send feedback. ${message}. Your feedback was saved for automatic retry. If problems continue, please email us at progressoshelp@gmail.com.` 
+      })
     } finally {
       setIsSubmittingFeedback(false)
     }
@@ -615,7 +764,15 @@ export default function Settings() {
         </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => {
+          if (settingsTabs.has(value as SettingsTab)) {
+            setActiveTab(value as SettingsTab)
+          }
+        }}
+        className="w-full"
+      >
         <TabsList className="w-full grid grid-cols-6 bg-secondary/30 dark:bg-secondary/20 p-1 rounded-xl border-transparent">
           <TabsTrigger value="profile" className="gap-2 rounded-lg">
             <User className="h-4 w-4" />
@@ -660,30 +817,23 @@ export default function Settings() {
               <div className="flex items-start gap-6">
                 <div className="relative group flex flex-col items-center gap-2">
                   <Avatar className="h-24 w-24 border-4 border-primary/20">
-                    <AvatarImage src={userProfile?.avatar} />
+                    <AvatarImage src={avatarSrc} />
                     <AvatarFallback className="bg-primary/10 text-primary text-2xl font-bold">
                       {userInitials}
                     </AvatarFallback>
                   </Avatar>
+                  <input
+                    ref={avatarInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
+                    className="hidden"
+                    onChange={handleAvatarChange}
+                  />
                   <div className="flex gap-1">
                     <Button
                       size="sm"
                       className="h-7 px-2 text-xs bg-green-500/10 text-green-600 dark:text-green-400 hover:bg-green-500/20 border-none shadow-sm hover:shadow-md transition-all"
-                      onClick={async () => {
-                        try {
-                          const filePath = await electron.selectFile({
-                            filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }]
-                          })
-                          if (filePath) {
-                            // Convert file path to a file:// URL for local images
-                            const avatarUrl = `file://${filePath.replace(/\\/g, '/')}`
-                            store.updateUserProfile({ avatar: avatarUrl })
-                            success('Avatar updated successfully')
-                          }
-                        } catch (err) {
-                          error('Failed to upload avatar')
-                        }
-                      }}
+                      onClick={() => avatarInputRef.current?.click()}
                     >
                       <Upload className="h-3 w-3 mr-1" />
                       {userProfile?.avatar ? 'Change' : 'Upload'}
@@ -694,6 +844,9 @@ export default function Settings() {
                         className="h-7 px-2 text-xs bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20 border-none shadow-sm hover:shadow-md transition-all"
                         onClick={() => {
                           store.updateUserProfile({ avatar: undefined })
+                          if (avatarInputRef.current) {
+                            avatarInputRef.current.value = ''
+                          }
                           success('Avatar removed')
                         }}
                       >
@@ -1544,7 +1697,11 @@ export default function Settings() {
           </Card>
 
           {/* Data Actions */}
-          <Card className="border-none shadow-lg bg-gradient-to-br from-card to-card/50">
+          <Card
+            ref={dangerZoneRef}
+            id="danger-zone"
+            className="border-none shadow-lg bg-gradient-to-br from-card to-card/50"
+          >
             <CardHeader>
               <CardTitle className="flex items-center gap-2 bg-gradient-to-r from-red-600 to-red-500 bg-clip-text text-transparent">
                 <Trash2 className="h-5 w-5 text-red-500" />
@@ -1555,7 +1712,13 @@ export default function Settings() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="p-4 rounded-xl bg-gradient-to-br from-red-50/50 to-red-50/20 dark:from-red-950/20 dark:to-red-950/10 border border-red-200/50 dark:border-red-800/30 hover:border-red-300/70 dark:hover:border-red-700/50 transition-all">
+              <div
+                id="history-deletion-card"
+                className={cn(
+                  'p-4 rounded-xl bg-gradient-to-br from-red-50/50 to-red-50/20 dark:from-red-950/20 dark:to-red-950/10 border border-red-200/50 dark:border-red-800/30 hover:border-red-300/70 dark:hover:border-red-700/50 transition-all',
+                  highlightHistoryDeletion && 'history-deletion-card-highlight'
+                )}
+              >
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex-1">
                     <p className="font-semibold text-foreground mb-1">Enable History Deletion</p>

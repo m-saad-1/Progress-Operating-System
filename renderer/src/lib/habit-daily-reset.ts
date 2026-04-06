@@ -12,7 +12,7 @@
  * - Previous-day data remains in database for analytics
  */
 
-import { startOfDay, isBefore, format, parseISO, differenceInDays, eachDayOfInterval } from 'date-fns'
+import { startOfDay, isBefore, format, parseISO, differenceInDays, eachDayOfInterval, startOfMonth } from 'date-fns'
 import type { Habit, HabitCompletion } from '@/types'
 
 /**
@@ -149,7 +149,7 @@ export const calculateLongestStreak = (
  * 
  * @param completionHistory - Array of HabitCompletion records
  * @param habitCreatedAt - When the habit was created (ISO string)
- * @param dateRange - Optional date range, defaults to last 30 days
+ * @param dateRange - Optional date range, defaults to the current calendar month
  * @returns Consistency percentage (0-100)
  */
 export const calculateConsistency = (
@@ -159,11 +159,8 @@ export const calculateConsistency = (
   schedule: string[] = [],
   dateRange?: { start: Date; end: Date }
 ): number => {
-  // Default to last 30 days
   const end = dateRange?.end || new Date()
-  const thirtyDaysAgo = new Date(end)
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-  const start = dateRange?.start || thirtyDaysAgo
+  const start = dateRange?.start || startOfMonth(end)
   
   // Adjust start to not go before habit creation
   const createdDate = startOfDay(parseISO(habitCreatedAt))

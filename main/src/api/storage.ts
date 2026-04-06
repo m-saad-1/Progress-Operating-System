@@ -6,7 +6,14 @@
  * Tauri: Uses tauri::api::store
  */
 
-import Store from 'electron-store';
+type StoreLike = {
+  get: (key: string) => unknown;
+  set: (key: string, value: unknown) => void;
+  delete: (key: string) => void;
+  clear: () => void;
+  has: (key: string) => boolean;
+  store: unknown;
+};
 
 export interface StorageOptions {
   name?: string;
@@ -14,10 +21,13 @@ export interface StorageOptions {
 }
 
 export class StorageAPI {
-  private store: Store;
+  private store: StoreLike;
 
   constructor(options?: StorageOptions) {
-    this.store = new Store({
+    // Use dynamic require so this file doesn't hard-fail type resolution when
+    // electron-store is only present in specific package scopes.
+    const ElectronStore = require('electron-store') as new (opts: { name: string; cwd?: string }) => StoreLike;
+    this.store = new ElectronStore({
       name: options?.name || 'personal-os',
       cwd: options?.cwd,
     });

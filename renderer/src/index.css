@@ -207,4 +207,41 @@
     --muted-foreground: 0 0% 78%;
     --ring: 145 85% 55%;
   }
+
+  .history-deletion-card-highlight {
+    position: relative;
+    border-color: hsl(var(--destructive) / 0.5) !important;
+    box-shadow: 0 0 0 2px hsl(var(--destructive) / 0.22), 0 0 24px hsl(var(--destructive) / 0.2);
+    animation: historyDeletionPulse 1.1s ease-in-out infinite alternate;
+  }
+
+  .history-deletion-card-highlight::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 0.9rem;
+    border: 2px solid transparent;
+    border-top-color: hsl(var(--destructive));
+    border-right-color: hsl(var(--destructive));
+    pointer-events: none;
+    animation: historyDeletionBorderSweep 1.2s linear infinite;
+  }
+
+  @keyframes historyDeletionPulse {
+    from {
+      box-shadow: 0 0 0 1px hsl(var(--destructive) / 0.2), 0 0 12px hsl(var(--destructive) / 0.14);
+    }
+    to {
+      box-shadow: 0 0 0 2px hsl(var(--destructive) / 0.28), 0 0 28px hsl(var(--destructive) / 0.24);
+    }
+  }
+
+  @keyframes historyDeletionBorderSweep {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
 }

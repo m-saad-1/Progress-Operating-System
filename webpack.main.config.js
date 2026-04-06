@@ -30,11 +30,6 @@ module.exports = {
     libraryTarget: 'commonjs2',
   },
 
-  externals: {
-    'better-sqlite3': 'commonjs better-sqlite3',
-    'nodemailer': 'commonjs nodemailer',
-  },
-
   infrastructureLogging: {
     level: 'warn',
   },

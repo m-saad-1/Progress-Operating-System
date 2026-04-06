@@ -6,14 +6,25 @@
   "config": {
     "forge": "./electron-forge.config.js"
   },
+  "pnpm": {
+    "packageExtensions": {
+      "@malept/flatpak-bundler@*": {
+        "dependencies": {
+          "tmp-promise": "^3.0.3"
+        }
+      }
+    }
+  },
   "scripts": {
-    "start": "electron-forge start",
+    "start": "node scripts/start-dev.js",
     "package": "electron-forge package",
-    "make": "electron-forge make",
+    "make": "pnpm run make:installer",
+    "make:squirrel": "electron-forge make",
+    "make:installer": "pnpm run package && electron-builder --prepackaged \"out/Progress OS-win32-x64\" --config electron-builder.json --win nsis",
     "clean": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$targets=@('out','.webpack','dist','renderer/dist','renderer/node_modules/.vite','node_modules/.cache','renderer/node_modules/.cache'); foreach($t in $targets){ if(Test-Path $t){ Remove-Item -Recurse -Force $t } }\"",
     "clean:deps": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$targets=@('renderer/node_modules'); foreach($t in $targets){ if(Test-Path $t){ Remove-Item -Recurse -Force $t } }\"",
     "lint": "eslint --ext .ts,.tsx .",
-    "type-check": "tsc --noEmit",
+    "type-check": "tsc -p main/tsconfig.json --noEmit && tsc -p renderer/tsconfig.json --noEmit",
     "build:undo": "tsc -p undo/tsconfig.json",
     "build:sync": "tsc -p sync/tsconfig.json",
     "electron-rebuild": "electron-rebuild",
@@ -44,9 +55,11 @@
     "@types/uuid": "^9.0.8",
     "@typescript-eslint/eslint-plugin": "^7.0.2",
     "@typescript-eslint/parser": "^7.0.2",
+    "@vercel/webpack-asset-relocator-loader": "^1.10.0",
     "autoprefixer": "^10.4.23",
     "css-loader": "^6.10.0",
     "electron": "^28.2.0",
+    "electron-builder": "^24.13.3",
     "eslint": "^8.57.0",
     "eslint-plugin-import": "^2.29.1",
     "node-gyp": "^12.1.0",
@@ -58,6 +71,7 @@
     "react-dom": "^18.2.0",
     "style-loader": "^3.3.4",
     "tailwindcss": "^3.4.19",
+    "tmp-promise": "^3.0.3",
     "ts-loader": "^9.5.1",
     "ts-node": "^10.9.2",
     "tsconfig-paths-webpack-plugin": "^4.2.0",

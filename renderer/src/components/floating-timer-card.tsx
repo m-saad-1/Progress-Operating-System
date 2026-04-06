@@ -2,7 +2,7 @@ import React, { useMemo } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
-import { Play, StopCircle, RotateCcw, Move, Timer as TimerIcon } from 'lucide-react'
+import { Play, StopCircle, RotateCcw, Move, Timer as TimerIcon, BellOff } from 'lucide-react'
 import {
   formatTimeFromMs,
   getDefaultDurationForMode,
@@ -34,9 +34,11 @@ export function FloatingTimerCard() {
     progress,
     customDurationMs,
     floatingTimerPosition,
+    alarmPlaying,
     startTimer,
     stopTimer,
     resetTimer,
+    stopAlarm,
     setFloatingTimerPosition,
   } = useSharedTimer()
 
@@ -91,6 +93,16 @@ export function FloatingTimerCard() {
               {formatTimeFromMs(displayedTime)}
             </div>
             <div className="flex items-center gap-2">
+              {alarmPlaying && (
+                <Button 
+                  onClick={stopAlarm} 
+                  size="icon"
+                  className="bg-red-500 hover:bg-red-600 text-white animate-pulse"
+                  title="Stop alarm"
+                >
+                  <BellOff className="h-4 w-4" />
+                </Button>
+              )}
               <Button onClick={handleToggle} size="icon">
                 {timerRunning ? (
                   <StopCircle className="h-4 w-4" />

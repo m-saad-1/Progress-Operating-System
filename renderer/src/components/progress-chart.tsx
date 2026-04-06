@@ -1,4 +1,3 @@
-import React from 'react'
 import {
   AreaChart,
   Area,
@@ -10,7 +9,6 @@ import {
   Tooltip,
   ResponsiveContainer,
   Legend,
-  Cell,
 } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -92,8 +90,8 @@ const CustomTooltip = ({ active, payload, label }: any) => {
 
 export function ProgressChart({ 
   days = 7, 
-  showHabits = true, 
-  showTasks = true,
+  showHabits: _showHabits = true,
+  showTasks: _showTasks = true,
   className,
   data: providedData
 }: ProgressChartProps) {
@@ -124,7 +122,6 @@ export function ProgressChart({
           <TabsList>
             <TabsTrigger value="week" className="data-[state=active]:bg-green-100 data-[state=active]:text-green-800">Week</TabsTrigger>
             <TabsTrigger value="month" className="data-[state=active]:bg-green-100 data-[state=active]:text-green-800">Month</TabsTrigger>
-            <TabsTrigger value="quarter" className="data-[state=active]:bg-green-100 data-[state=active]:text-green-800">Quarter</TabsTrigger>
           </TabsList>
         </Tabs>
       </CardHeader>

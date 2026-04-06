@@ -507,6 +507,16 @@ export class ProgressDatabase {
           -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, handled programmatically
         `,
       },
+      
+      // Version 13: Update task status CHECK constraint to include 'skipped' status
+      {
+        version: 13,
+        up: `
+          -- Update status CHECK constraint to include 'skipped' status
+          -- SQLite doesn't support modifying CHECK constraints, so we recreate the table
+          -- This is handled in the special handling section below
+        `,
+      },
     ];
     
     // Run migrations
@@ -642,6 +652,81 @@ export class ProgressDatabase {
             continue;
           } catch (error) {
             console.error('Failed to check/add last_reset_date column to tasks:', error);
+            throw error;
+          }
+        }
+        
+        // Special handling for version 13 - update task status CHECK constraint to include 'skipped'
+        if (migration.version === 13) {
+          try {
+            console.log('Updating task status constraint to include skipped status');
+            
+            // Check if constraint already includes 'skipped'
+            const createTableStmt = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'").get() as {sql: string} | undefined;
+            if (createTableStmt && createTableStmt.sql && createTableStmt.sql.includes("'skipped'")) {
+              console.log('Task status constraint already includes skipped, skipping recreation');
+              this.db.exec(`PRAGMA user_version = ${migration.version}`);
+              continue;
+            }
+            
+            // Rename old table
+            this.db.exec('ALTER TABLE tasks RENAME TO tasks_old');
+            
+            // Create new tasks table with updated status constraint
+            this.db.exec(`
+              CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT,
+                due_date TEXT,
+                priority TEXT CHECK(priority IN ('low', 'medium', 'high', 'critical')) NOT NULL DEFAULT 'medium',
+                status TEXT CHECK(status IN ('pending', 'in-progress', 'blocked', 'completed', 'skipped')) NOT NULL DEFAULT 'pending',
+                progress REAL CHECK(progress >= 0 AND progress <= 100) NOT NULL DEFAULT 0,
+                duration_type TEXT NOT NULL DEFAULT 'today',
+                daily_progress TEXT NOT NULL DEFAULT '{}',
+                is_paused INTEGER NOT NULL DEFAULT 0,
+                paused_at TEXT,
+                last_reset_date TEXT,
+                estimated_time INTEGER,
+                actual_time INTEGER,
+                recurrence_rule TEXT,
+                project_id TEXT,
+                goal_id TEXT,
+                parent_task_id TEXT,
+                tags TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT,
+                deleted_at TEXT,
+                version INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+                FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE SET NULL,
+                FOREIGN KEY (parent_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+              )
+            `);
+            
+            // Copy data from old table
+            this.db.exec(`
+              INSERT INTO tasks 
+              SELECT * FROM tasks_old
+            `);
+            
+            // Drop old table
+            this.db.exec('DROP TABLE tasks_old');
+            
+            // Recreate indexes
+            this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)');
+            this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)');
+            this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)');
+            this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id)');
+            this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_goal_id ON tasks(goal_id)');
+            
+            // Update version
+            this.db.exec(`PRAGMA user_version = ${migration.version}`);
+            console.log(`Migration to version ${migration.version} completed successfully`);
+            continue;
+          } catch (error) {
+            console.error('Failed to update task status constraint:', error);
             throw error;
           }
         }

@@ -30,6 +30,7 @@ build/
 .next/
 .serverless/
 .parcel-cache/
+docs/
 
 # Mac
 .DS_Store

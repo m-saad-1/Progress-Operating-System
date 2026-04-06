@@ -2,6 +2,10 @@
 
 A sophisticated productivity and personal management desktop application built with modern web technologies. Personal OS empowers users to streamline their workflows with integrated task management, goal tracking, habit monitoring, time management, and comprehensive analytics.
 
+## Documentation
+
+- Complete Product + Technical Overview: `docs/personal-os-complete-overview.md`
+
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational)

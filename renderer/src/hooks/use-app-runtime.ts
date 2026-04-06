@@ -6,9 +6,11 @@ import { useElectron } from '@/hooks/use-electron'
 import { useTheme } from '@/components/theme-provider'
 import { useToaster } from '@/hooks/use-toaster'
 import { database } from '@/lib/database'
+import { isTaskPausedOnDate } from '@/lib/daily-reset'
 
 const EMAIL_QUEUE_KEY = 'progress-os-email-queue'
 const REMINDER_LOG_KEY = 'progress-os-reminder-log'
+const OVERDUE_LOG_KEY = 'progress-os-overdue-log'
 
 type ReminderScope = 'daily' | 'weekly' | 'monthly'
 
@@ -68,6 +70,77 @@ const getReminderLog = (): Record<string, string> => {
 
 const setReminderLog = (value: Record<string, string>) => {
   localStorage.setItem(REMINDER_LOG_KEY, JSON.stringify(value))
+}
+
+const getOverdueLog = (): Record<string, string> => {
+  try {
+    const raw = localStorage.getItem(OVERDUE_LOG_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+const setOverdueLog = (value: Record<string, string>) => {
+  localStorage.setItem(OVERDUE_LOG_KEY, JSON.stringify(value))
+}
+
+const shouldFireOverdue = (id: string, token: string): boolean => {
+  const log = getOverdueLog()
+  if (log[id] === token) return false
+  log[id] = token
+  setOverdueLog(log)
+  return true
+}
+
+const toDayKey = (value: string | null | undefined): string | null => {
+  if (!value) return null
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return null
+  return format(parsed, 'yyyy-MM-dd')
+}
+
+const normalizeHabitSchedule = (schedule: unknown): string[] => {
+  if (Array.isArray(schedule)) {
+    return schedule.map((value) => String(value).trim()).filter(Boolean)
+  }
+
+  if (typeof schedule === 'string') {
+    try {
+      const parsed = JSON.parse(schedule)
+      if (Array.isArray(parsed)) {
+        return parsed.map((value) => String(value).trim()).filter(Boolean)
+      }
+    } catch {
+      return []
+    }
+  }
+
+  return []
+}
+
+const isHabitScheduledOnDate = (habit: any, date: Date): boolean => {
+  const schedule = normalizeHabitSchedule(habit?.schedule)
+
+  if (habit?.frequency === 'daily') {
+    return true
+  }
+
+  if (habit?.frequency === 'weekly') {
+    const dayName = date
+      .toLocaleDateString('en-US', { weekday: 'long' })
+      .toLowerCase()
+    return schedule.some((entry) => entry.toLowerCase() === dayName)
+  }
+
+  if (habit?.frequency === 'monthly') {
+    const dayOfMonth = date.getDate()
+    return schedule.some((entry) => Number(entry) === dayOfMonth)
+  }
+
+  return false
 }
 
 const parseTimeToMinute = (value: string): number | null => {
@@ -182,13 +255,15 @@ export function useAppRuntime() {
   const sendReminder = (
     title: string,
     message: string,
-    type: 'info' | 'warning' = 'info'
+    type: 'info' | 'warning' = 'info',
+    options?: { isOverdue?: boolean; internalOnly?: boolean }
   ) => {
     store.addNotification({
       title,
       message,
       type,
       time: new Date().toISOString(),
+      isOverdue: options?.isOverdue,
     })
 
     if (type === 'warning') {
@@ -202,12 +277,19 @@ export function useAppRuntime() {
     }
 
     if (
+      !options?.internalOnly &&
       store.notificationSettings.enabled &&
       store.notificationSettings.desktop
     ) {
       // Use native Electron notification for better icon support across platforms
       if (window.electronAPI?.showNotification) {
         window.electronAPI.showNotification({ title, body: message })
+          .then((result: { success: boolean; error?: string } | undefined) => {
+            if (!result?.success) {
+              console.warn('Native notification failed:', result?.error || 'Unknown IPC error')
+              tryWebNotification(title, message)
+            }
+          })
           .catch((error: unknown) => {
             console.warn('Failed to show native notification:', error)
             // Fallback to web notification
@@ -340,19 +422,29 @@ export function useAppRuntime() {
     const timer = window.setInterval(async () => {
       const now = new Date()
       const dateKey = format(now, 'yyyy-MM-dd')
+      const yesterday = new Date(now)
+      yesterday.setDate(yesterday.getDate() - 1)
+      const yesterdayKey = format(yesterday, 'yyyy-MM-dd')
 
       if (
         store.notificationSettings.taskReminders &&
         isReminderDueNow('tasks-daily-reminder', store.notificationSettings.taskReminderTime, now, 'daily')
       ) {
-        const dueToday = store.tasks.filter(
-          (task) => !task.deleted_at && task.status !== 'completed' && task.due_date?.startsWith(dateKey)
+        const incompleteTasks = store.tasks.filter(
+          (task) =>
+            !task.deleted_at &&
+            !task.is_paused &&
+            !isTaskPausedOnDate(task, now) &&
+            task.status !== 'completed' &&
+            task.status !== 'skipped'
         )
 
-        if (dueToday.length > 0) {
+        if (incompleteTasks.length > 0) {
+          const taskPreview = incompleteTasks.slice(0, 3).map((t) => `"${t.title}"`).join(', ')
+          const preview = incompleteTasks.length > 3 ? `${taskPreview}, ...` : taskPreview
           sendReminder(
             'Task reminder',
-            `${dueToday.length} task${dueToday.length > 1 ? 's are' : ' is'} due today.`,
+            `You have ${incompleteTasks.length} uncompleted task${incompleteTasks.length > 1 ? 's' : ''}: ${preview}`,
             'warning'
           )
         }
@@ -507,6 +599,90 @@ export function useAppRuntime() {
         sendReminder(
           'Weekly report',
           `Task completion this week: ${completionRate}% (${completedTasks}/${totalTasks}).`
+        )
+      }
+
+      const newlyOverdueTaskTitles: string[] = []
+      for (const task of store.tasks) {
+        if (
+          task.deleted_at ||
+          task.is_paused ||
+          isTaskPausedOnDate(task, now) ||
+          task.status === 'completed' ||
+          task.status === 'skipped'
+        ) continue
+        const dueKey = toDayKey(task.due_date)
+        if (!dueKey || dueKey >= dateKey) continue
+
+        if (shouldFireOverdue(`task:${task.id}`, dueKey)) {
+          newlyOverdueTaskTitles.push(task.title)
+        }
+      }
+
+      if (newlyOverdueTaskTitles.length > 0) {
+        sendReminder(
+          'Tasks are overdue',
+          newlyOverdueTaskTitles.length === 1
+            ? `"${newlyOverdueTaskTitles[0]}" is overdue.`
+            : `${newlyOverdueTaskTitles.length} tasks are now overdue.`,
+          'warning',
+          { isOverdue: true, internalOnly: true }
+        )
+      }
+
+      const newlyOverdueGoalTitles: string[] = []
+      for (const goal of store.goals) {
+        if (goal.deleted_at || goal.status === 'completed') continue
+        const dueKey = toDayKey(goal.target_date)
+        if (!dueKey || dueKey >= dateKey) continue
+
+        if (shouldFireOverdue(`goal:${goal.id}`, dueKey)) {
+          newlyOverdueGoalTitles.push(goal.title)
+        }
+      }
+
+      if (newlyOverdueGoalTitles.length > 0) {
+        sendReminder(
+          'Goals are overdue',
+          newlyOverdueGoalTitles.length === 1
+            ? `"${newlyOverdueGoalTitles[0]}" missed its target date.`
+            : `${newlyOverdueGoalTitles.length} goals have missed their target dates.`,
+          'warning',
+          { isOverdue: true, internalOnly: true }
+        )
+      }
+
+      const completionsYesterday = await database.getHabitCompletions(yesterdayKey, yesterdayKey)
+      const completedHabitIds = new Set(
+        Array.isArray(completionsYesterday)
+          ? completionsYesterday
+              .filter((completion: any) => Boolean(completion.completed))
+              .map((completion: any) => completion.habit_id)
+          : []
+      )
+
+      const newlyOverdueHabitTitles: string[] = []
+      for (const habit of store.habits) {
+        if (habit.deleted_at) continue
+
+        const createdKey = toDayKey(habit.created_at)
+        if (!createdKey || createdKey > yesterdayKey) continue
+        if (!isHabitScheduledOnDate(habit, yesterday)) continue
+        if (completedHabitIds.has(habit.id)) continue
+
+        if (shouldFireOverdue(`habit:${habit.id}`, yesterdayKey)) {
+          newlyOverdueHabitTitles.push(habit.title)
+        }
+      }
+
+      if (newlyOverdueHabitTitles.length > 0) {
+        sendReminder(
+          'Habits overdue check-in',
+          newlyOverdueHabitTitles.length === 1
+            ? `"${newlyOverdueHabitTitles[0]}" was missed yesterday.`
+            : `${newlyOverdueHabitTitles.length} habits were missed yesterday.`,
+          'warning',
+          { isOverdue: true, internalOnly: true }
         )
       }
     }, 30000)

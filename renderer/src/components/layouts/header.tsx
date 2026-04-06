@@ -26,6 +26,7 @@ import { useElectron } from '@/hooks/use-electron'
 import { useTheme } from '@/components/theme-provider'
 import { cn } from '@/lib/utils'
 import { useTodayAnalyticsProductivity } from '@/hooks/use-today-analytics-productivity'
+import { getSafeAvatarSrc } from '@/lib/avatar'
 import { database, getLocalDateString, type Review } from '@/lib/database'
 import { isTaskPausedOnDate } from '@/lib/daily-reset'
 
@@ -66,15 +67,10 @@ interface HeaderNotificationItem {
   read: boolean
   priority: AlertPriority
   category: AlertCategory
+  isOverdue?: boolean
   route?: string
   source: 'store' | 'derived'
   sortKey: number
-}
-
-const PRIORITY_RANK: Record<AlertPriority, number> = {
-  critical: 3,
-  high: 2,
-  medium: 1,
 }
 
 const toDateSafe = (value: string | null | undefined): Date | null => {
@@ -157,6 +153,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
     tasks,
   } = useStore()
   const todayProductivity = useTodayAnalyticsProductivity()
+  const avatarSrc = getSafeAvatarSrc(userProfile.avatar)
   
   const [searchQuery, setSearchQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
@@ -262,7 +259,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
     const todayEnd = endOfDay(todayStart)
     const upcomingWindowEnd = addDays(todayStart, 1)
 
-    const activeTasks = tasks.filter((task: any) => !task.deleted_at)
+    const activeTasks = tasks.filter((task: any) => !task.deleted_at && !task.is_paused && !isTaskPausedOnDate(task, todayStart))
     const overdueTasks = activeTasks.filter((task: any) => {
       if ((task.progress || 0) === 100 || task.status === 'completed') return false
       return isTaskOverdueForToday(task, todayLocalKey)
@@ -340,6 +337,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
         read: false,
         priority: 'critical',
         category: 'tasks',
+        isOverdue: true,
         route: '/tasks',
         source: 'derived',
         sortKey: Date.now(),
@@ -619,23 +617,29 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
           : notification.type === 'warning'
             ? 'high' as AlertPriority
             : 'medium' as AlertPriority,
+      isOverdue: Boolean(notification.isOverdue),
       category: 'system' as const,
       route: notification.type === 'error' ? '/settings?tab=notifications' : undefined,
       source: 'store' as const,
-      sortKey: Date.now() - (index + 200),
+      sortKey: Number.isNaN(Date.parse(notification.time))
+        ? Date.now() - (index + 200)
+        : Date.parse(notification.time),
     }))
 
     return [...derivedNotifications, ...mappedStore]
       .sort((a, b) => {
-        const priorityDiff = PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority]
-        if (priorityDiff !== 0) return priorityDiff
+        if (a.sortKey !== b.sortKey) return b.sortKey - a.sortKey
         if (a.read !== b.read) return a.read ? 1 : -1
-        return b.sortKey - a.sortKey
+        if (a.priority !== b.priority) {
+          return a.priority === 'critical' ? -1 : b.priority === 'critical' ? 1 : 0
+        }
+        return b.id.localeCompare(a.id)
       })
       .slice(0, 12)
   }, [derivedNotifications, notifications])
 
   const unreadNotifications = dropdownNotifications.filter((notification) => !notification.read).length
+  const hasOverdueNotifications = dropdownNotifications.some((notification) => notification.isOverdue)
 
   const handleNotificationClick = useCallback((notification: HeaderNotificationItem) => {
     if (notification.source === 'store') {
@@ -671,12 +675,12 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
 
   const renderPriorityBadge = useCallback((priority: AlertPriority) => {
     if (priority === 'critical') {
-      return <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-4">Critical</Badge>
+      return <Badge className="text-[10px] px-1.5 py-0 h-4 border-0 bg-red-600 text-white">Critical</Badge>
     }
     if (priority === 'high') {
-      return <Badge variant="warning" className="text-[10px] px-1.5 py-0 h-4">High</Badge>
+      return <Badge className="text-[10px] px-1.5 py-0 h-4 border-0 bg-orange-500 text-white">High</Badge>
     }
-    return <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">Info</Badge>
+    return <Badge className="text-[10px] px-1.5 py-0 h-4 border-0 bg-sky-500 text-white">Info</Badge>
   }, [])
 
   const actionButtonClass = 'h-9 w-9 transition-colors hover:bg-green-500/10 hover:text-green-600 dark:hover:text-green-400'
@@ -1247,7 +1251,12 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
               <Button variant="ghost" size="icon" className={cn(actionButtonClass, 'relative')}>
                 <Bell className="h-5 w-5" />
                 {unreadNotifications > 0 && (
-                  <span className="absolute top-0 right-0 text-[11px] font-bold leading-none text-black dark:text-white">
+                  <span className={cn(
+                    'absolute -top-1 -right-1 text-[12px] font-bold leading-none',
+                    hasOverdueNotifications
+                      ? 'text-red-600'
+                      : 'text-emerald-600'
+                  )}>
                     {unreadNotifications}
                   </span>
                 )}
@@ -1261,7 +1270,8 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
                   key={notification.id}
                   className={cn(
                     'rounded-lg px-3 py-3 focus:bg-slate-100 dark:focus:bg-zinc-800',
-                    notification.priority === 'critical' && 'bg-red-50/80 dark:bg-red-950/30'
+                    (notification.priority === 'critical' || notification.isOverdue) &&
+                      'bg-red-50/80 dark:bg-red-950/30 border border-red-200/70 dark:border-red-900/60'
                   )}
                   onClick={() => handleNotificationClick(notification)}
                 >
@@ -1323,7 +1333,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" className="h-9 w-9 rounded-full p-0 overflow-hidden">
                 <Avatar className="h-9 w-9">
-                  <AvatarImage src={userProfile.avatar} />
+                  <AvatarImage src={avatarSrc} />
                   <AvatarFallback className="bg-gradient-to-br from-primary to-green-400 text-white text-sm font-bold">
                     {userInitials}
                   </AvatarFallback>
@@ -1334,7 +1344,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
               <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
                 <div className="flex items-center gap-3">
                   <Avatar className="h-10 w-10">
-                    <AvatarImage src={userProfile.avatar} />
+                    <AvatarImage src={avatarSrc} />
                     <AvatarFallback className="bg-gradient-to-br from-primary to-green-400 text-white font-bold">
                       {userInitials}
                     </AvatarFallback>

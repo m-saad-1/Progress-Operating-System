@@ -55,13 +55,21 @@ export class FileSystemAPI {
    */
   async openFile(options: OpenFileOptions): Promise<string[] | null> {
     try {
-      const result = await dialog.showOpenDialog(this.mainWindow || {}, {
-        title: options.title,
-        defaultPath: options.defaultPath,
-        buttonLabel: options.buttonLabel,
-        filters: options.filters,
-        properties: options.properties || ['openFile'],
-      });
+      const result = this.mainWindow
+        ? await dialog.showOpenDialog(this.mainWindow, {
+            title: options.title,
+            defaultPath: options.defaultPath,
+            buttonLabel: options.buttonLabel,
+            filters: options.filters,
+            properties: options.properties || ['openFile'],
+          })
+        : await dialog.showOpenDialog({
+            title: options.title,
+            defaultPath: options.defaultPath,
+            buttonLabel: options.buttonLabel,
+            filters: options.filters,
+            properties: options.properties || ['openFile'],
+          });
 
       return result.canceled ? null : result.filePaths;
     } catch (error) {
@@ -79,12 +87,19 @@ export class FileSystemAPI {
    */
   async saveFile(options: SaveFileOptions): Promise<string | null> {
     try {
-      const result = await dialog.showSaveDialog(this.mainWindow || {}, {
-        title: options.title,
-        defaultPath: options.defaultPath,
-        buttonLabel: options.buttonLabel,
-        filters: options.filters,
-      });
+      const result = this.mainWindow
+        ? await dialog.showSaveDialog(this.mainWindow, {
+            title: options.title,
+            defaultPath: options.defaultPath,
+            buttonLabel: options.buttonLabel,
+            filters: options.filters,
+          })
+        : await dialog.showSaveDialog({
+            title: options.title,
+            defaultPath: options.defaultPath,
+            buttonLabel: options.buttonLabel,
+            filters: options.filters,
+          });
 
       return result.canceled ? null : result.filePath;
     } catch (error) {
