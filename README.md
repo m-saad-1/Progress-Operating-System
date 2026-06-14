@@ -1,116 +1,123 @@
-# PersonalOS
+# Personal Operating System (Personal OS)
 
-PersonalOS is a desktop productivity platform designed around one core idea: progress should be measurable, resilient, and trustworthy. Instead of treating planning, execution, reflection, and reporting as separate tools, the product brings them together in a single offline-first workspace for goals, projects, tasks, habits, notes, time tracking, and review cycles.
+A sophisticated desktop productivity platform built to unify planning, execution, reflection, and analytics in one offline-first system. Personal OS combines tasks, goals, habits, notes, reviews, time management, backups, and optional sync into a single product experience designed for long-term personal operating workflows.
 
-This repository is presented as a portfolio case study for a commercial SaaS-style product. Public source access is intentionally curated: product architecture, technical decisions, and representative implementation patterns are visible, while operational secrets, private configuration, and non-essential internal artifacts are excluded.
+This public repository is intentionally curated to showcase product architecture and engineering capability without exposing sensitive commercial implementation details.
 
-## Product Value
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational)
 
-- Unifies planning and execution across goals, projects, tasks, habits, reviews, and notes.
-- Preserves historical accuracy with daily state tracking, archive-friendly data models, and audit-aware updates.
-- Works reliably in offline-first scenarios, with local persistence and optional sync pathways.
-- Surfaces meaningful analytics instead of vanity metrics by separating progress, completion, streaks, consistency, and review signals.
-- Packages a complex product system into a desktop experience with secure process boundaries and local data ownership.
+## Features
 
-## Key Capabilities
+### Core Productivity Tools
 
-- Goal management with categories, priorities, review cadences, and progress models.
-- Project and task planning with status lifecycles, weighted progress, and daily rollover behavior.
-- Habit tracking with streak logic, consistency scoring, and frequency-aware completion rules.
-- Notes and review workflows for reflection, retrospectives, and long-term planning.
-- Time tracking and productivity analytics across day, week, month, and broader reporting windows.
-- Backup and restore flows with integrity-conscious data handling.
-- Optional sync infrastructure for cloud-connected workflows without sacrificing local-first operation.
-- Feedback, notifications, and desktop integrations handled from the Electron main process rather than exposing privileged behavior to the UI.
+- **Dashboard**: Central hub with a live overview of tasks, goals, habits, and performance metrics.
+- **Task Management**: Structured task planning with priorities, progress tracking, lifecycle status, and daily rollover behavior.
+- **Goal Tracking**: Long-term goal management with linked progress signals and review-oriented planning.
+- **Habit Tracker**: Habit consistency, streak monitoring, and frequency-aware completion logic.
+- **Notes**: Rich note capture for ideas, planning, reflection, and supporting context.
+
+### Time And Analytics
+
+- **Pomodoro Timer**: Built-in focus timer for structured deep-work sessions.
+- **Time Tracking**: Activity-aware time capture tied to productivity workflows.
+- **Analytics Dashboard**: Multi-range reporting across completion, progress, consistency, and trends.
+- **Progress Charts**: Visual reporting for progress signals over time.
+- **Monthly Analytics**: Deeper performance analysis across recurring workflows and long-term behavior.
+
+### Advanced Product Features
+
+- **Reviews**: Periodic review workflows for reflection, retrospectives, and planning adjustment.
+- **Archive**: Controlled historical preservation for completed and inactive records.
+- **Backup And Restore**: Data safety features designed for long-term reliability.
+- **Offline Support**: Local-first operation with optional sync pathways.
+- **Theme System**: Dark mode, light mode, and user-preference-based presentation.
+- **Context Tips**: Embedded guidance to support product discoverability.
+- **Command Palette**: Keyboard-first command access for power-user workflows.
+
+### User Experience
+
+- **Error Boundaries**: Graceful recovery behavior for runtime failures.
+- **Keyboard Shortcuts**: Fast navigation and command execution throughout the app.
+- **Responsive Layouts**: Flexible interface behavior across desktop window sizes.
+- **Performance Optimization**: Lazy loading, scoped state updates, and efficient rendering patterns.
+- **Real-Time Sync Foundations**: Architecture ready for cloud-connected workflows without sacrificing local ownership.
 
 ## Architecture
 
-PersonalOS uses a layered desktop architecture that separates experience, orchestration, and data concerns cleanly.
+### Technology Stack
 
-### Experience Layer
+**Frontend**
 
-- `renderer/`: React and TypeScript application for dashboarding, planning workflows, analytics, settings, and support surfaces.
-- UI composition uses Tailwind CSS, Radix primitives, and app-specific components for command workflows, charts, forms, and productivity controls.
-
-### Desktop Runtime
-
-- `main/`: Electron main process for window lifecycle, IPC routing, storage access, feedback transport, updater hooks, and privileged desktop capabilities.
-- `preload` and bridge APIs enforce explicit boundaries between renderer code and native/system access.
-
-### Shared Domain Logic
-
-- `shared/`: common constants and types used across the desktop runtime and renderer.
-- `sync/`: optional synchronization primitives and cross-device workflow scaffolding.
-- `undo/`: reusable undo and state-history utilities for richer interaction flows.
-
-### Data Layer
-
-- Local SQLite persistence with typed entities spanning goals, projects, tasks, checklist items, habits, habit completions, notes, time blocks, backups, sync state, and audit logs.
-- Schema design emphasizes soft delete patterns, versioned updates, historical tracking, and recovery-friendly behavior.
-
-## Technical Highlights
-
-### Offline-First by Default
-
-Core workflows are designed to remain useful without network dependency. Local data storage, desktop APIs, and retry-friendly optional network flows allow the product to keep working even when connectivity is unavailable or intermittent.
-
-### Trustworthy Progress Modeling
-
-The app distinguishes between completion and progress rather than flattening all work into a single metric. Tasks, habits, and goal rollups each use logic appropriate to their domain so analytics remain credible under real usage.
-
-### Secure Desktop Boundaries
-
-Sensitive actions live in the Electron main process. The renderer interacts through explicit bridge methods and IPC handlers, reducing accidental exposure of secrets, filesystem access, or system-level behavior.
-
-### Resilience and Data Safety
-
-Backups, archival flows, retry queues, and state history utilities reflect a product designed for long-term use rather than demo-only interactions. The codebase shows deliberate attention to correctness over time, not just surface-level UI delivery.
-
-## Representative Stack
-
-- Electron
-- React
+- React 18
 - TypeScript
 - Vite
-- Webpack
 - Tailwind CSS
 - Radix UI
-- Zustand
+- React Router
 - TanStack Query
-- SQLite via `better-sqlite3`
+- Recharts
+- Lucide React
 
-## Repository Layout
+**Desktop Runtime**
+
+- Electron
+- Electron Forge
+- Webpack
+
+**Backend And IPC**
+
+- Node.js in the Electron main process
+- IPC-based secure communication boundaries
+- SQLite for local persistence
+
+## Project Structure
 
 ```text
-main/       Electron main process, IPC, database access, backup, settings, updater
-renderer/   React application, pages, components, hooks, analytics, client logic
+PersonalOS/
+main/       Electron main process, IPC, storage, backup, updater, privileged runtime logic
+renderer/   React renderer application, pages, components, hooks, analytics, and UI state
 shared/     Shared constants and types
-sync/       Sync-related helpers and abstractions
-undo/       Undo/redo support utilities
-scripts/    Utility and validation scripts used during development
-types/      Global and package-specific type declarations
+sync/       Sync-related utilities and abstractions
+undo/       Undo and history support
+types/      Global TypeScript declarations
+scripts/    Internal development and validation scripts
 ```
 
-## Portfolio Framing
+## Engineering Highlights
 
-This project demonstrates strength in:
+- Offline-first architecture with local persistence as the primary source of truth.
+- Secure Electron boundary design via preload bridges and explicit IPC access patterns.
+- Historical data modeling for tasks, habits, reviews, and progress snapshots.
+- Type-safe domain structures shared across renderer and runtime layers.
+- Backup, archive, and retry-oriented reliability patterns for long-term product use.
 
-- Product-minded full-stack architecture for desktop software.
-- Type-safe domain modeling across UI, runtime, and persistence layers.
-- Designing for historical correctness, not just CRUD completeness.
-- Translating complex operational logic into approachable user-facing workflows.
-- Structuring a codebase so local-first reliability and future cloud extensibility can coexist.
+## Database And State Design
+
+- **Database**: SQLite-backed local data model for goals, projects, tasks, checklist items, habits, notes, time blocks, backups, and sync state.
+- **State Management**: React hooks, Zustand, and TanStack Query used for local UI state, global coordination, and async workflow management.
+- **Undo Support**: Dedicated undo/history utilities for richer interaction safety.
+
+## Security Posture
+
+- Context isolation enabled between renderer and main process.
+- Sensitive operations handled in the Electron main process.
+- Renderer access limited through explicit bridge APIs.
+- Public repository sanitized to avoid exposing credentials, generated artifacts, and internal-only notes.
 
 ## Public Repository Policy
 
-To protect commercial IP and operational security, this public-facing repository intentionally omits:
+To protect commercial IP and operational security, this repository intentionally excludes:
 
 - live credentials and private keys
-- deployment and environment-specific instructions
-- internal debugging notes and generated build artifacts
-- sensitive infrastructure details not required to understand the engineering approach
+- environment-specific deployment details
+- internal debugging notes
+- generated build output and local-only artifacts not required to understand the product
 
 ## Contact
 
-M. Saad  
-`msaad23305@gmail.com`
+**M. Saad**
+
+- GitHub: [@m-saad-1](https://github.com/m-saad-1)
+- Email: `msaad23305@gmail.com`
