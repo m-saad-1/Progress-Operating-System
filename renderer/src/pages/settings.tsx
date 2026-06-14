@@ -659,13 +659,13 @@ export default function Settings() {
         info('Feedback was saved and will retry automatically.')
         setFeedbackSubmitStatus({ 
           type: 'error', 
-          message: `Feedback could not be sent right now. ${result.error || ''} It was saved for automatic retry. If the issue persists, please contact us directly at progressoshelp@gmail.com`.trim() 
+          message: `Feedback could not be sent right now. ${result.error || ''} It was saved for automatic retry. If the issue persists, please contact us directly at support@example.com`.trim() 
         })
       } else {
         error('Feedback could not be sent. Please try again.')
         setFeedbackSubmitStatus({ 
           type: 'error', 
-          message: `${result.error || 'Feedback could not be sent.'} If you continue to experience issues, please send your feedback directly to progressoshelp@gmail.com for manual support.` 
+          message: `${result.error || 'Feedback could not be sent.'} If you continue to experience issues, please send your feedback directly to support@example.com for manual support.` 
         })
       }
     } catch (submitError) {
@@ -684,7 +684,7 @@ export default function Settings() {
       info('Feedback was saved and will retry automatically.')
       setFeedbackSubmitStatus({ 
         type: 'error', 
-        message: `Could not send feedback. ${message}. Your feedback was saved for automatic retry. If problems continue, please email us at progressoshelp@gmail.com.` 
+        message: `Could not send feedback. ${message}. Your feedback was saved for automatic retry. If problems continue, please email us at support@example.com.` 
       })
     } finally {
       setIsSubmittingFeedback(false)
@@ -1890,7 +1890,7 @@ export default function Settings() {
               <div className="flex items-center gap-3 p-4 rounded-lg bg-white dark:bg-zinc-900 border border-green-500/20">
                 <Mail className="h-5 w-5 text-green-500 flex-shrink-0" />
                 <div className="flex-1">
-                  <p className="text-sm font-medium text-foreground">progressoshelp@gmail.com</p>
+                  <p className="text-sm font-medium text-foreground">support@example.com</p>
                   <p className="text-xs text-muted-foreground mt-0.5">Our support team typically responds within 24 hours</p>
                 </div>
               </div>

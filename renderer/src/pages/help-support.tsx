@@ -120,13 +120,13 @@ export default function HelpSupportPage() {
         info('Feedback was saved and will retry automatically.')
         setFeedbackSubmitStatus({ 
           type: 'error', 
-          message: `Feedback could not be sent right now. ${result.error || ''} It was saved for automatic retry. If the issue persists, please contact us directly at progressoshelp@gmail.com`.trim() 
+          message: `Feedback could not be sent right now. ${result.error || ''} It was saved for automatic retry. If the issue persists, please contact us directly at support@example.com`.trim() 
         })
       } else {
         error('Feedback could not be sent. Please try again.')
         setFeedbackSubmitStatus({ 
           type: 'error', 
-          message: `${result.error || 'Feedback could not be sent.'} If you continue to experience issues, please send your feedback directly to progressoshelp@gmail.com for manual support.` 
+          message: `${result.error || 'Feedback could not be sent.'} If you continue to experience issues, please send your feedback directly to support@example.com for manual support.` 
         })
       }
     } catch (submitError) {
@@ -185,8 +185,8 @@ export default function HelpSupportPage() {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground mb-2">For general inquiries, bug reports, and team support, reach out to us at:</p>
-          <a href="mailto:progressoshelp@gmail.com" className="text-blue-600 dark:text-blue-400 hover:underline font-medium text-sm">
-            progressoshelp@gmail.com
+          <a href="mailto:support@example.com" className="text-blue-600 dark:text-blue-400 hover:underline font-medium text-sm">
+            support@example.com
           </a>
         </CardContent>
       </Card>

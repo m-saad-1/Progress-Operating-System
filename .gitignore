@@ -2,12 +2,15 @@
 node_modules/
 dist/
 .env
+.env.local
+.env.*.local
 .DS_Store
 
 # Electron
 release/
 forge.config.ts
 out/
+.webpack/
 
 # TypeScript
 *.tsbuildinfo
@@ -21,6 +24,7 @@ lerna-debug.log*
 # OS
 .vscode/
 .idea/
+.venv/
 .history/
 *.sublime-project
 *.sublime-workspace
@@ -30,7 +34,6 @@ build/
 .next/
 .serverless/
 .parcel-cache/
-docs/
 
 # Mac
 .DS_Store
@@ -51,3 +54,16 @@ ehthumbs.db
 .bower/
 .eslintcache
 .stylelintcache
+renderer/package-lock.json
+
+# Generated TypeScript build output kept out of source folders
+main/src/**/*.js
+main/src/**/*.js.map
+main/src/**/*.d.ts
+main/src/**/*.d.ts.map
+shared/*.js
+shared/*.js.map
+sync/*.js
+sync/*.js.map
+undo/*.js
+undo/*.js.map

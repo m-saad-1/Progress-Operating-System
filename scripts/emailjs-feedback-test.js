@@ -54,7 +54,7 @@ const payload = {
   template_params: {
     feedback_type: 'general-feedback',
     message: 'EmailJS test message from PersonalOS script',
-    admin_email: process.env.EMAILJS_TEST_EMAIL || 'mhsaad23305@gmail.com',
+    admin_email: process.env.EMAILJS_TEST_EMAIL || 'support@example.com',
     user_email: process.env.EMAILJS_TEST_EMAIL || 'test@example.com',
     screenshot_name: 'Not provided',
     screenshot_data_url: '',

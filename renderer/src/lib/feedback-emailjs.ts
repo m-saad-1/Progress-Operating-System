@@ -30,7 +30,7 @@ const getRendererEmailJsConfig = (): EmailJsConfig | null => {
   const serviceId = import.meta.env.VITE_EMAILJS_SERVICE_ID?.trim()
   const templateId = import.meta.env.VITE_EMAILJS_TEMPLATE_ID?.trim()
   const publicKey = import.meta.env.VITE_EMAILJS_PUBLIC_KEY?.trim()
-  const adminEmail = import.meta.env.VITE_EMAILJS_ADMIN_EMAIL?.trim() || 'mhsaad23305@gmail.com'
+  const adminEmail = import.meta.env.VITE_EMAILJS_ADMIN_EMAIL?.trim() || 'support@example.com'
 
   if (!serviceId || !templateId || !publicKey) {
     return null
