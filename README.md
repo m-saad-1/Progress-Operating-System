@@ -1,4 +1,4 @@
-# Personal Operating System (Personal OS)
+# Progress Operating System (Personal OS)
 
 A sophisticated desktop productivity platform built to unify planning, execution, reflection, and analytics in one offline-first system. Personal OS combines tasks, goals, habits, notes, reviews, time management, backups, and optional sync into a single product experience designed for long-term personal operating workflows.
 
