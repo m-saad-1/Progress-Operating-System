@@ -522,7 +522,7 @@ export default function Archive() {
                 <AlertDialogFooter>
                   <AlertDialogCancel>Cancel</AlertDialogCancel>
                   <AlertDialogAction
-                    onClick={() => batchDeleteMutation.mutate(selectedArchivedItems)}
+                    onClick={() => batchDeleteMutation.mutate(selectedArchivedItems as any)}
                     className="bg-orange-500 hover:bg-orange-600"
                   >
                     {batchDeleteMutation.isPending ? 'Deleting...' : 'Delete Selected'}
@@ -703,7 +703,7 @@ export default function Archive() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => batchRestoreMutation.mutate(selectedArchivedItems)}
+                      onClick={() => batchRestoreMutation.mutate(selectedArchivedItems as any)}
                       disabled={batchRestoreMutation.isPending}
                       className="bg-green-500/10 border-green-500/30 text-green-600 dark:text-green-300 hover:bg-green-500/20 hover:border-green-500/50"
                     >
@@ -740,7 +740,7 @@ export default function Archive() {
                         <AlertDialogFooter>
                           <AlertDialogCancel>Cancel</AlertDialogCancel>
                           <AlertDialogAction
-                            onClick={() => batchDeleteMutation.mutate(selectedArchivedItems)}
+                            onClick={() => batchDeleteMutation.mutate(selectedArchivedItems as any)}
                             className="bg-orange-500 hover:bg-orange-600"
                           >
                             {batchDeleteMutation.isPending ? 'Deleting...' : 'Delete Selected'}
@@ -1094,3 +1094,5 @@ function ArchivedItemCard({
     </Card>
   )
 }
+
+

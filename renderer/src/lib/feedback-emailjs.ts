@@ -70,17 +70,7 @@ export const queueFeedbackForRetry = (payload: FeedbackPayload) => {
 }
 
 export const getFeedbackRuntimeMetadata = async (currentPage: string): Promise<FeedbackMetadata> => {
-  let appVersion = import.meta.env.VITE_APP_VERSION || 'unknown'
-
-  if (window.electronAPI?.invoke) {
-    try {
-      const versionResult = await window.electronAPI.invoke('app:getVersion')
-      if (typeof versionResult === 'string' && versionResult.trim()) {
-        appVersion = versionResult.trim()
-      }
-    } catch {
-    }
-  }
+  const appVersion = import.meta.env.VITE_APP_VERSION || 'unknown'
 
   return {
     appVersion,

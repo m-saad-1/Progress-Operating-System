@@ -1,13 +1,11 @@
 /**
  * Feedback Service — Renderer Process
  *
- * Sends feedback via IPC to the main process, which handles email delivery
- * through Nodemailer (SMTP) or a backend URL. No API keys are exposed in
- * the renderer process.
- *
- * Falls back to localStorage-based queuing if IPC is unavailable (e.g. when
- * running in standalone Vite dev mode without Electron).
+ * Sends feedback via Tauri invoke to the backend, which handles email delivery.
+ * Falls back to localStorage queuing if Tauri is unavailable (dev mode).
  */
+
+import { invoke } from '@tauri-apps/api/core'
 
 export type FeedbackType =
   | 'bug-report'
@@ -39,22 +37,20 @@ export interface FeedbackResult {
   transport?: 'smtp' | 'backend'
 }
 
-// ─── Metadata helper ────────────────────────────────────────────────────────────
+// ─── Metadata helper ─────────────────────────────────────────────────────────
 
 export const getFeedbackRuntimeMetadata = async (
   currentPage: string,
 ): Promise<FeedbackMetadata> => {
-  let appVersion = 'unknown'
+  let appVersion = import.meta.env.VITE_APP_VERSION || 'unknown'
 
-  if (window.electronAPI?.getVersion) {
-    try {
-      const v = await window.electronAPI.getVersion()
-      if (typeof v === 'string' && v.trim()) {
-        appVersion = v.trim()
-      }
-    } catch {
-      // ignore
+  try {
+    const v = await invoke<string>('get_app_version')
+    if (typeof v === 'string' && v.trim()) {
+      appVersion = v.trim()
     }
+  } catch {
+    // not fatal — leave default
   }
 
   return {
@@ -65,7 +61,7 @@ export const getFeedbackRuntimeMetadata = async (
   }
 }
 
-// ─── Offline queue (localStorage fallback for non-Electron or IPC failure) ──────
+// ─── Offline queue (localStorage fallback) ───────────────────────────────────
 
 const FEEDBACK_RETRY_STORAGE_KEY = 'feedback-retry-queue'
 const MAX_RETRY_ITEMS = 25
@@ -101,39 +97,33 @@ export const queueFeedbackForRetry = (payload: FeedbackPayload) => {
   writeLocalRetryQueue(queue)
 }
 
-// ─── IPC-based submission ───────────────────────────────────────────────────────
+// ─── Tauri-based submission ───────────────────────────────────────────────────
 
-const hasElectronIpc = (): boolean =>
-  typeof window !== 'undefined' &&
-  window.electronAPI != null &&
-  typeof window.electronAPI.submitFeedback === 'function'
+const isTauriAvailable = (): boolean =>
+  typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
 /**
- * Submit feedback through the main process (IPC → Nodemailer).
- * If IPC is unavailable, queues to localStorage.
+ * Submit feedback through Tauri (invoke → backend email delivery).
+ * If Tauri is unavailable (standalone dev), queues to localStorage.
  */
 export const submitFeedback = async (
   payload: FeedbackPayload,
 ): Promise<FeedbackResult> => {
-  if (!hasElectronIpc()) {
-    // Fallback: queue locally (standalone dev mode or broken IPC)
+  if (!isTauriAvailable()) {
     queueFeedbackForRetry(payload)
     return {
       success: false,
-      error: 'Electron IPC unavailable. Feedback has been saved for retry.',
+      error: 'Tauri not available. Feedback has been saved for retry.',
       cachedForRetry: true,
     }
   }
 
   try {
-    const result = await window.electronAPI.submitFeedback(payload)
-    return result as FeedbackResult
+    const result = await invoke<FeedbackResult>('submit_feedback', { payload })
+    return result
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-
-    // Queue locally as fallback
     queueFeedbackForRetry(payload)
-
     return {
       success: false,
       error: message,
@@ -143,28 +133,18 @@ export const submitFeedback = async (
 }
 
 /**
- * Retry all locally queued feedback items through the main process.
+ * Retry all locally queued feedback items.
  */
 export const retryQueuedFeedback = async (): Promise<{
   sent: number
   remaining: number
 }> => {
-  // First, try to retry items queued in the main process
-  if (hasElectronIpc()) {
-    try {
-      await window.electronAPI.retryFailedFeedback()
-    } catch {
-      // ignore main-process retry errors
-    }
-  }
-
-  // Then retry any items queued locally in localStorage
   const localQueue = readLocalRetryQueue()
   if (!localQueue.length) {
     return { sent: 0, remaining: 0 }
   }
 
-  if (!hasElectronIpc()) {
+  if (!isTauriAvailable()) {
     return { sent: 0, remaining: localQueue.length }
   }
 
@@ -173,7 +153,7 @@ export const retryQueuedFeedback = async (): Promise<{
 
   for (const item of localQueue) {
     try {
-      const result = await window.electronAPI.submitFeedback(item)
+      const result = await invoke<FeedbackResult>('submit_feedback', { payload: item })
       if (result?.success) {
         sent++
       } else {
@@ -189,18 +169,8 @@ export const retryQueuedFeedback = async (): Promise<{
 }
 
 /**
- * Get the count of feedback items queued for retry.
+ * Get count of feedback items queued for retry.
  */
-export const getQueuedFeedbackCount = async (): Promise<number> => {
-  let mainCount = 0
-  if (hasElectronIpc()) {
-    try {
-      mainCount = (await window.electronAPI.getFeedbackQueueCount()) || 0
-    } catch {
-      // ignore
-    }
-  }
-
-  const localCount = readLocalRetryQueue().length
-  return mainCount + localCount
+export const getQueuedFeedbackCount = (): number => {
+  return readLocalRetryQueue().length
 }

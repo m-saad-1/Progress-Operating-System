@@ -14,7 +14,7 @@ import {
   Calendar,
 } from 'lucide-react'
 import { useToaster } from '@/hooks/use-toaster'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { format } from 'date-fns'
 import { cn } from '@/lib/utils'
 
@@ -22,13 +22,13 @@ export function BackupManager() {
   const [backups, setBackups] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [stats, setStats] = useState<any>(null)
-  const electron = useElectron()
+  const tauri = useTauri()
   const { toast } = useToaster()
 
   const loadBackups = async () => {
     setLoading(true)
     try {
-      const result = await electron.listBackups()
+      const result = await tauri.listBackups()
       if (Array.isArray(result)) {
         setBackups(result)
       }
@@ -74,7 +74,7 @@ export function BackupManager() {
   const handleCreateBackup = async () => {
     setLoading(true)
     try {
-      const result = await electron.createBackup()
+      const result = await tauri.createBackup()
       if (result) {
         toast({
           title: 'Backup created',
@@ -101,7 +101,7 @@ export function BackupManager() {
 
     setLoading(true)
     try {
-      const result = await electron.restoreBackup(backupId)
+      const result = await tauri.restoreBackup(backupId)
       if (result) {
         toast({
           title: 'Backup restored',
@@ -128,7 +128,7 @@ export function BackupManager() {
     }
 
     try {
-      const result = await (electron as any).deleteBackup(backupId)
+      const result = await (tauri as any).deleteBackup(backupId)
       if (result) {
         toast({
           title: 'Backup deleted',

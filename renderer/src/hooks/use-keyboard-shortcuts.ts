@@ -1,6 +1,6 @@
 import { useEffect, useCallback } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
-import { useElectron } from './use-electron'
+import { useTauri } from './use-tauri'
 import { useToaster } from './use-toaster'
 import { useStore } from '@/store'
 
@@ -13,7 +13,7 @@ interface KeyboardShortcut {
 }
 
 export const useKeyboardShortcuts = () => {
-  const electron = useElectron()
+  const tauri = useTauri()
   const { toast, success, info, error } = useToaster()
   const store = useStore()
 
@@ -76,23 +76,23 @@ export const useKeyboardShortcuts = () => {
 
   useHotkeys('ctrl+z', async (event) => {
     event.preventDefault()
-    if (electron.isReady) {
-      const result = await electron.undo()
+    if (tauri.isReady) {
+      const result = await tauri.undo()
       if (result) {
         info('Undo successful')
       }
     }
-  }, [electron, info])
+  }, [tauri, info])
 
   useHotkeys('ctrl+shift+z, ctrl+y', async (event) => {
     event.preventDefault()
-    if (electron.isReady) {
-      const result = await electron.redo()
+    if (tauri.isReady) {
+      const result = await tauri.redo()
       if (result) {
         info('Redo successful')
       }
     }
-  }, [electron, info])
+  }, [tauri, info])
 
   useHotkeys('ctrl+f', (event) => {
     event.preventDefault()
@@ -145,15 +145,15 @@ export const useKeyboardShortcuts = () => {
 
   useHotkeys('ctrl+shift+s', async (event) => {
     event.preventDefault()
-    if (electron.isReady) {
+    if (tauri.isReady) {
       try {
-        await electron.createBackup()
+        await tauri.createBackup()
         success('Backup created successfully')
       } catch (err) {
         error('Failed to create backup')
       }
     }
-  }, [electron, success, error])
+  }, [tauri, success, error])
 
   // Accessibility shortcuts
   useHotkeys('ctrl+plus', (event) => {

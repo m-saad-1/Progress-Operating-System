@@ -67,3 +67,9 @@ sync/*.js
 sync/*.js.map
 undo/*.js
 undo/*.js.map
+
+target_new/
+target_release/
+src-tauri/target_new/
+src-tauri/target_release/
+src-tauri/target/

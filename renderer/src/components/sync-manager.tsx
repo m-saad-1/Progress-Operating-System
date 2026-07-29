@@ -20,7 +20,7 @@ import {
   Settings,
   Key
 } from 'lucide-react'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { cn } from '@/lib/utils'
 
 interface SyncConfig {
@@ -39,7 +39,7 @@ interface SyncStatus {
 }
 
 export function SyncManager() {
-  const electron = useElectron()
+  const tauri = useTauri()
   const [config, setConfig] = useState<SyncConfig>({
     enabled: false,
     provider: 'supabase',
@@ -97,7 +97,7 @@ export function SyncManager() {
     setStatus(prev => ({ ...prev, error: null, isSyncing: true }))
 
     try {
-      await electron.syncStart()
+      await tauri.syncStart()
       setStatus(prev => ({ 
         ...prev, 
         isSyncing: false, 
@@ -119,7 +119,7 @@ export function SyncManager() {
     setIsLoading(true)
     
     try {
-      await electron.syncStop()
+      await tauri.syncStop()
       setStatus(prev => ({ ...prev, isSyncing: false }))
     } catch (error) {
       console.error('Failed to stop sync:', error)

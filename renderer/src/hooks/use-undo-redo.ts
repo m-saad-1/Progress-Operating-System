@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useElectron } from './use-electron'
+import { useTauri } from './use-tauri'
 import { useToaster } from './use-toaster'
 
 export interface Command {
@@ -19,7 +19,7 @@ export interface UndoRedoState {
 }
 
 export const useUndoRedo = () => {
-  const electron = useElectron()
+  const tauri = useTauri()
   const { success, error, info } = useToaster()
   const [state, setState] = useState<UndoRedoState>({
     canUndo: false,
@@ -30,7 +30,7 @@ export const useUndoRedo = () => {
 
   const loadUndoRedoState = useCallback(async () => {
     try {
-      const result = await electron.getUndoStack() as any
+      const result = await tauri.getUndoStack() as any
       if (result) {
         setState({
           canUndo: result.canUndo || false,
@@ -49,27 +49,27 @@ export const useUndoRedo = () => {
     } catch (err) {
       console.error('Failed to load undo/redo state:', err)
     }
-  }, [electron])
+  }, [tauri])
 
   // Load initial state from electron
   useEffect(() => {
-    if (electron.isReady) {
+    if (tauri.isReady) {
       loadUndoRedoState()
     }
-  }, [electron.isReady, loadUndoRedoState])
+  }, [tauri.isReady, loadUndoRedoState])
 
   const executeCommand = useCallback(async (
     type: string,
     description: string,
     data: any
   ): Promise<boolean> => {
-    if (!electron.isReady) {
+    if (!tauri.isReady) {
       error('System not ready')
       return false
     }
 
     try {
-      // In a real implementation, this would call electron.executeCommand
+      // In a real implementation, this would call tauri.executeCommand
       // For now, we'll simulate it
       const command: Command = {
         id: Date.now().toString(),
@@ -95,15 +95,15 @@ export const useUndoRedo = () => {
       error('Failed to execute command')
       return false
     }
-  }, [electron, success, error])
+  }, [tauri, success, error])
 
   const undo = useCallback(async (): Promise<boolean> => {
-    if (!electron.isReady || !state.canUndo) {
+    if (!tauri.isReady || !state.canUndo) {
       return false
     }
 
     try {
-      const success = await electron.undo()
+      const success = await tauri.undo()
       if (success) {
         // Update local state
         setState(prev => {
@@ -127,15 +127,15 @@ export const useUndoRedo = () => {
       error('Failed to undo')
       return false
     }
-  }, [electron, state.canUndo, info, error])
+  }, [tauri, state.canUndo, info, error])
 
   const redo = useCallback(async (): Promise<boolean> => {
-    if (!electron.isReady || !state.canRedo) {
+    if (!tauri.isReady || !state.canRedo) {
       return false
     }
 
     try {
-      const success = await electron.redo()
+      const success = await tauri.redo()
       if (success) {
         // Update local state
         setState(prev => {
@@ -159,15 +159,15 @@ export const useUndoRedo = () => {
       error('Failed to redo')
       return false
     }
-  }, [electron, state.canRedo, info, error])
+  }, [tauri, state.canRedo, info, error])
 
   const clearHistory = useCallback(async (): Promise<boolean> => {
-    if (!electron.isReady) {
+    if (!tauri.isReady) {
       return false
     }
 
     try {
-      // In a real implementation, this would call electron.clearUndoHistory
+      // In a real implementation, this would call tauri.clearUndoHistory
       setState({
         canUndo: false,
         canRedo: false,
@@ -182,7 +182,7 @@ export const useUndoRedo = () => {
       error('Failed to clear history')
       return false
     }
-  }, [electron, info, error])
+  }, [tauri, info, error])
 
   const getLastCommand = useCallback((): Command | undefined => {
     return state.lastCommand
@@ -196,7 +196,7 @@ export const useUndoRedo = () => {
     commands: Array<{ type: string; description: string; data: any }>,
     batchDescription: string
   ): Promise<boolean> => {
-    if (!electron.isReady) {
+    if (!tauri.isReady) {
       return false
     }
 
@@ -226,7 +226,7 @@ export const useUndoRedo = () => {
       error('Failed to execute batch commands')
       return false
     }
-  }, [electron, success, error])
+  }, [tauri, success, error])
 
   // Listen for undo/redo events from other components
   useEffect(() => {

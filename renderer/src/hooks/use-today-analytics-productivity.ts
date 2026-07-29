@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { format, parseISO } from 'date-fns'
 import { useStore } from '@/store'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { database } from '@/lib/database'
 import { calculateHabitAnalytics, calculateTaskAnalytics, calculateProductivityScore, getDateRange } from '@/lib/progress'
 import type { HabitCompletion } from '@/types'
@@ -16,7 +16,7 @@ export interface TodayAnalyticsProductivity {
 }
 
 export const useTodayAnalyticsProductivity = (): TodayAnalyticsProductivity => {
-  const electron = useElectron()
+  const tauri = useTauri()
   const habits = useStore((state) => state.habits)
   const todayRange = useMemo(() => getDateRange('day'), [])
 
@@ -24,10 +24,10 @@ export const useTodayAnalyticsProductivity = (): TodayAnalyticsProductivity => {
   const { data: taskTabStatsSnapshot } = useQuery({
     queryKey: ['task-tab-stats-snapshot'],
     queryFn: async () => {
-      if (!electron.isReady) return null
+      if (!tauri.isReady) return null
       return await database.getTaskTabStats()
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     refetchOnWindowFocus: true,
     staleTime: 0,
     refetchInterval: 30000,
@@ -36,7 +36,7 @@ export const useTodayAnalyticsProductivity = (): TodayAnalyticsProductivity => {
   const { data: allHabitCompletions = [] } = useQuery<HabitCompletion[]>({
     queryKey: ['habit-completions-all'],
     queryFn: async () => {
-      if (!electron.isReady) return []
+      if (!tauri.isReady) return []
       const earliestHabitDate = habits.length > 0
         ? habits
             .map((habit) => format(parseISO(habit.created_at), 'yyyy-MM-dd'))
@@ -45,7 +45,7 @@ export const useTodayAnalyticsProductivity = (): TodayAnalyticsProductivity => {
       const today = format(new Date(), 'yyyy-MM-dd')
       return await database.getHabitCompletions(earliestHabitDate, today)
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     refetchOnWindowFocus: true,
     staleTime: 0,
     refetchInterval: 30000,

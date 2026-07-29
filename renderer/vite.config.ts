@@ -15,14 +15,28 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: true,
+        drop_debugger: true,
+      },
+    },
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+          ui: ['lucide-react', 'clsx', 'tailwind-merge'],
+          tauri: ['@tauri-apps/api', '@tauri-apps/plugin-sql']
+        }
+      }
+    }
   },
   server: {
     port: 3000,
-    headers: {
-      'Content-Security-Policy': "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: http://localhost:* https://localhost:* ws://localhost:* wss://localhost:*; connect-src 'self' http://localhost:* https://localhost:* ws://localhost:* wss://localhost:*"
-    }
+    strictPort: true
   },
   optimizeDeps: {
-    exclude: ['better-sqlite3', 'D:/WEB DEVELOPMENT/Personal Operating System/database'],
+    exclude: ['better-sqlite3'],
   },
 });

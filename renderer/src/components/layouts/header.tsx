@@ -1,3 +1,4 @@
+
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -22,7 +23,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { useStore } from '@/store'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { useTheme } from '@/components/theme-provider'
 import { cn } from '@/lib/utils'
 import { useTodayAnalyticsProductivity } from '@/hooks/use-today-analytics-productivity'
@@ -136,7 +137,7 @@ const isTaskOverdueForToday = (task: any, todayKey: string): boolean => {
 export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
   const navigate = useNavigate()
   const location = useLocation()
-  const electron = useElectron()
+  const tauri = useTauri()
   const { theme, setTheme } = useTheme()
   const {
     notifications,
@@ -182,7 +183,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
     queryKey: ['notes-for-search'],
     queryFn: async () => {
       try {
-        const notesData = await electron.executeQuery<Note[]>(`
+        const notesData = await database.executeQuery<any>(`
           SELECT id, title, content, tags, type, mood, created_at, updated_at
           FROM notes
           WHERE deleted_at IS NULL
@@ -202,7 +203,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
         return []
       }
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     staleTime: 30000, // Cache for 30 seconds
   })
 
@@ -216,7 +217,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
       ])
       return { daily, weekly, monthly }
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     staleTime: 30000,
     refetchInterval: 60000,
   })
@@ -227,7 +228,7 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
       const completions = await database.getHabitCompletions(todayLocalKey, todayLocalKey)
       return Array.isArray(completions) ? completions : []
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     staleTime: 20000,
     refetchInterval: 60000,
   })
@@ -235,23 +236,26 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
   const { data: backupStats } = useQuery<any>({
     queryKey: ['header-backup-stats'],
     queryFn: async () => {
-      if (!electron.isReady) return null
-      return electron.getBackupStats()
+      if (!tauri.isReady) return null
+      return tauri.getBackupStats()
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     staleTime: 30000,
     refetchInterval: 60000,
   })
 
   useEffect(() => {
-    const electronApi = window.electronAPI as any
-    if (!electron.isReady || !electronApi?.onAppUpdate || appUpdateSubscribed.current) return
-    const handler = (_event: unknown, update: any) => {
-      setLatestAppUpdate(update)
-    }
-    electronApi.onAppUpdate(handler)
+    if (!tauri.isReady || appUpdateSubscribed.current) return
     appUpdateSubscribed.current = true
-  }, [electron.isReady])
+    // Listen for app-update events emitted by the Tauri backend
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen<any>('app-update', (event) => {
+        setLatestAppUpdate(event.payload)
+      }).catch(() => {
+        // App update events are optional — not all builds emit them
+      })
+    }).catch(() => {})
+  }, [tauri.isReady])
 
   const derivedNotifications = useMemo<HeaderNotificationItem[]>(() => {
     const now = new Date()
@@ -1421,3 +1425,4 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
     </header>
   )
 }
+

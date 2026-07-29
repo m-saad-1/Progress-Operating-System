@@ -61,7 +61,7 @@ import {
 } from 'lucide-react'
 import { format, parseISO, isBefore, differenceInMonths, differenceInDays } from 'date-fns'
 import { useToaster } from '@/hooks/use-toaster'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 import { database, CreateGoalDTO, UpdateGoalDTO } from '@/lib/database'
@@ -144,7 +144,7 @@ const GOAL_TIPS_SECTIONS = [
 export default function Goals() {
   const queryClient = useQueryClient()
   const { success, error: toastError } = useToaster()
-  const electron = useElectron()
+  const tauri = useTauri()
   const { goals, tasks, habits, addGoal, updateGoal, archiveGoal } = useStore()
   
   const [searchQuery] = useState('')
@@ -169,7 +169,7 @@ export default function Goals() {
   const { data: allHabitCompletions = [] } = useQuery<HabitCompletion[]>({
     queryKey: ['goals-habit-completions-all'],
     queryFn: async () => {
-      if (!electron.isReady) return []
+      if (!tauri.isReady) return []
       const earliestHabitDate = habits.length > 0
         ? habits
             .map((habit) => format(parseISO(habit.created_at), 'yyyy-MM-dd'))
@@ -178,7 +178,7 @@ export default function Goals() {
       const today = format(new Date(), 'yyyy-MM-dd')
       return database.getHabitCompletions(earliestHabitDate, today)
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     refetchOnWindowFocus: true,
     staleTime: 0,
   })

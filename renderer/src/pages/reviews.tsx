@@ -83,7 +83,7 @@ import { cn } from '@/lib/utils'
 import { database, Review, ReviewInsights, CreateReviewDTO, TaskTabStatsSnapshot } from '@/lib/database'
 import { useToaster } from '@/hooks/use-toaster'
 import { useStore, ReviewQuestion } from '@/store'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import type { HabitCompletion } from '@/types'
 import { calculateHabitAnalytics, calculateGoalAnalytics, calculateTimeAnalytics, getDateRange } from '@/lib/progress'
 import { ContextTipsDialog } from '@/components/context-tips-dialog'
@@ -1501,7 +1501,7 @@ function ReviewDetailModal({ review, open, onClose }: {
 export default function Reviews() {
   const { toast } = useToaster()
   const queryClient = useQueryClient()
-  const electron = useElectron()
+  const tauri = useTauri()
   const [activeTab, setActiveTab] = useState<ReviewType>('daily')
   const [dayKey, setDayKey] = useState(() => format(new Date(), 'yyyy-MM-dd'))
   const [isEditing, setIsEditing] = useState(false)
@@ -1556,7 +1556,7 @@ export default function Reviews() {
   const { data: allHabitCompletions = [] } = useQuery<HabitCompletion[]>({
     queryKey: ['habit-completions-all', 'reviews', dayKey],
     queryFn: async () => {
-      if (!electron.isReady) return []
+      if (!tauri.isReady) return []
       const earliestHabitDate = habits.length > 0
         ? habits
             .map((habit) => format(safeParseDate(habit.created_at), 'yyyy-MM-dd'))
@@ -1565,7 +1565,7 @@ export default function Reviews() {
       const today = format(new Date(), 'yyyy-MM-dd')
       return database.getHabitCompletions(earliestHabitDate, today)
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     staleTime: 30_000,
   })
 
@@ -1689,16 +1689,16 @@ export default function Reviews() {
       .slice(0, 5)
       .map((task) => ({ id: task.id, title: task.title, completedAt: task.completed_at || task.updated_at }))
 
-    const activeGoalsProgress = goalAnalytics.goalsWithProgress
-      .filter((goal) => goal.status === 'active')
+    const activeGoalsProgress = (goalAnalytics.goalsWithProgress as any)
+      .filter((goal: any) => goal.status === 'active')
       .slice(0, 8)
-      .map((goal) => ({ id: goal.id, title: goal.title, progress: goal.calculatedProgress, change: 0 }))
+      .map((goal: any) => ({ id: goal.id, title: goal.title, progress: goal.calculatedProgress, change: 0 }))
 
     const goalsAtRisk = goals
-      .filter((goal) => goal.status === 'active' && !!goal.target_date && !goal.deleted_at)
+      .filter((goal: any) => goal.status === 'active' && !!goal.target_date && !goal.deleted_at)
       .filter((goal) => safeParseDate(goal.target_date!) < periodRange.end)
       .slice(0, 5)
-      .map((goal) => ({ id: goal.id, title: goal.title, progress: goal.progress || 0, reason: 'Overdue' }))
+      .map((goal) => ({ id: goal.id, title: goal.title, progress: (goal.progress || 0) as any, reason: 'Overdue' }))
 
     const dailyTaskCounts = new Map<string, number>()
     topCompletedTasks.forEach((task) => {
@@ -2138,7 +2138,7 @@ export default function Reviews() {
                     </Card>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
-                      {reviews.map((review, index) => (
+                      {reviews.map((review: any, index: number) => (
                         <ReviewCard
                           key={review.id}
                           review={review}
@@ -2166,4 +2166,7 @@ export default function Reviews() {
     </div>
   )
 }
+
+
+
 

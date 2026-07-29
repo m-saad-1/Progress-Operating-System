@@ -56,7 +56,7 @@ import {
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { useToaster } from '@/hooks/use-toaster'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { useTheme } from '@/components/theme-provider'
 import { useBackup } from '@/hooks/use-backup'
 import { cn } from '@/lib/utils'
@@ -199,7 +199,7 @@ export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const store = useStore()
   const { success, info, error } = useToaster()
-  const electron = useElectron()
+  const tauri = useTauri()
   const { theme, setTheme } = useTheme()
   const backup = useBackup()
   
@@ -452,7 +452,7 @@ export default function Settings() {
       
       // Call the electron API to reset database and restart
 
-      await electron.resetAllData()
+      await tauri.resetAllData()
       
       // The app will relaunch automatically from the main process
     } catch (err) {
@@ -1495,19 +1495,19 @@ export default function Settings() {
                   disabled={!syncEnabled || store.syncStatus === 'syncing'}
                   className="bg-green-500/90 hover:bg-green-600 text-white shadow-sm hover:shadow-md border-none transition-all"
                   onClick={async () => {
-                    if (!electron.isReady) {
+                    if (!tauri.isReady) {
                       info('Sync works in the desktop app environment')
                       return
                     }
 
                     try {
                       store.updateSyncStatus('syncing')
-                      await electron.setSyncConfig({
+                      await tauri.setSyncConfig({
                         enabled: syncEnabled,
                         provider: syncProvider,
                         syncInterval: syncInterval,
                       })
-                      await electron.syncStart()
+                      await tauri.syncStart()
                       store.updateLastSync()
                       store.updateSyncStatus('idle')
                       success('Sync completed successfully')

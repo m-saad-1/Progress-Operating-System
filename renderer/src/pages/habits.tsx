@@ -1,3 +1,4 @@
+
 import { useEffect, useState, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -63,7 +64,7 @@ import {
 import { format, startOfDay, startOfMonth, endOfMonth, eachDayOfInterval, isAfter, subDays, startOfWeek, endOfWeek, addMonths, subMonths } from 'date-fns'
 import { safeParseDate } from '@/lib/date-safe'
 import { useToaster } from '@/hooks/use-toaster'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 import { database, CreateHabitDTO, UpdateHabitDTO, getLocalDateString } from '@/lib/database'
@@ -152,7 +153,7 @@ const HABIT_TIPS_SECTIONS = [
 ] as const
 
 export default function Habits() {
-  const electron = useElectron()
+  const tauri = useTauri()
   const queryClient = useQueryClient()
   const { success, error: toastError } = useToaster()
   const { habits, goals, addHabit, updateHabit, archiveHabit } = useStore()
@@ -206,9 +207,9 @@ export default function Habits() {
   const { data: todayCompletions = [] } = useQuery({
     queryKey: ['habit-completions-today', todayStr],
     queryFn: async () => {
-      if (!electron.isReady) return []
+      if (!tauri.isReady) return []
       
-      const result = await electron.executeQuery(`
+      const result = await database.executeQuery(`
         SELECT habit_id, date 
         FROM habit_completions 
         WHERE date = ? 
@@ -216,7 +217,7 @@ export default function Habits() {
       `, [todayStr])
       return Array.isArray(result) ? result : []
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     refetchOnWindowFocus: true,
     refetchInterval: 5000, // Refetch every 5 seconds for instant updates
     staleTime: 0, // Always treat as stale to ensure fresh data
@@ -231,9 +232,9 @@ export default function Habits() {
       const start = getLocalDateString(startOfMonth(selectedMonth < todayDate ? selectedMonth : todayDate))
       const end = getLocalDateString(endOfMonth(selectedMonth > todayDate ? selectedMonth : todayDate))
       
-      if (!electron.isReady) return []
+      if (!tauri.isReady) return []
       
-      const result = await electron.executeQuery(`
+      const result = await database.executeQuery(`
         SELECT habit_id, date 
         FROM habit_completions 
         WHERE date BETWEEN ? AND ? 
@@ -241,7 +242,7 @@ export default function Habits() {
       `, [start, end])
       return Array.isArray(result) ? result : []
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     refetchOnWindowFocus: true, // Refetch when returning to app to catch any date changes
     refetchInterval: 30000, // Refetch every 30 seconds for quicker sync
     staleTime: 0, // Always treat as stale to ensure fresh data
@@ -319,9 +320,9 @@ export default function Habits() {
   const { data: allCompletions = [] } = useQuery({
     queryKey: ['habit-completions-all'],
     queryFn: async () => {
-      if (!electron.isReady) return []
+      if (!tauri.isReady) return []
       
-      const result = await electron.executeQuery<any[]>(`
+      const result = await database.executeQuery<any>(`
         SELECT habit_id, date, completed
         FROM habit_completions 
         ORDER BY date ASC
@@ -333,7 +334,7 @@ export default function Habits() {
         completed: Boolean(r.completed)
       })) : []
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     refetchOnWindowFocus: true,
   })
 
@@ -2134,4 +2135,8 @@ export default function Habits() {
     </div>
   )
 }
+
+
+
+
 

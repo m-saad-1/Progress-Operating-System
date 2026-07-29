@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useElectron } from './use-electron'
+import { useTauri } from './use-tauri'
 import { useToaster } from './use-toaster'
 import { useStore } from '@/store'
 
@@ -31,7 +31,7 @@ export interface SyncConfig {
 }
 
 export const useSync = () => {
-  const electron = useElectron()
+  const tauri = useTauri()
   const { success, error, warning, info } = useToaster()
   const store = useStore()
   
@@ -65,7 +65,7 @@ export const useSync = () => {
 
   // Listen for sync events from electron
   useEffect(() => {
-    if (!electron.isReady) return
+    if (!tauri.isReady) return
 
     const handleSyncUpdate = (syncStatus: any) => {
       setState(prev => ({
@@ -104,17 +104,17 @@ export const useSync = () => {
       }))
     }
 
-    const cleanupSync = electron.onSyncUpdate(handleSyncUpdate)
-    const cleanupDb = electron.onDatabaseError(handleDatabaseError)
+    const cleanupSync = tauri.onSyncUpdate(handleSyncUpdate)
+    const cleanupDb = tauri.onDatabaseError(handleDatabaseError)
 
     return () => {
       cleanupSync()
       cleanupDb()
     }
-  }, [electron, success, error, warning, store])
+  }, [tauri, success, error, warning, store])
 
   const startSync = useCallback(async (force = false): Promise<boolean> => {
-    if (!electron.isReady) {
+    if (!tauri.isReady) {
       error('Electron not ready')
       return false
     }
@@ -126,7 +126,7 @@ export const useSync = () => {
 
     try {
       setState(prev => ({ ...prev, status: 'syncing', progress: 0 }))
-      await electron.syncStart()
+      await tauri.syncStart()
       return true
     } catch (err) {
       console.error('Failed to start sync:', err)
@@ -138,15 +138,15 @@ export const useSync = () => {
       error('Failed to start sync')
       return false
     }
-  }, [electron, config.enabled, error, info])
+  }, [tauri, config.enabled, error, info])
 
   const stopSync = useCallback(async (): Promise<boolean> => {
-    if (!electron.isReady) {
+    if (!tauri.isReady) {
       return false
     }
 
     try {
-      await electron.syncStop()
+      await tauri.syncStop()
       setState(prev => ({ ...prev, status: 'idle' }))
       info('Sync stopped')
       return true
@@ -155,15 +155,15 @@ export const useSync = () => {
       error('Failed to stop sync')
       return false
     }
-  }, [electron, info, error])
+  }, [tauri, info, error])
 
   const getSyncStatus = useCallback(async (): Promise<SyncState> => {
-    if (!electron.isReady) {
+    if (!tauri.isReady) {
       return state
     }
 
     try {
-      const status = await electron.getSyncStatus()
+      const status = await tauri.getSyncStatus()
       return {
         status: status.status || 'idle',
         lastSync: status.lastSync ? new Date(status.lastSync) : undefined,
@@ -177,7 +177,7 @@ export const useSync = () => {
       console.error('Failed to get sync status:', err)
       return state
     }
-  }, [electron, state])
+  }, [tauri, state])
 
   const updateConfig = useCallback(async (newConfig: Partial<SyncConfig>): Promise<boolean> => {
     try {
@@ -207,12 +207,12 @@ export const useSync = () => {
     conflictId: string,
     resolution: 'local' | 'remote' | 'merge'
   ): Promise<boolean> => {
-    if (!electron.isReady) {
+    if (!tauri.isReady) {
       return false
     }
 
     try {
-      // In a real implementation, this would call electron.resolveConflict
+      // In a real implementation, this would call tauri.resolveConflict
       setState(prev => ({
         ...prev,
         conflicts: prev.conflicts.filter(c => c.id !== conflictId),
@@ -229,17 +229,17 @@ export const useSync = () => {
       error('Failed to resolve conflict')
       return false
     }
-  }, [electron, success, error])
+  }, [tauri, success, error])
 
   const resolveAllConflicts = useCallback(async (
     resolution: 'local' | 'remote'
   ): Promise<boolean> => {
-    if (!electron.isReady) {
+    if (!tauri.isReady) {
       return false
     }
 
     try {
-      // In a real implementation, this would call electron.resolveAllConflicts
+      // In a real implementation, this would call tauri.resolveAllConflicts
       setState(prev => ({
         ...prev,
         conflicts: [],
@@ -256,14 +256,14 @@ export const useSync = () => {
       error('Failed to resolve conflicts')
       return false
     }
-  }, [electron, success, error])
+  }, [tauri, success, error])
 
   const forceSync = useCallback(async (): Promise<boolean> => {
     return startSync(true)
   }, [startSync])
 
   const resetSync = useCallback(async (): Promise<boolean> => {
-    if (!electron.isReady) {
+    if (!tauri.isReady) {
       return false
     }
 
@@ -290,7 +290,7 @@ export const useSync = () => {
       error('Failed to reset sync')
       return false
     }
-  }, [electron, stopSync, success, error])
+  }, [tauri, stopSync, success, error])
 
   // Auto-sync interval
   useEffect(() => {
@@ -309,14 +309,14 @@ export const useSync = () => {
 
   // Initial sync on startup
   useEffect(() => {
-    if (config.enabled && config.syncOnStartup && electron.isReady) {
+    if (config.enabled && config.syncOnStartup && tauri.isReady) {
       const timer = setTimeout(() => {
         startSync()
       }, 2000) // Wait 2 seconds for app to initialize
 
       return () => clearTimeout(timer)
     }
-  }, [config.enabled, config.syncOnStartup, electron.isReady, startSync])
+  }, [config.enabled, config.syncOnStartup, tauri.isReady, startSync])
 
   return {
     // State
@@ -344,6 +344,6 @@ export const useSync = () => {
     syncProgress: state.progress,
     
     // Utility
-    canSync: electron.isReady && config.enabled,
+    canSync: tauri.isReady && config.enabled,
   }
 }

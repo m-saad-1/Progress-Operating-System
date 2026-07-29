@@ -1,0 +1,23 @@
+{
+    "$schema":  "../gen/schemas/desktop-schema.json",
+    "identifier":  "default",
+    "description":  "enables the default permissions",
+    "windows":  [
+                    "main"
+                ],
+    "permissions":  [
+                        "core:default",
+                        "sql:default",
+                        "sql:allow-execute",
+                        "sql:allow-select",
+                        "sql:allow-load",
+                        "window-state:default",
+                        "global-shortcut:default",
+                        "dialog:allow-open",
+                        "dialog:allow-save",
+                        "os:allow-os-type",
+                        "notification:allow-request-permission",
+                        "notification:allow-is-permission-granted",
+                        "notification:allow-notify"
+                    ]
+}

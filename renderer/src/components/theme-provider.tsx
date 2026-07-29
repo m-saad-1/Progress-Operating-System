@@ -66,24 +66,7 @@ export function ThemeProvider({
     let cancelled = false
 
     const restoreThemeFromDesktopSnapshot = async () => {
-      if (typeof window === 'undefined' || typeof window.electronAPI?.getSettingsSnapshot !== 'function') {
-        return
-      }
-
-      try {
-        const response = await window.electronAPI.getSettingsSnapshot()
-        if (cancelled || !response || (typeof response === 'object' && 'success' in response && !response.success)) {
-          return
-        }
-
-        const themePreference = response?.data?.themePreference
-        if (themePreference === 'dark' || themePreference === 'light' || themePreference === 'system') {
-          writeThemeFallback(storageKey, themePreference)
-          setTheme(themePreference)
-        }
-      } catch {
-        // Ignore restore failures.
-      }
+      // Tauri handles settings sync via the database, so we just use the localStorage fallback.
     }
 
     void restoreThemeFromDesktopSnapshot()

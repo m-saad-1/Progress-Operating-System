@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useElectron } from './use-electron'
+import { useTauri } from './use-tauri'
 import { useToaster } from './use-toaster'
 import { format as formatDateFns } from 'date-fns'
 
@@ -37,7 +37,7 @@ const DEFAULT_STATS: BackupStats = {
 }
 
 export const useBackup = () => {
-  const electron = useElectron()
+  const tauri = useTauri()
   const { success, error, info } = useToaster()
 
   const [backups, setBackups] = useState<Backup[]>([])
@@ -69,10 +69,10 @@ export const useBackup = () => {
   // ── Load backups from main process ──
 
   const loadBackups = useCallback(async (): Promise<void> => {
-    if (!electron.isReady) return
+    if (!tauri.isReady) return
 
     try {
-      const backupList = await electron.listBackups()
+      const backupList = await tauri.listBackups()
 
       const loaded: Backup[] = (Array.isArray(backupList) ? backupList : []).map((b: any) => ({
         id: b.id,
@@ -92,20 +92,20 @@ export const useBackup = () => {
       console.error('Failed to load backups:', err)
       error('Failed to load backups')
     }
-  }, [electron, error, formatFileSize, formatDate])
+  }, [tauri, error, formatFileSize, formatDate])
 
   // ── Load stats from main process ──
 
   const loadStats = useCallback(async (): Promise<void> => {
-    if (!electron.isReady) return
+    if (!tauri.isReady) return
 
     try {
-      const s = await electron.getBackupStats()
+      const s = await tauri.getBackupStats()
       if (s) setStats(s)
     } catch (err) {
       console.error('Failed to load stats:', err)
     }
-  }, [electron])
+  }, [tauri])
 
   // ── Refresh both ──
 
@@ -116,30 +116,30 @@ export const useBackup = () => {
   // ── Initial load ──
 
   useEffect(() => {
-    if (electron.isReady && !loadedRef.current) {
+    if (tauri.isReady && !loadedRef.current) {
       loadedRef.current = true
       refresh()
     }
-  }, [electron.isReady, refresh])
+  }, [tauri.isReady, refresh])
 
   // ── Listen for real-time backup:created events ──
 
   useEffect(() => {
-    if (!electron.isReady) return
+    if (!tauri.isReady) return
 
     const handleBackupCreated = (_backup: any) => {
       // Just reload the full list to stay in sync
       refresh()
     }
 
-    const cleanup = electron.onBackupCreated(handleBackupCreated)
+    const cleanup = tauri.onBackupCreated(handleBackupCreated)
     return () => { cleanup() }
-  }, [electron, refresh])
+  }, [tauri, refresh])
 
   // ── Create ──
 
   const createBackup = useCallback(async (): Promise<boolean> => {
-    if (!electron.isReady) {
+    if (!tauri.isReady) {
       error('Not ready')
       return false
     }
@@ -150,7 +150,7 @@ export const useBackup = () => {
 
     setIsCreatingBackup(true)
     try {
-      const record = await electron.createBackup()
+      const record = await tauri.createBackup()
       if (record) {
         success('Backup created', `Size: ${record.sizeFormatted || formatFileSize(record.size || 0)}`)
         await refresh()
@@ -165,12 +165,12 @@ export const useBackup = () => {
     } finally {
       setIsCreatingBackup(false)
     }
-  }, [electron, error, info, success, isCreatingBackup, formatFileSize, refresh])
+  }, [tauri, error, info, success, isCreatingBackup, formatFileSize, refresh])
 
   // ── Restore ──
 
   const restoreBackup = useCallback(async (backupId: string): Promise<boolean> => {
-    if (!electron.isReady) {
+    if (!tauri.isReady) {
       error('Not ready')
       return false
     }
@@ -181,7 +181,7 @@ export const useBackup = () => {
 
     setIsRestoring(true)
     try {
-      const result = await electron.restoreBackup(backupId)
+      const result = await tauri.restoreBackup(backupId)
 
       if (result) {
         success('Backup restored successfully', 'Application will reload…')
@@ -198,15 +198,15 @@ export const useBackup = () => {
     } finally {
       setIsRestoring(false)
     }
-  }, [electron, error, info, success, isRestoring])
+  }, [tauri, error, info, success, isRestoring])
 
   // ── Delete ──
 
   const deleteBackup = useCallback(async (backupId: string): Promise<boolean> => {
-    if (!electron.isReady) return false
+    if (!tauri.isReady) return false
 
     try {
-      const result = await electron.deleteBackup(backupId)
+      const result = await tauri.deleteBackup(backupId)
       if (result) {
         success('Backup deleted')
         await refresh()
@@ -219,16 +219,16 @@ export const useBackup = () => {
       error(err?.message || 'Failed to delete backup')
       return false
     }
-  }, [electron, success, error, refresh])
+  }, [tauri, success, error, refresh])
 
   // ── Verify ──
 
   const verifyBackup = useCallback(async (backupId: string): Promise<boolean> => {
-    if (!electron.isReady) return false
+    if (!tauri.isReady) return false
 
     setIsVerifying(true)
     try {
-      const result = await electron.verifyBackup(backupId)
+      const result = await tauri.verifyBackup(backupId)
       const isValid = result?.valid === true
 
       setBackups(prev =>
@@ -251,12 +251,12 @@ export const useBackup = () => {
     } finally {
       setIsVerifying(false)
     }
-  }, [electron, success, error])
+  }, [tauri, success, error])
 
   // ── Verify all ──
 
   const verifyAllBackups = useCallback(async (): Promise<{ valid: number; corrupted: number }> => {
-    if (!electron.isReady) return { valid: 0, corrupted: 0 }
+    if (!tauri.isReady) return { valid: 0, corrupted: 0 }
 
     setIsVerifying(true)
     let valid = 0
@@ -271,15 +271,15 @@ export const useBackup = () => {
     setIsVerifying(false)
     info(`Verification complete: ${valid} valid, ${corrupted} corrupted`)
     return { valid, corrupted }
-  }, [electron, info, backups, verifyBackup])
+  }, [tauri, info, backups, verifyBackup])
 
   // ── Export ──
 
   const exportBackup = useCallback(async (backupId: string): Promise<boolean> => {
-    if (!electron.isReady) return false
+    if (!tauri.isReady) return false
 
     try {
-      const result = await electron.exportBackup(backupId)
+      const result = await tauri.exportBackup(backupId)
       if (result?.success) {
         success('Backup exported successfully')
         return true
@@ -294,16 +294,16 @@ export const useBackup = () => {
       error(err?.message || 'Failed to export backup')
       return false
     }
-  }, [electron, success, error])
+  }, [tauri, success, error])
 
   // ── Import ──
 
   const importBackup = useCallback(async (): Promise<boolean> => {
-    if (!electron.isReady) return false
+    if (!tauri.isReady) return false
 
     setIsImporting(true)
     try {
-      const result = await electron.importBackup()
+      const result = await tauri.importBackup()
       if (result?.success) {
         success('Backup imported successfully')
         await refresh()
@@ -320,7 +320,7 @@ export const useBackup = () => {
     } finally {
       setIsImporting(false)
     }
-  }, [electron, success, error, refresh])
+  }, [tauri, success, error, refresh])
 
   // ── Derived values ──
 

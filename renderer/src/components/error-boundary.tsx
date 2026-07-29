@@ -2,9 +2,9 @@ import React, { Component, ErrorInfo, ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { AlertTriangle, RefreshCw, Home } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { database } from '@/lib/database'
 
 interface Props {
-  children: ReactNode
   fallback?: ReactNode
 }
 
@@ -37,9 +37,9 @@ export class ErrorBoundary extends Component<Props, State> {
     })
 
     // Log error to analytics service if available
-    if (typeof window !== 'undefined' && (window as any).electronAPI) {
+    if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
       try {
-        ;(window as any).electronAPI.executeQuery(`
+        database.executeQuery(`
           INSERT INTO audit_log (id, entity_type, entity_id, action, old_value, new_value)
           VALUES (?, ?, ?, ?, ?, ?)
         `, [

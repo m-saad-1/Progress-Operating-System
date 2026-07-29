@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -58,7 +59,7 @@ import {
   CheckSquare,
 } from 'lucide-react'
 import { format, startOfDay, endOfDay, subDays, startOfWeek, endOfWeek, startOfMonth, endOfMonth, parseISO } from 'date-fns'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { useToaster } from '@/hooks/use-toaster'
 import { useStore } from '@/store'
 import { HabitTracker } from '@/components/habit-tracker'
@@ -225,7 +226,7 @@ const calculateHabitRangeMetrics = (
 
 export default function Dashboard() {
   const navigate = useNavigate()
-  const electron = useElectron()
+  const tauri = useTauri()
   const queryClient = useQueryClient()
   const { error: toastError, success: toastSuccess } = useToaster()
   const { tasks, habits, goals, updateTask, addTask, archiveTask, deleteTask } = useStore()
@@ -276,44 +277,47 @@ export default function Dashboard() {
         // This ensures Dashboard and Tasks tab are in sync
         const tasksResult = tasks
 
-        // Fetch active goals
-        const goalsResult = await electron.executeQuery<Goal[]>(`
-          SELECT * FROM goals 
-          WHERE status = 'active'
-          AND deleted_at IS NULL
-          ORDER BY 
-            CASE priority
-              WHEN 'critical' THEN 1
-              WHEN 'high' THEN 2
-              WHEN 'medium' THEN 3
-              WHEN 'low' THEN 4
-            END,
-            target_date ASC
-          LIMIT 5
-        `)
+        let goalsResult;
+        try {
+          goalsResult = await database.executeQuery<any>(`
+            SELECT * FROM goals 
+            WHERE status = 'active'
+            AND deleted_at IS NULL
+            ORDER BY 
+              CASE priority
+                WHEN 'critical' THEN 1
+                WHEN 'high' THEN 2
+                WHEN 'medium' THEN 3
+                WHEN 'low' THEN 4
+              END,
+              target_date ASC
+            LIMIT 5
+          `)
+        } catch (e: any) { throw new Error('goalsResult query failed: ' + e.message); }
 
-        // Fetch completed goals for analytics graphs (full history, real DB values)
-        const completedGoalsResult = await electron.executeQuery<Goal[]>(`
-          SELECT * FROM goals
-          WHERE status = 'completed'
-          AND completed_at IS NOT NULL
-          AND deleted_at IS NULL
-          ORDER BY completed_at DESC
-        `)
+        let completedGoalsResult;
+        try {
+          completedGoalsResult = await database.executeQuery<any>(`
+            SELECT * FROM goals
+            WHERE status = 'completed'
+            AND completed_at IS NOT NULL
+            AND deleted_at IS NULL
+            ORDER BY completed_at DESC
+          `)
+        } catch (e: any) { throw new Error('completedGoalsResult query failed: ' + e.message); }
 
-        // IMPORTANT: Fetch today's habits with their completion status from habit_completions table
-        // This ensures checked habits persist after page refresh
-        // Uses local date string to avoid timezone issues
-        // Include: daily, weekly, and monthly habits (weekly/monthly are visible until done)
-        const rawHabits = await electron.executeQuery<any[]>(`
-          SELECT h.*, 
-                 (SELECT completed FROM habit_completions 
-                  WHERE habit_id = h.id AND date = ?) as today_completed
-          FROM habits h
-          WHERE h.deleted_at IS NULL
-          AND h.frequency IN ('daily', 'weekly', 'monthly')
-          ORDER BY h.consistency_score DESC
-        `, [todayStr])
+        let rawHabits;
+        try {
+          rawHabits = await database.executeQuery<any>(`
+            SELECT h.*, 
+                   (SELECT completed FROM habit_completions 
+                    WHERE habit_id = h.id AND date = ?) as today_completed
+            FROM habits h
+            WHERE h.deleted_at IS NULL
+            AND h.frequency IN ('daily', 'weekly', 'monthly')
+            ORDER BY h.consistency_score DESC
+          `, [todayStr])
+        } catch (e: any) { throw new Error('rawHabits query failed: ' + e.message); }
 
         const habitsResult = (Array.isArray(rawHabits) ? rawHabits : []).map((h: any) => ({
           ...h,
@@ -334,29 +338,34 @@ export default function Dashboard() {
               .sort()[0]
           : todayStr
 
-        const habitCompletions = await database.getHabitCompletions(earliestHabitDate, todayStr)
+        let habitCompletions;
+        try {
+          habitCompletions = await database.getHabitCompletions(earliestHabitDate, todayStr)
+        } catch (e: any) { throw new Error('getHabitCompletions failed: ' + e.message); }
 
-        // Fetch recent achievements
-        const achievements = await electron.executeQuery<Achievement[]>(`
-          SELECT 
-            'goal_completed' as type,
-            title,
-            completed_at as timestamp
-          FROM goals 
-          WHERE status = 'completed'
-          AND completed_at IS NOT NULL
-          AND deleted_at IS NULL
-          UNION ALL
-          SELECT 
-            'streak_achieved' as type,
-            title || ' - ' || streak_current || ' day streak' as title,
-            updated_at as timestamp
-          FROM habits 
-          WHERE streak_current >= 7
-          AND deleted_at IS NULL
-          ORDER BY timestamp DESC
-          LIMIT 3
-        `)
+        let achievements;
+        try {
+          achievements = await database.executeQuery<any>(`
+            SELECT 
+              'goal_completed' as type,
+              title,
+              completed_at as timestamp
+            FROM goals 
+            WHERE status = 'completed'
+            AND completed_at IS NOT NULL
+            AND deleted_at IS NULL
+            UNION ALL
+            SELECT 
+              'streak_achieved' as type,
+              title || ' - ' || streak_current || ' day streak' as title,
+              updated_at as timestamp
+            FROM habits 
+            WHERE streak_current >= 7
+            AND deleted_at IS NULL
+            ORDER BY timestamp DESC
+            LIMIT 3
+          `)
+        } catch (e: any) { throw new Error('achievements query failed: ' + e.message); }
 
         return { 
           tasks: Array.isArray(tasksResult) ? tasksResult : [], 
@@ -372,7 +381,7 @@ export default function Dashboard() {
         throw error
       }
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     refetchOnWindowFocus: true,
     staleTime: 30 * 1000, // 30 seconds - more frequent updates
   })
@@ -382,7 +391,7 @@ export default function Dashboard() {
     queryKey: ['task-stats', todayStr],
     queryFn: () => database.getTaskTabStats(),
     staleTime: 30 * 1000,
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
   })
 
   // Fetch weekly task range snapshot to match Analytics tab
@@ -393,7 +402,7 @@ export default function Dashboard() {
       format(weeklyTaskRange.start, 'yyyy-MM-dd'),
       format(weeklyTaskRange.end, 'yyyy-MM-dd')
     ),
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     staleTime: 30 * 1000,
   })
 
@@ -413,14 +422,14 @@ export default function Dashboard() {
     queryKey: ['review-check', 'weekly-dashboard-alert', weeklyReviewPeriod.start, weeklyReviewPeriod.end],
     queryFn: () => database.getReviewForPeriod('weekly', weeklyReviewPeriod.start, weeklyReviewPeriod.end),
     staleTime: 60_000,
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
   })
 
   const { data: monthlyReviewDueCheck } = useQuery({
     queryKey: ['review-check', 'monthly-dashboard-alert', monthlyReviewPeriod.start, monthlyReviewPeriod.end],
     queryFn: () => database.getReviewForPeriod('monthly', monthlyReviewPeriod.start, monthlyReviewPeriod.end),
     staleTime: 60_000,
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
   })
 
   // Check if there's actual content to review before showing review alerts
@@ -461,7 +470,7 @@ export default function Dashboard() {
       }
     },
     staleTime: 300000, // 5 minutes
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
   })
 
   const habitCompletions = useMemo(
@@ -884,7 +893,7 @@ export default function Dashboard() {
     },
     onSuccess: ({ updatedTask, progress }) => {
       if (updatedTask) {
-        updateTask(updatedTask)
+        updateTask(updatedTask as any)
       }
 
       queryClient.invalidateQueries({ queryKey: ['review-insights'] })
@@ -919,7 +928,7 @@ export default function Dashboard() {
     },
     onSuccess: (newTask) => {
       if (newTask) {
-        addTask(newTask)
+        addTask(newTask as any)
         toastSuccess('Task created successfully! 🎉')
         setIsTaskDialogOpen(false)
         setTaskFormData(getInitialFormData())
@@ -937,7 +946,7 @@ export default function Dashboard() {
     },
     onSuccess: (updatedTask) => {
       if (updatedTask) {
-        updateTask(updatedTask)
+        updateTask(updatedTask as any)
         toastSuccess('Task updated!')
         setIsTaskDialogOpen(false)
         setIsEditing(null)
@@ -1087,9 +1096,7 @@ export default function Dashboard() {
             <div className="text-center">
               <AlertCircle className="h-12 w-12 text-destructive mx-auto mb-4" />
               <h3 className="text-lg font-semibold mb-2">Failed to load dashboard</h3>
-              <p className="text-muted-foreground mb-4">
-                There was an error loading your dashboard data.
-              </p>
+              <p className="text-muted-foreground">There was an error loading your dashboard data: {error instanceof Error ? error.message : String(error)}</p>
               <Button onClick={() => refetch()}>Retry</Button>
             </div>
           </CardContent>
@@ -1983,3 +1990,10 @@ export default function Dashboard() {
     </div>
   )
 }
+
+
+
+
+
+
+

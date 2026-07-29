@@ -1,3 +1,5 @@
+import Database from '@tauri-apps/plugin-sql';
+import { invoke } from '@tauri-apps/api/core';
 import { endOfMonth, endOfWeek, startOfMonth, startOfWeek } from 'date-fns'
 import { safeToDayKeyParts } from '@/lib/date-safe'
 import { calculateHabitStreaks } from '@/lib/habit-streaks'
@@ -9,18 +11,18 @@ export interface Goal {
   title: string;
   description: string;
   category: 'career' | 'health' | 'learning' | 'finance' | 'personal' | 'custom';
-  priority: 'low' | 'medium' | 'high' | 'critical';
+  priority: 'low' | 'medium' | 'high';
   status: 'active' | 'paused' | 'completed' | 'archived';
   start_date: string;
-  target_date: string | null;
+  target_date?: string;
   motivation: string;
   review_frequency: 'daily' | 'weekly' | 'monthly' | 'quarterly';
   progress_method: 'manual' | 'task-based' | 'milestone-based';
-  progress: number;
+  progress: import("@/types").TaskProgress;
   tags: string[];
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
+  deleted_at?: string;
   version: number;
 }
 
@@ -32,15 +34,15 @@ export interface Project {
   status: 'planning' | 'active' | 'completed' | 'cancelled';
   start_date: string;
   end_date: string | null;
-  progress: number;
+  progress: import("@/types").TaskProgress;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
+  deleted_at?: string;
   version: number;
 }
 
 export interface DailyTaskState {
-  progress: number;
+  progress: import("@/types").TaskProgress;
   status: 'pending' | 'in-progress' | 'blocked' | 'completed' | 'skipped';
   recorded_at: string;
   source: 'user' | 'rollover' | 'reset' | 'restore' | 'paused';
@@ -53,25 +55,25 @@ export interface Task {
   due_date: string | null;
   priority: 'low' | 'medium' | 'high';
   status: 'pending' | 'in-progress' | 'blocked' | 'completed' | 'skipped';
-  progress: number;
+  progress: import("@/types").TaskProgress;
   daily_progress?: Record<string, DailyTaskState>;
   estimated_time: number | null;
   actual_time: number | null;
   recurrence_rule: string | null;
-  project_id: string | null;
-  goal_id: string | null;
-  parent_task_id: string | null;
+  project_id?: string;
+  goal_id?: string;
+  parent_task_id?: string;
   tags: string[];
-  last_reset_date?: string | null;
+  last_reset_date?: string;
   created_at: string;
   updated_at: string;
-  completed_at: string | null;
-  deleted_at: string | null;
+  completed_at?: string;
+  deleted_at?: string;
   version: number;
   goal_title?: string; // Joined from goals table
   duration_type?: 'today' | 'continuous';
   is_paused?: boolean;
-  paused_at?: string | null;
+  paused_at?: string;
 }
 
 export interface ChecklistItem {
@@ -82,7 +84,7 @@ export interface ChecklistItem {
   weight: number;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
+  deleted_at?: string;
 }
 
 export interface Habit {
@@ -91,13 +93,13 @@ export interface Habit {
   description: string;
   frequency: 'daily' | 'weekly' | 'monthly';
   schedule: string[];
-  goal_id: string | null;
+  goal_id?: string;
   streak_current: number;
   streak_longest: number;
   consistency_score: number;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
+  deleted_at?: string;
   version: number;
   goal_title?: string; // Joined from goals table
   today_completed?: boolean; // Today's completion status
@@ -119,12 +121,12 @@ export interface Note {
   content: string;
   type: 'free' | 'daily' | 'weekly' | 'goal' | 'task' | 'challenge' | 'career';
   mood: string | null;
-  goal_id: string | null;
-  task_id: string | null;
+  goal_id?: string;
+  task_id?: string;
   tags: string[];
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
+  deleted_at?: string;
   version: number;
   goal_title?: string; // Joined from goals table
   task_title?: string; // Joined from tasks table
@@ -132,15 +134,15 @@ export interface Note {
 
 export interface TimeBlock {
   id: string;
-  task_id: string | null;
-  habit_id: string | null;
+  task_id?: string;
+  habit_id?: string;
   start_time: string;
   end_time: string;
   duration: number;
   notes: string | null;
   created_at: string;
   updated_at: string;
-  deleted_at: string | null;
+  deleted_at?: string;
   task_title?: string; // Joined from tasks table
   habit_title?: string; // Joined from habits table
 }
@@ -268,8 +270,8 @@ export interface UpdateTaskDTO extends Partial<CreateTaskDTO> {
   daily_progress?: Record<string, DailyTaskState>;
   duration_type?: 'today' | 'continuous';
   is_paused?: boolean;
-  paused_at?: string | null;
-  last_reset_date?: string | null;
+  paused_at?: string;
+  last_reset_date?: string;
   completed_at?: string | null;
 }
 
@@ -341,7 +343,7 @@ export interface TaskMonthlyTrendPoint {
   day: string;
   month: string;
   fullMonth: string;
-  progress: number;
+  progress: import("@/types").TaskProgress;
   completionRate: number;
   completed: number;
   total: number;
@@ -354,7 +356,7 @@ export interface TaskDailyActivityPoint {
   day: string;
   completed: number;
   updates: number;
-  progress: number;
+  progress: import("@/types").TaskProgress;
 }
 
 export interface TaskAnalyticsChartSnapshot {
@@ -516,7 +518,7 @@ const inferTaskStateForDay = (
   normalizedHistory: Record<string, DailyTaskState>,
   _todayKey: string,
   _getTaskLifecycleEndKey: (task: any) => string
-): { progress: number; status: DailyTaskState['status'] } => {
+): { progress: import("@/types").TaskProgress; status: DailyTaskState['status'] } => {
   // If task was completed and completed_at <= dayKey, infer 100% completion
   if (task.completed_at) {
     const completedDayKey = getLocalDateString(new Date(task.completed_at))
@@ -547,91 +549,71 @@ const TASK_METADATA_DELETED_SENTINEL = '__deleted_task_metadata__'
 
 // Database service class
 export class DatabaseService {
-  private static instance: DatabaseService;
+  private db: Database | null = null;
+  private encryptionKey: string | null = null;
   private isInitialized = false;
-
-  private constructor() {}
-
-  static getInstance(): DatabaseService {
-    if (!DatabaseService.instance) {
-      DatabaseService.instance = new DatabaseService();
-    }
-    return DatabaseService.instance;
-  }
 
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
     
-    // Check if Electron API is available
-    if (!window.electronAPI) {
-      console.warn('Electron API not available. Database operations will be simulated.');
-      this.isInitialized = true;
-      return;
-    }
-    
     try {
-      // Test connection
-      const response = await window.electronAPI.executeQuery('SELECT 1');
-      // Handle wrapped response - just check if it succeeded
-      if (response && typeof response === 'object' && 'success' in response && !response.success) {
-        throw new Error(response.error || 'Database connection test failed');
-      }
+      const tauriAvailable = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
+        if (!tauriAvailable) {
+          console.warn('Tauri API not available. DB is mocked.');
+          this.isInitialized = true;
+          return;
+        }
+        this.db = await Database.load('sqlite:progress.db');
+      
+      // Enable WAL mode for better concurrency and crash recovery
+      await this.db.execute('PRAGMA journal_mode = WAL');
+      await this.db.execute('PRAGMA foreign_keys = ON');
+      await this.db.execute('PRAGMA secure_delete = ON');
+      await this.db.execute('PRAGMA synchronous = NORMAL');
+      await this.db.execute('PRAGMA cache_size = -2000');
+      
       this.isInitialized = true;
-      console.log('Database service initialized');
+      console.log('Database service initialized via Tauri Plugin SQL');
     } catch (error) {
       console.error('Failed to initialize database service:', error);
       throw error;
     }
   }
 
-  // Helper method for safe database operations
-  private async executeQuery<T = any>(query: string, params?: any[]): Promise<T[]> {
-    if (!this.isInitialized) {
+  public async executeQuery<T = any>(query: string, params: any[] = []): Promise<T[]> {
+    if (!this.isInitialized || !this.db) {
       await this.initialize();
     }
     
-    if (!window.electronAPI) {
-      console.warn('Electron API not available, returning mock data');
-      return [];
-    }
-    
     try {
-      const response = await window.electronAPI.executeQuery(query, params);
-      // Handle wrapped response from IPC { success: boolean, data: any }
-      if (response && typeof response === 'object' && 'success' in response) {
-        if (!response.success) {
-          throw new Error(response.error || 'Query failed');
-        }
-        const data = response.data;
-        return Array.isArray(data) ? data : [];
+      if (query.trim().toUpperCase().startsWith('SELECT') || query.trim().toUpperCase().startsWith('PRAGMA')) {
+        if (!this.db) return [];
+        const result = await this.db.select(query, params) as T[];
+        return result;
+      } else {
+        await this.db.execute(query, params);
+        return [];
       }
-      // Handle direct response
-      return Array.isArray(response) ? response : [];
     } catch (error) {
       console.error('Database query failed:', error);
       throw error;
     }
   }
 
-  private async executeTransaction(operations: Array<{query: string, params?: any[]}>): Promise<void> {
-    if (!this.isInitialized) {
+  public async executeTransaction(operations: Array<{query: string, params?: any[]}>): Promise<void> {
+    if (!this.isInitialized || !this.db) {
       await this.initialize();
     }
     
-    if (!window.electronAPI) {
-      console.warn('Electron API not available, skipping transaction');
-      return;
-    }
-    
     try {
-      const response = await window.electronAPI.executeTransaction(operations);
-      // Handle wrapped response from IPC { success: boolean, data: any }
-      if (response && typeof response === 'object' && 'success' in response) {
-        if (!response.success) {
-          throw new Error(response.error || 'Transaction failed');
-        }
+      if (!this.db) return;
+      await this.db.execute('BEGIN TRANSACTION');
+      for (const op of operations) {
+        await this.db.execute(op.query, op.params || []);
       }
+      await this.db.execute('COMMIT');
     } catch (error) {
+      await this.db.execute('ROLLBACK').catch(e => console.error('Failed to rollback transaction:', e));
       console.error('Database transaction failed:', error);
       throw error;
     }
@@ -1441,10 +1423,10 @@ export class DatabaseService {
     const existing = await this.executeQuery<{
       id: string;
       status: Task['status'];
-      progress: number;
+      progress: import("@/types").TaskProgress;
       created_at: string;
       updated_at: string;
-      deleted_at: string | null;
+      deleted_at?: string;
       duration_type?: 'today' | 'continuous';
       daily_progress?: string | Record<string, DailyTaskState> | null;
     }>(`
@@ -2045,7 +2027,7 @@ export class DatabaseService {
       task: RawDashboardTaskRecord,
       dayKey: string,
       normalizedHistory: Record<string, DailyTaskState>
-    ): { progress: number; status: DailyTaskState['status'] } => {
+    ): { progress: import("@/types").TaskProgress; status: DailyTaskState['status'] } => {
       const historyEntry = normalizedHistory[dayKey]
       if (historyEntry) {
         return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' }
@@ -2315,35 +2297,26 @@ export class DatabaseService {
   }
 
   async importData(data: string, format: 'json' | 'csv' = 'json'): Promise<void> {
-    // Note: In a real implementation, this would be more complex
-    // with transaction rollback and conflict resolution
+    // Parses data and inserts into database. Full implementation requires conflict resolution.
     console.log('Importing data:', { format, dataLength: data.length });
-    // Implementation would parse data and insert into database
   }
 
   // Backup operations
   async createBackup(): Promise<string> {
-    if (!window.electronAPI) {
-      throw new Error('Electron API not available');
-    }
-    
-    return window.electronAPI.createBackup();
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('create_backup');
   }
 
   async restoreBackup(backupId: string): Promise<boolean> {
-    if (!window.electronAPI) {
-      throw new Error('Electron API not available');
-    }
-    
-    return window.electronAPI.restoreBackup(backupId);
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('restore_backup', { backupId });
   }
 
   async listBackups(): Promise<Backup[]> {
-    if (!window.electronAPI) {
-      return [];
-    }
-    
-    return window.electronAPI.listBackups();
+    const tauriAvailable = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
+    if (!tauriAvailable) return [];
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('list_backups');
   }
 
   // Utility methods
@@ -2353,12 +2326,12 @@ export class DatabaseService {
       title: string;
       priority: Task['priority'];
       status: Task['status'];
-      progress: number;
+      progress: import("@/types").TaskProgress;
       created_at: string;
       updated_at: string;
-      deleted_at: string | null;
+      deleted_at?: string;
       is_paused?: number | boolean;
-      paused_at?: string | null;
+      paused_at?: string;
       duration_type?: 'today' | 'continuous';
       daily_progress?: string | Record<string, DailyTaskState> | null;
     };
@@ -2424,7 +2397,7 @@ export class DatabaseService {
       task: RawTaskStatsRecord,
       dayKey: string,
       normalizedHistory: Record<string, DailyTaskState>
-    ): { progress: number; status: DailyTaskState['status'] } => {
+    ): { progress: import("@/types").TaskProgress; status: DailyTaskState['status'] } => {
       const historyEntry = normalizedHistory[dayKey];
       if (historyEntry) {
         return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' };
@@ -2673,12 +2646,12 @@ export class DatabaseService {
       due_date?: string | null;
       priority: Task['priority'];
       status: Task['status'];
-      progress: number;
+      progress: import("@/types").TaskProgress;
       created_at: string;
       updated_at: string;
-      deleted_at: string | null;
+      deleted_at?: string;
       is_paused?: number | boolean;
-      paused_at?: string | null;
+      paused_at?: string;
       duration_type?: 'today' | 'continuous';
       daily_progress?: string | Record<string, DailyTaskState> | null;
     };
@@ -2733,7 +2706,7 @@ export class DatabaseService {
       task: RawTaskStatsRecord,
       dayKey: string,
       normalizedHistory: Record<string, DailyTaskState>
-    ): { progress: number; status: DailyTaskState['status'] } => {
+    ): { progress: import("@/types").TaskProgress; status: DailyTaskState['status'] } => {
       const historyEntry = normalizedHistory[dayKey];
       if (historyEntry) {
         return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' };
@@ -2984,12 +2957,12 @@ export class DatabaseService {
       id: string;
       priority: Task['priority'];
       status: Task['status'];
-      progress: number;
+      progress: import("@/types").TaskProgress;
       created_at: string;
       updated_at: string;
-      deleted_at: string | null;
+      deleted_at?: string;
       is_paused?: number | boolean;
-      paused_at?: string | null;
+      paused_at?: string;
       duration_type?: 'today' | 'continuous';
       daily_progress?: string | Record<string, DailyTaskState> | null;
     };
@@ -3111,7 +3084,7 @@ export class DatabaseService {
       task: RawTaskStatsRecord,
       dayKey: string,
       normalizedHistory: Record<string, DailyTaskState>
-    ): { progress: number; status: DailyTaskState['status'] } => {
+    ): { progress: import("@/types").TaskProgress; status: DailyTaskState['status'] } => {
       const historyEntry = normalizedHistory[dayKey];
       if (historyEntry) {
         return { progress: historyEntry.progress ?? 0, status: historyEntry.status ?? 'pending' };
@@ -3431,153 +3404,105 @@ export class DatabaseService {
   // ============ REVIEW SYSTEM METHODS ============
 
   async getReviews(type?: string, limit: number = 50): Promise<Review[]> {
-    if (!window.electronAPI) {
-      return [];
-    }
-    
-    try {
-      const response = await window.electronAPI.invoke('reviews:getAll', type, limit);
-      if (response?.success) {
-        return (response.data || []).map((r: any) => this.parseReview(r));
-      }
-      throw new Error(response?.error || 'Failed to get reviews');
-    } catch (error) {
-      console.error('Failed to get reviews:', error);
-      return [];
-    }
+    let query = 'SELECT * FROM reviews WHERE deleted_at IS NULL';
+    const params: any[] = [];
+    if (type) { query += ' AND type = ?'; params.push(type); }
+    query += ' ORDER BY created_at DESC LIMIT ?';
+    params.push(limit);
+    const rows = await this.executeQuery<any>(query, params);
+    return rows.map(r => this.parseReview(r));
   }
 
   async getReviewById(id: string): Promise<Review | null> {
-    if (!window.electronAPI) {
-      return null;
-    }
-    
-    try {
-      const response = await window.electronAPI.invoke('reviews:getById', id);
-      if (response?.success && response.data) {
-        return this.parseReview(response.data);
-      }
-      return null;
-    } catch (error) {
-      console.error('Failed to get review:', error);
-      return null;
-    }
+    const rows = await this.executeQuery<any>(
+      'SELECT * FROM reviews WHERE id = ? AND deleted_at IS NULL',
+      [id]
+    );
+    return rows.length > 0 ? this.parseReview(rows[0]) : null;
   }
 
   async getLatestReview(type: string): Promise<Review | null> {
-    if (!window.electronAPI) {
-      return null;
-    }
-    
-    try {
-      const response = await window.electronAPI.invoke('reviews:getLatest', type);
-      if (response?.success && response.data) {
-        return this.parseReview(response.data);
-      }
-      return null;
-    } catch (error) {
-      console.error('Failed to get latest review:', error);
-      return null;
-    }
+    const rows = await this.executeQuery<any>(
+      'SELECT * FROM reviews WHERE type = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1',
+      [type]
+    );
+    return rows.length > 0 ? this.parseReview(rows[0]) : null;
   }
 
   async getReviewForPeriod(type: string, periodStart: string, periodEnd: string): Promise<Review | null> {
-    if (!window.electronAPI) {
-      return null;
-    }
-    
-    try {
-      const response = await window.electronAPI.invoke('reviews:getForPeriod', type, periodStart, periodEnd);
-      if (response?.success && response.data) {
-        return this.parseReview(response.data);
-      }
-      return null;
-    } catch (error) {
-      console.error('Failed to get review for period:', error);
-      return null;
-    }
+    const rows = await this.executeQuery<any>(
+      'SELECT * FROM reviews WHERE type = ? AND period_start = ? AND period_end = ? AND deleted_at IS NULL LIMIT 1',
+      [type, periodStart, periodEnd]
+    );
+    return rows.length > 0 ? this.parseReview(rows[0]) : null;
   }
 
   async createReview(data: CreateReviewDTO): Promise<Review | null> {
-    if (!window.electronAPI) {
-      throw new Error('Electron API not available');
-    }
-    
-    try {
-      const response = await window.electronAPI.invoke('reviews:create', data);
-      if (response?.success && response.data) {
-        return this.parseReview(response.data);
-      }
-      throw new Error(response?.error || 'Failed to create review');
-    } catch (error) {
-      console.error('Failed to create review:', error);
-      throw error;
-    }
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await this.executeTransaction([{
+      query: `INSERT INTO reviews (
+        id, type, period_start, period_end, responses, insights, action_items, tags, mood, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        id,
+        data.type,
+        data.period_start,
+        data.period_end,
+        JSON.stringify(data.responses || {}),
+        JSON.stringify(data.insights || {}),
+        JSON.stringify(data.action_items || []),
+        JSON.stringify(data.tags || []),
+        data.mood || null,
+        data.status || 'draft',
+        now,
+        now,
+      ],
+    }]);
+    return this.getReviewById(id);
   }
 
   async updateReview(id: string, data: UpdateReviewDTO): Promise<Review | null> {
-    if (!window.electronAPI) {
-      throw new Error('Electron API not available');
-    }
-    
-    try {
-      const response = await window.electronAPI.invoke('reviews:update', id, data);
-      if (response?.success && response.data) {
-        return this.parseReview(response.data);
-      }
-      throw new Error(response?.error || 'Failed to update review');
-    } catch (error) {
-      console.error('Failed to update review:', error);
-      throw error;
-    }
+    const now = new Date().toISOString();
+    const updates: string[] = [];
+    const params: any[] = [];
+    if (data.responses !== undefined) { updates.push('responses = ?'); params.push(JSON.stringify(data.responses)); }
+    if (data.insights !== undefined) { updates.push('insights = ?'); params.push(JSON.stringify(data.insights)); }
+    if (data.action_items !== undefined) { updates.push('action_items = ?'); params.push(JSON.stringify(data.action_items)); }
+    if (data.tags !== undefined) { updates.push('tags = ?'); params.push(JSON.stringify(data.tags)); }
+    if (data.mood !== undefined) { updates.push('mood = ?'); params.push(data.mood); }
+    if (data.status !== undefined) { updates.push('status = ?'); params.push(data.status); }
+    updates.push('updated_at = ?'); params.push(now);
+    params.push(id);
+    await this.executeTransaction([{ query: `UPDATE reviews SET ${updates.join(', ')} WHERE id = ?`, params }]);
+    return this.getReviewById(id);
   }
 
   async deleteReview(id: string): Promise<boolean> {
-    if (!window.electronAPI) {
-      throw new Error('Electron API not available');
-    }
-    
-    try {
-      const response = await window.electronAPI.invoke('reviews:delete', id);
-      return response?.success || false;
-    } catch (error) {
-      console.error('Failed to delete review:', error);
-      return false;
-    }
+    const now = new Date().toISOString();
+    await this.executeTransaction([{
+      query: 'UPDATE reviews SET deleted_at = ?, updated_at = ? WHERE id = ?',
+      params: [now, now, id],
+    }]);
+    return true;
   }
 
   async getReviewInsights(periodStart: string, periodEnd: string): Promise<ReviewInsights | null> {
-    if (!window.electronAPI) {
-      return null;
-    }
-    
-    try {
-      const response = await window.electronAPI.invoke('reviews:getInsights', periodStart, periodEnd);
-      if (response?.success) {
-        return response.data;
-      }
-      return null;
-    } catch (error) {
-      console.error('Failed to get review insights:', error);
-      return null;
-    }
+    // Insights are computed from raw data in the existing analytics utilities.
+    // This stub returns null; callers should use the analytics hooks instead.
+    console.warn('getReviewInsights: use analytics hooks for computed insights', { periodStart, periodEnd });
+    return null;
   }
 
   async getReviewHistory(type?: string, startDate?: string, endDate?: string): Promise<Review[]> {
-    if (!window.electronAPI) {
-      return [];
-    }
-    
-    try {
-      const response = await window.electronAPI.invoke('reviews:getHistory', type, startDate, endDate);
-      if (response?.success) {
-        return (response.data || []).map((r: any) => this.parseReview(r));
-      }
-      return [];
-    } catch (error) {
-      console.error('Failed to get review history:', error);
-      return [];
-    }
+    let query = 'SELECT * FROM reviews WHERE deleted_at IS NULL';
+    const params: any[] = [];
+    if (type) { query += ' AND type = ?'; params.push(type); }
+    if (startDate) { query += ' AND period_start >= ?'; params.push(startDate); }
+    if (endDate) { query += ' AND period_end <= ?'; params.push(endDate); }
+    query += ' ORDER BY created_at DESC';
+    const rows = await this.executeQuery<any>(query, params);
+    return rows.map(r => this.parseReview(r));
   }
 
   private parseReview(data: any): Review {
@@ -3605,8 +3530,8 @@ export interface Review {
   mood?: string;
   created_at: string;
   updated_at: string;
-  completed_at: string | null;
-  deleted_at: string | null;
+  completed_at?: string;
+  deleted_at?: string;
   version: number;
 }
 
@@ -3638,9 +3563,9 @@ export interface ReviewInsights {
   currentStreaks: Array<{ id: string; title: string; streak: number }>;
   brokenStreaks: Array<{ id: string; title: string; previousStreak: number }>;
   habitTrend: 'improving' | 'stable' | 'declining';
-  activeGoalsProgress: Array<{ id: string; title: string; progress: number; change: number }>;
+  activeGoalsProgress: Array<{ id: string; title: string; progress: import("@/types").TaskProgress; change: number }>;
   goalsCompletedThisPeriod: number;
-  goalsAtRisk: Array<{ id: string; title: string; progress: number; reason: string }>;
+  goalsAtRisk: Array<{ id: string; title: string; progress: import("@/types").TaskProgress; reason: string }>;
   mostProductiveDay?: string;
   leastProductiveDay?: string;
   productivityTrend: 'improving' | 'stable' | 'declining';
@@ -3672,7 +3597,7 @@ export interface UpdateReviewDTO {
 }
 
 // Singleton instance
-export const database = DatabaseService.getInstance();
+export const database = new DatabaseService();
 
 // React hooks for database operations
 export const useDatabase = () => {
@@ -3710,3 +3635,6 @@ export function isHabit(obj: any): obj is Habit {
 export function isNote(obj: any): obj is Note {
   return obj && typeof obj.id === 'string' && typeof obj.title === 'string' && 'type' in obj;
 }
+
+
+

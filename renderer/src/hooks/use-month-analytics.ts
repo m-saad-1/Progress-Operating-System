@@ -8,7 +8,7 @@
 import { useState, useMemo, useCallback } from 'react'
 import { addMonths, subMonths, startOfMonth, endOfMonth } from 'date-fns'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useElectron } from './use-electron'
+import { useTauri } from './use-tauri'
 import { database } from '@/lib/database'
 import { toLocalDateString, getMonthBoundaries } from '@/lib/analytics-utils'
 
@@ -20,7 +20,7 @@ export interface MonthNavigationState {
 }
 
 export const useMonthAnalytics = () => {
-  const electron = useElectron()
+  const tauri = useTauri()
   const queryClient = useQueryClient()
   const [monthDate, setMonthDate] = useState(() => startOfMonth(new Date()))
 
@@ -39,7 +39,7 @@ export const useMonthAnalytics = () => {
   const { data: monthAnalytics, isLoading, error } = useQuery({
     queryKey: ['task-range-analytics', monthBoundaries.startKey, monthBoundaries.endKey],
     queryFn: async () => {
-      if (!electron.isReady) return null
+      if (!tauri.isReady) return null
       try {
         const snapshot = await database.getTaskRangeAnalyticsSnapshot(
           monthBoundaries.startKey,
@@ -51,7 +51,7 @@ export const useMonthAnalytics = () => {
         throw err
       }
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     staleTime: 30000, // 30 seconds
     refetchOnWindowFocus: true,
   })
@@ -94,7 +94,7 @@ export const useMonthAnalytics = () => {
  * Hook for Habit Analytics with month navigation
  */
 export const useMonthHabitAnalytics = () => {
-  const electron = useElectron()
+  const tauri = useTauri()
   const queryClient = useQueryClient()
   const [monthDate, setMonthDate] = useState(() => startOfMonth(new Date()))
 
@@ -112,7 +112,7 @@ export const useMonthHabitAnalytics = () => {
   const { data: monthAnalytics, isLoading, error } = useQuery({
     queryKey: ['habit-range-analytics', monthBoundaries.startKey, monthBoundaries.endKey],
     queryFn: async () => {
-      if (!electron.isReady) return null
+      if (!tauri.isReady) return null
       try {
         // Fetch habit completions for the month
         const completions = await database.getHabitCompletions(
@@ -125,7 +125,7 @@ export const useMonthHabitAnalytics = () => {
         throw err
       }
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     staleTime: 30000,
     refetchOnWindowFocus: true,
   })

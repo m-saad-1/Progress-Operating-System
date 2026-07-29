@@ -4,9 +4,20 @@ A sophisticated desktop productivity platform built to unify planning, execution
 
 This public repository is intentionally curated to showcase product architecture and engineering capability without exposing sensitive commercial implementation details.
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational)
+
+## v2.0.0 Migration (Electron → Tauri)
+
+Personal OS has been completely rebuilt on Tauri 2.0, migrating away from Electron. This architectural shift brings massive improvements across the board:
+
+- **Desktop Framework**: Transitioned from Node.js/Chromium (Electron) to a lightweight Rust-based core (Tauri 2.0).
+- **Memory Usage**: Drastic reduction in baseline RAM footprint by utilizing the native OS webview instead of shipping a bundled Chromium instance.
+- **Bundle Size**: Application installer size has been dramatically reduced, making downloads and updates much faster.
+- **Performance**: Near-instant startup times and significantly faster, more efficient IPC communication between the UI and backend.
+- **Security Model**: Enhanced security utilizing Tauri's strict IPC access controls, isolated contexts, and capability-based security model. 
+- **Native Integration**: Deeper, more reliable OS integrations using native Tauri plugins (e.g., `@tauri-apps/plugin-sql` for SQLite, `@tauri-apps/plugin-notification`, `@tauri-apps/plugin-dialog`).
 
 ## Features
 
@@ -62,21 +73,20 @@ This public repository is intentionally curated to showcase product architecture
 
 **Desktop Runtime**
 
-- Electron
-- Electron Forge
-- Webpack
+- Tauri 2.0
+- Rust
 
 **Backend And IPC**
 
-- Node.js in the Electron main process
-- IPC-based secure communication boundaries
-- SQLite for local persistence
+- Rust in the Tauri core process
+- Type-safe IPC-based secure communication boundaries
+- SQLite (`@tauri-apps/plugin-sql`) for local persistence
 
 ## Project Structure
 
 ```text
 PersonalOS/
-main/       Electron main process, IPC, storage, backup, updater, privileged runtime logic
+src-tauri/  Tauri 2.0 Rust backend, capabilities, migrations, and core runtime logic
 renderer/   React renderer application, pages, components, hooks, analytics, and UI state
 shared/     Shared constants and types
 sync/       Sync-related utilities and abstractions
@@ -88,7 +98,7 @@ scripts/    Internal development and validation scripts
 ## Engineering Highlights
 
 - Offline-first architecture with local persistence as the primary source of truth.
-- Secure Electron boundary design via preload bridges and explicit IPC access patterns.
+- Secure boundary design via Tauri capabilities and explicit IPC access patterns.
 - Historical data modeling for tasks, habits, reviews, and progress snapshots.
 - Type-safe domain structures shared across renderer and runtime layers.
 - Backup, archive, and retry-oriented reliability patterns for long-term product use.
@@ -102,8 +112,8 @@ scripts/    Internal development and validation scripts
 ## Security Posture
 
 - Context isolation enabled between renderer and main process.
-- Sensitive operations handled in the Electron main process.
-- Renderer access limited through explicit bridge APIs.
+- Sensitive operations handled in the Rust backend.
+- Renderer access limited through explicit Tauri capability APIs.
 - Public repository sanitized to avoid exposing credentials, generated artifacts, and internal-only notes.
 
 ## Public Repository Policy

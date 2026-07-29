@@ -18,17 +18,6 @@ const setAutoSyncTimer = () => {
   }, state.syncInterval * 60 * 1000)
 }
 
-const applySyncConfig = async () => {
-  const state = useStore.getState()
-  if (!window.electronAPI?.invoke) return
-
-  await window.electronAPI.invoke('sync:setConfig', {
-    enabled: state.syncEnabled,
-    provider: state.syncProvider,
-    syncInterval: state.syncInterval,
-  })
-}
-
 const runSyncCycle = async () => {
   const state = useStore.getState()
   if (!state.syncEnabled) return
@@ -67,14 +56,6 @@ const runSyncCycle = async () => {
       })
     )
 
-    if (window.electronAPI && state.syncProvider !== 'local') {
-      await applySyncConfig()
-      const syncResult: any = await window.electronAPI.syncStart()
-      if (syncResult && typeof syncResult === 'object' && 'success' in syncResult && !syncResult.success) {
-        throw new Error(syncResult.error || 'Sync cycle failed')
-      }
-    }
-
     state.updateLastSync()
     state.updateSyncStatus('idle')
   } catch (error) {
@@ -87,28 +68,6 @@ export const setupSyncManager = () => {
   if (initialized) return
   initialized = true
 
-  const store = useStore.getState()
-
-  const handleSyncUpdate = (_event: any, status: any) => {
-    const latestStore = useStore.getState()
-    if (status?.status === 'syncing') {
-      latestStore.updateSyncStatus('syncing')
-      return
-    }
-
-    if (status?.status === 'error') {
-      latestStore.updateSyncStatus('error')
-      return
-    }
-
-    latestStore.updateLastSync()
-    latestStore.updateSyncStatus('idle')
-  }
-
-  if (window.electronAPI?.onSyncUpdate) {
-    window.electronAPI.onSyncUpdate(handleSyncUpdate)
-  }
-
   useStore.subscribe((state, prev) => {
     const syncSettingsChanged =
       state.syncEnabled !== prev.syncEnabled ||
@@ -117,17 +76,13 @@ export const setupSyncManager = () => {
       state.autoSync !== prev.autoSync
 
     if (syncSettingsChanged) {
-      void applySyncConfig()
       setAutoSyncTimer()
-
-      if (!state.syncEnabled && window.electronAPI?.syncStop) {
-        void window.electronAPI.syncStop()
-      }
     }
   })
 
   setAutoSyncTimer()
 
+  const store = useStore.getState()
   if (store.syncEnabled) {
     void runSyncCycle()
   }

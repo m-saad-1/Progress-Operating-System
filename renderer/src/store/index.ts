@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { Task, Habit, Goal } from '@/types'
@@ -524,7 +525,7 @@ const getMainProcessSettingsApi = (): SettingsSnapshotApi | null => {
     return null
   }
 
-  const api = window.electronAPI as Partial<SettingsSnapshotApi> | undefined
+  const api = { invoke } as any;
   if (
     typeof api?.getSettingsSnapshot === 'function' &&
     typeof api?.saveSettingsSnapshot === 'function'

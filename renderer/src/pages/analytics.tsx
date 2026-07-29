@@ -1,3 +1,4 @@
+import { database } from '@/lib/database';
 import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -24,9 +25,9 @@ import {
 } from 'lucide-react'
 import { format, parseISO, startOfMonth, endOfMonth, addMonths, addDays, startOfYear, endOfYear } from 'date-fns'
 import { useStore } from '@/store'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { useSharedTimer } from '@/hooks/use-shared-timer'
-import { database } from '@/lib/database'
+
 import { ContextTipsDialog } from '@/components/context-tips-dialog'
 import { 
   AreaChart,
@@ -124,7 +125,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
 export default function Analytics() {
   const { tasks, habits, goals } = useStore()
   const { timerMode, timerRunning, elapsedMs } = useSharedTimer()
-  const electron = useElectron()
+  const tauri = useTauri()
   const [timeRange, setTimeRange] = useState<TimeRange>('month')
   const isProductiveTimerMode = timerMode === 'pomodoro' || timerMode === 'custom'
   
@@ -149,7 +150,7 @@ export default function Analytics() {
   const { data: allHabitCompletions = [] } = useQuery<HabitCompletion[]>({
     queryKey: ['habit-completions-all'],
     queryFn: async () => {
-      if (!electron.isReady) return []
+      if (!tauri.isReady) return []
       const earliestHabitDate = habits.length > 0
         ? habits
             .map((habit) => format(parseISO(habit.created_at), 'yyyy-MM-dd'))
@@ -158,7 +159,7 @@ export default function Analytics() {
       const today = format(new Date(), 'yyyy-MM-dd')
       return await database.getHabitCompletions(earliestHabitDate, today)
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     refetchOnWindowFocus: true,
     staleTime: 0,
     refetchInterval: 30000,
@@ -182,7 +183,7 @@ export default function Analytics() {
       format(taskDateRange.start, 'yyyy-MM-dd'),
       format(taskDateRange.end, 'yyyy-MM-dd')
     ),
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     refetchOnWindowFocus: true,
     staleTime: 0,
     refetchInterval: 30000,
@@ -277,12 +278,12 @@ export default function Analytics() {
   const { data: timeBlocksAnalytics } = useQuery({
     queryKey: ['time-analytics', timeRange, dateRange.start.toISOString(), dateRange.end.toISOString()],
     queryFn: async () => {
-      if (!electron.isReady) return null
+      if (!tauri.isReady) return null
       const startStr = dateRange.start.toISOString()
       const endStr = dateRange.end.toISOString()
 
       const [totals, dailyBreakdown] = await Promise.all([
-        electron.executeQuery(`
+        database.executeQuery(`
           SELECT 
             COALESCE(SUM(duration), 0) as total_time,
             COUNT(*) as total_sessions,
@@ -294,7 +295,7 @@ export default function Analytics() {
           ${PRODUCTIVE_TIME_FILTER_SQL}
         `, [startStr, endStr]),
 
-        electron.executeQuery(`
+        database.executeQuery(`
           SELECT 
             DATE(start_time, 'localtime') as date,
             COALESCE(SUM(duration), 0) as daily_total
@@ -335,7 +336,7 @@ export default function Analytics() {
         dailyBreakdown: days,
       }
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
   })
 
   const liveElapsedSeconds = useMemo(() => {

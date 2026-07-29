@@ -1,7 +1,7 @@
 import { Checkbox } from '@/components/ui/checkbox'
 import { Star, Flame, CheckCircle2 } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { database, getLocalDateString } from '@/lib/database'
 import { useStore } from '@/store'
 import { cn } from '@/lib/utils'
@@ -17,7 +17,7 @@ interface HabitTrackerProps {
 }
 
 export function HabitTracker({ habits, habitCompletions = [], compact = false }: HabitTrackerProps) {
-  const electron = useElectron()
+  const tauri = useTauri()
   const queryClient = useQueryClient()
   const { updateHabit } = useStore()
   
@@ -164,7 +164,7 @@ export function HabitTracker({ habits, habitCompletions = [], compact = false }:
                     completed: checked === true
                   })
                 }}
-                disabled={updateMutation.isPending || !electron.isReady}
+                disabled={updateMutation.isPending || !tauri.isReady}
                 className="border-slate-400 dark:border-slate-500"
               />
               <div className="flex-1">

@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
 import { HashRouter as Router, Routes, Route } from 'react-router-dom';
 import { Toaster } from '@/components/ui/toaster'
@@ -15,19 +16,20 @@ import { useStore } from '@/store';
 // Layout
 import { MainLayout } from '@/components/layouts/main-layout';
 
-// Eager route imports to avoid runtime chunk fetch failures in packaged builds.
-import Dashboard from '@/pages/dashboard';
-import Goals from '@/pages/goals';
-import Tasks from '@/pages/tasks';
-import Habits from '@/pages/habits';
-import Notes from '@/pages/notes';
-import Analytics from '@/pages/analytics';
-import Settings from '@/pages/settings';
-import Backup from '@/pages/backup';
-import HelpSupport from './pages/help-support';
-import Time from '@/pages/time';
-import Archive from '@/pages/archive';
-import Reviews from '@/pages/reviews';
+// Lazy loaded routes for faster initial load and code splitting
+import React from 'react';
+const Dashboard = React.lazy(() => import('@/pages/dashboard'));
+const Goals = React.lazy(() => import('@/pages/goals'));
+const Tasks = React.lazy(() => import('@/pages/tasks'));
+const Habits = React.lazy(() => import('@/pages/habits'));
+const Notes = React.lazy(() => import('@/pages/notes'));
+const Analytics = React.lazy(() => import('@/pages/analytics'));
+const Settings = React.lazy(() => import('@/pages/settings'));
+const Backup = React.lazy(() => import('@/pages/backup'));
+const HelpSupport = React.lazy(() => import('./pages/help-support'));
+const Time = React.lazy(() => import('@/pages/time'));
+const Archive = React.lazy(() => import('@/pages/archive'));
+const Reviews = React.lazy(() => import('@/pages/reviews'));
 
 // Configure QueryClient with offline-first resilience
 const queryClient = new QueryClient({
@@ -75,11 +77,10 @@ function AppContent() {
     const initializeApp = async () => {
       try {
         console.log('[APP] Initializing app content');
-        const runtimeApi = (window as any).desktopAPI || (window as any).electronAPI;
+        const runtimeApi = (window as any).__TAURI_INTERNALS__;
         
-        // Wait for Electron API to be available
-        if (!runtimeApi) {
-          throw new Error('Desktop API not available');
+                if (!runtimeApi) {
+          console.warn('Tauri API not available. Application running in mock data mode.');
         }
 
         const [tasks, habits, goals] = await Promise.all([
@@ -119,7 +120,7 @@ function AppContent() {
       <TooltipProvider>
         <Router>
           <div className="min-h-screen w-full bg-background text-foreground antialiased">
-            <Routes>
+            <React.Suspense fallback={<LoadingScreen />}><Routes>
               <Route element={<MainLayout />}>
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/goals" element={<Goals />} />
@@ -134,7 +135,7 @@ function AppContent() {
                 <Route path="/time" element={<Time />} />
                 <Route path="/archive" element={<Archive />} />
               </Route>
-            </Routes>
+            </Routes></React.Suspense>
             <Toaster />
           </div>
         </Router>
@@ -157,7 +158,7 @@ function AppInitializer() {
     const checkApi = setInterval(() => {
       const elapsed = Date.now() - startTime;
       
-      const runtimeApi = (window as any).desktopAPI || (window as any).electronAPI;
+      const runtimeApi = (window as any).__TAURI_INTERNALS__;
       if (runtimeApi) {
         console.log('[APP] Initializer: Desktop API available, ready to render');
         clearInterval(checkApi);
@@ -190,3 +191,4 @@ function App() {
 }
 
 export default App;
+

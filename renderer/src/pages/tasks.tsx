@@ -1817,7 +1817,7 @@ export default function Tasks() {
       if (isPaused) {
         updates.paused_at = new Date().toISOString()
       } else {
-        updates.paused_at = null
+        updates.paused_at = undefined
       }
       await database.updateTask(id, updates)
       const updatedTask = await database.getTaskById(id)
@@ -2537,7 +2537,6 @@ export default function Tasks() {
                       onDelete={() => setTaskToArchive(task)}
                       onOpenDetails={() => setTaskDetailModal(task)}
                       onPauseToggle={(isPaused) => pauseToggleMutation.mutate({ id: task.id, isPaused })}
-                      readonly={false}
                       hideActions={isYesterdaySection}
                       allowProgressEditWhenPaused={false}
                     />

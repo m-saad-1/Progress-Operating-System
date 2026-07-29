@@ -1,3 +1,5 @@
+import { database } from '@/lib/database';
+
 import { useState, useMemo, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -19,7 +21,7 @@ import {
 } from 'lucide-react'
 import { format, startOfDay, startOfWeek, endOfWeek, addWeeks, isSameWeek } from 'date-fns'
 import { useQuery } from '@tanstack/react-query'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { PomodoroTimer } from '@/components/pomodoro-timer'
 import { useSharedTimer, formatTimeFromMs } from '@/hooks/use-shared-timer'
 import { DEFAULT_CUSTOM_DURATION_MS, DEFAULT_SHORT_BREAK_DURATION_MS } from '@/store'
@@ -84,7 +86,7 @@ function formatSecondsShort(totalSeconds: number): string {
 }
 
 export default function Time() {
-  const electron = useElectron()
+  const tauri = useTauri()
   const {
     timerMode,
     timerRunning,
@@ -125,7 +127,7 @@ export default function Time() {
 
       const [todayStats, yesterdayStats, weeklyTotal] = await Promise.all([
         // Today's time tracking
-        electron.executeQuery(`
+        database.executeQuery(`
           SELECT 
             COALESCE(SUM(duration), 0) as total_time,
             COUNT(*) as total_sessions,
@@ -139,7 +141,7 @@ export default function Time() {
         ]),
 
         // Yesterday's time tracking
-        electron.executeQuery(`
+        database.executeQuery(`
           SELECT 
             COALESCE(SUM(duration), 0) as total_time,
             COUNT(*) as total_sessions,
@@ -153,7 +155,7 @@ export default function Time() {
         ]),
 
         // Weekly total
-        electron.executeQuery(`
+        database.executeQuery(`
           SELECT 
             COALESCE(SUM(duration), 0) as total_time,
             COUNT(*) as total_sessions,
@@ -174,7 +176,7 @@ export default function Time() {
         weekly: Array.isArray(weeklyTotal) ? weeklyTotal[0] : { total_time: 0, total_sessions: 0, completed_sessions: 0 },
       }
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
     refetchInterval: 30000, // Refresh every 30s for near-real-time display
   })
 
@@ -182,7 +184,7 @@ export default function Time() {
   const { data: weeklyDistribution } = useQuery({
     queryKey: ['time-weekly-distribution', weekOffset],
     queryFn: async () => {
-      const result = await electron.executeQuery(`
+      const result = await database.executeQuery(`
         SELECT 
           DATE(start_time, 'localtime') as date,
           COALESCE(SUM(duration), 0) as daily_total,
@@ -199,7 +201,7 @@ export default function Time() {
       ])
       return Array.isArray(result) ? result : []
     },
-    enabled: electron.isReady,
+    enabled: tauri.isReady,
   })
 
   // Build full 7-day array for selected week

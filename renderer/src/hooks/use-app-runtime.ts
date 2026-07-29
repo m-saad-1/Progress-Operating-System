@@ -1,8 +1,10 @@
+import { invoke } from '@tauri-apps/api/core';
+import { sendNotification } from '@tauri-apps/plugin-notification';
 import { useEffect, useMemo, useRef } from 'react'
 import { endOfMonth, endOfWeek, format, startOfMonth, startOfWeek } from 'date-fns'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useStore } from '@/store'
-import { useElectron } from '@/hooks/use-electron'
+import { useTauri } from '@/hooks/use-tauri'
 import { useTheme } from '@/components/theme-provider'
 import { useToaster } from '@/hooks/use-toaster'
 import { database } from '@/lib/database'
@@ -211,7 +213,7 @@ export function useAppRuntime() {
   const navigate = useNavigate()
   const location = useLocation()
   const store = useStore()
-  const electron = useElectron()
+  const tauri = useTauri()
   const { theme, setTheme } = useTheme()
   const { info, warning, error } = useToaster()
 
@@ -235,9 +237,7 @@ export function useAppRuntime() {
       try {
         // Try to get the icon path for web notification
         let iconPath: string | undefined
-        if (window.electronAPI?.getIconPath) {
-          iconPath = await window.electronAPI.getIconPath()
-        }
+        try { iconPath = await invoke("get_icon_path") as string; } catch (e) {}
 
         const notificationOptions: NotificationOptions = {
           body: message,
@@ -282,20 +282,11 @@ export function useAppRuntime() {
       store.notificationSettings.desktop
     ) {
       // Use native Electron notification for better icon support across platforms
-      if (window.electronAPI?.showNotification) {
-        window.electronAPI.showNotification({ title, body: message })
-          .then((result: { success: boolean; error?: string } | undefined) => {
-            if (!result?.success) {
-              console.warn('Native notification failed:', result?.error || 'Unknown IPC error')
-              tryWebNotification(title, message)
-            }
-          })
-          .catch((error: unknown) => {
-            console.warn('Failed to show native notification:', error)
-            // Fallback to web notification
-            tryWebNotification(title, message)
-          })
+      
+      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+        sendNotification({ title, body: message });
       } else {
+
         // Fallback to web notification if Electron API is not available
         tryWebNotification(title, message)
       }
@@ -356,16 +347,16 @@ export function useAppRuntime() {
         })
       )
 
-      if (electron.isReady && store.syncProvider !== 'local') {
-        if (window.electronAPI?.invoke) {
-          await window.electronAPI.invoke('sync:setConfig', {
+      if (tauri.isReady && store.syncProvider !== 'local') {
+        if (true) {
+          await invoke('sync:setConfig', {
             enabled: true,
             provider: store.syncProvider,
             syncInterval: store.syncInterval,
           })
         }
 
-        const syncResult: any = await electron.syncStart()
+        const syncResult: any = await tauri.syncStart()
         if (syncResult && typeof syncResult === 'object' && 'success' in syncResult && !syncResult.success) {
           throw new Error(syncResult.error || 'Sync failed')
         }
@@ -697,8 +688,8 @@ export function useAppRuntime() {
         syncTimerRef.current = null
       }
 
-      if (electron.isReady) {
-        electron.syncStop().catch(() => {
+      if (tauri.isReady) {
+        tauri.syncStop().catch(() => {
           // ignore stop errors
         })
       }
@@ -721,13 +712,13 @@ export function useAppRuntime() {
         syncTimerRef.current = null
       }
     }
-  }, [store.syncEnabled, store.autoSync, store.syncInterval, store.syncProvider, electron.isReady])
+  }, [store.syncEnabled, store.autoSync, store.syncInterval, store.syncProvider, tauri.isReady])
 
   useEffect(() => {
-    if (!electron.isReady) return
+    if (!tauri.isReady) return
 
-    if (window.electronAPI?.invoke) {
-      window.electronAPI.invoke('sync:setConfig', {
+    if (true) {
+      invoke('sync:setConfig', {
         enabled: store.syncEnabled,
         provider: store.syncProvider,
         syncInterval: store.syncInterval,
@@ -736,7 +727,7 @@ export function useAppRuntime() {
       })
     }
 
-    const cleanup = electron.onSyncUpdate((status: any) => {
+    const cleanup = tauri.onSyncUpdate((status: any) => {
       if (status?.status === 'syncing') {
         store.updateSyncStatus('syncing')
         return
@@ -755,7 +746,7 @@ export function useAppRuntime() {
     })
 
     return cleanup
-  }, [electron, store.syncEnabled, store.syncProvider, store.syncInterval])
+  }, [tauri.isReady, store.syncEnabled, store.syncProvider, store.syncInterval])
 
   useEffect(() => {
     const handleSidebarToggle = () => {
@@ -792,12 +783,12 @@ export function useAppRuntime() {
         info('Changes saved')
       },
       'action-undo': async () => {
-        if (!electron.isReady) return
-        await electron.undo()
+        if (!tauri.isReady) return
+        await tauri.undo()
       },
       'action-redo': async () => {
-        if (!electron.isReady) return
-        await electron.redo()
+        if (!tauri.isReady) return
+        await tauri.redo()
       },
       'action-search': () => {
         const input = document.querySelector(
@@ -813,8 +804,8 @@ export function useAppRuntime() {
       'sys-theme': () => setTheme(theme === 'dark' ? 'light' : 'dark'),
       'sys-focus': () => store.toggleFocusMode(),
       'sys-backup': async () => {
-        if (!electron.isReady) return
-        await electron.createBackup()
+        if (!tauri.isReady) return
+        await tauri.createBackup()
         info('Backup created')
       },
       'prod-pomodoro': () => navigate('/time'),
@@ -873,7 +864,7 @@ export function useAppRuntime() {
     store.toggleFocusMode,
     location.pathname,
     navigate,
-    electron,
+    tauri.isReady,
     info,
     theme,
     setTheme,
