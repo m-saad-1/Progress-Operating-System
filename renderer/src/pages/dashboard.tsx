@@ -2,6 +2,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { shallow } from 'zustand/shallow'
 import { 
   Card, 
   CardContent, 
@@ -11,7 +12,6 @@ import {
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -41,22 +41,18 @@ import {
 } from '@/components/ui/select'
 import { 
   CheckCircle, 
-  TrendingUp, 
   Target, 
   AlertCircle,
   CalendarDays,
   ArrowUpRight,
   Flame,
   Award,
-  Lightbulb,
   AlertTriangle,
   Calendar,
   BarChart3,
-  ListTodo,
   Plus,
   BookOpen,
   X,
-  CheckSquare,
 } from 'lucide-react'
 import { format, startOfDay, endOfDay, subDays, startOfWeek, endOfWeek, startOfMonth, endOfMonth, parseISO } from 'date-fns'
 import { useTauri } from '@/hooks/use-tauri'
@@ -65,16 +61,15 @@ import { useStore } from '@/store'
 import { HabitTracker } from '@/components/habit-tracker'
 import { TaskList } from '@/components/task-list'
 import { QuickActions } from '@/components/quick-actions'
-import { ReviewBanner, ReviewReminder } from '@/components/review-reminder'
+import { ReviewBanner } from '@/components/review-reminder'
 import { cn } from '@/lib/utils'
 import { Task, Goal, Habit, HabitCompletion, TaskDurationType, Priority } from '@/types'
-import { database, CreateTaskDTO, getLocalDateString, TaskTabStatsSnapshot, TaskRangeAnalyticsSnapshot } from '@/lib/database'
+import { database, CreateTaskDTO, getLocalDateString, TaskTabStatsSnapshot } from '@/lib/database'
 import { buildTaskProgressUpdatePayload, invalidateTaskRelatedQueries } from '@/lib/task-sync'
 import {
   calculateHabitAnalytics,
   calculateHabitDueMetricsForDay,
   calculateHabitDueSeries,
-  calculateProductivityScore,
   calculateTrendData,
   calculateGoalProgress,
   getDateRange
@@ -84,20 +79,6 @@ import {
   isWeeklyHabitCompletedThisWeekPersistent,
   isMonthlyHabitCompletedThisMonthPersistent
 } from '@/lib/habit-logic'
-import {
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from 'recharts'
-
 // Types
 interface Achievement {
   type: 'goal_completed' | 'streak_achieved';
@@ -116,30 +97,6 @@ interface DashboardData {
   habits: HabitWithCompletion[];
   achievements: Achievement[];
   habitCompletions: HabitCompletion[];
-}
-
-// Custom Tooltip for Charts
-const CustomTooltip = ({ active, payload, label }: any) => {
-  if (active && payload && payload.length) {
-    return (
-      <div className="rounded-lg border bg-popover p-3 shadow-lg">
-        <p className="font-semibold text-sm mb-2">{label}</p>
-        {payload.map((entry: any, index: number) => (
-          <div key={index} className="flex items-center justify-between space-x-4 text-sm">
-            <div className="flex items-center">
-              <div 
-                className="mr-2 h-2 w-2 rounded-full" 
-                style={{ backgroundColor: entry.color }}
-              />
-              <span className="text-muted-foreground">{entry.name}:</span>
-            </div>
-            <span className="font-medium">{entry.value}</span>
-          </div>
-        ))}
-      </div>
-    )
-  }
-  return null
 }
 
 // Task form data interface
@@ -208,32 +165,24 @@ const isTaskSkippedOrOverdueForDay = (task: Task, dayKey: string, todayKey: stri
   return isSkippedOrEmptyEntry({ status, progress })
 }
 
-const calculateHabitRangeMetrics = (
-  habits: Habit[],
-  completions: HabitCompletion[],
-  range: { start: Date; end: Date }
-) => {
-  const analytics = calculateHabitAnalytics(habits, range, completions)
-
-  return {
-    activeHabits: analytics.total,
-    expectedPeriods: analytics.expectedPeriods,
-    completedPeriods: analytics.completedPeriods,
-    consistency: analytics.avgConsistency,
-    completedHabitsCount: analytics.completedHabitsCount,
-  }
-}
-
 export default function Dashboard() {
   const navigate = useNavigate()
   const tauri = useTauri()
   const queryClient = useQueryClient()
   const { error: toastError, success: toastSuccess } = useToaster()
-  const { tasks, habits, goals, updateTask, addTask, archiveTask, deleteTask } = useStore()
+  const { tasks, habits, goals, updateTask, addTask, archiveTask, deleteTask } = useStore(
+    (state) => ({
+      tasks: state.tasks,
+      habits: state.habits,
+      goals: state.goals,
+      updateTask: state.updateTask,
+      addTask: state.addTask,
+      archiveTask: state.archiveTask,
+      deleteTask: state.deleteTask,
+    }),
+    shallow
+  )
   const today = new Date()
-  
-  const [chartTab, setChartTab] = useState<'tasks' | 'habits' | 'productivity' | 'goals'>('productivity')
-  const [timeOfDay, setTimeOfDay] = useState('')
   const [greeting, setGreeting] = useState('')
   
   // Task creation dialog state
@@ -394,17 +343,6 @@ export default function Dashboard() {
     enabled: tauri.isReady,
   })
 
-  // Fetch weekly task range snapshot to match Analytics tab
-  const weeklyTaskRange = useMemo(() => getDateRange('week'), [])
-  const { data: weeklyTaskSnapshot } = useQuery<TaskRangeAnalyticsSnapshot>({
-    queryKey: ['task-range-snapshot-dashboard', format(weeklyTaskRange.start, 'yyyy-MM-dd'), format(weeklyTaskRange.end, 'yyyy-MM-dd')],
-    queryFn: () => database.getTaskRangeAnalyticsSnapshot(
-      format(weeklyTaskRange.start, 'yyyy-MM-dd'),
-      format(weeklyTaskRange.end, 'yyyy-MM-dd')
-    ),
-    enabled: tauri.isReady,
-    staleTime: 30 * 1000,
-  })
 
   const weeklyReviewPeriod = useMemo(() => {
     const start = startOfWeek(today, { weekStartsOn: 1 })
@@ -475,11 +413,6 @@ export default function Dashboard() {
 
   const habitCompletions = useMemo(
     () => (dashboardData as DashboardData | undefined)?.habitCompletions || [],
-    [dashboardData]
-  )
-
-  const completedGoalsFromDashboard = useMemo(
-    () => (dashboardData as DashboardData | undefined)?.completedGoals || [],
     [dashboardData]
   )
 
@@ -598,54 +531,7 @@ export default function Dashboard() {
     }
   }, [allHabitsForDashboard, habitCompletions, today])
 
-  // OVERALL PROGRESS (Month): Use Task Tab Monthly Progress + month-to-date habit metrics
-  const overallProgressScore = useMemo(() => {
-    if (!statsSnapshot) {
-      return {
-        overall: 0,
-        taskComponent: 0,
-        habitComponent: 0,
-        breakdown: {},
-        completedTasks: 0,
-        completedHabits: 0,
-        totalTasks: 0,
-        totalHabitPeriods: 0,
-        totalPlannedWeight: 0,
-        totalEarnedWeight: 0,
-      }
-    }
-
-    // Pull the exact same monthly task aggregate used by the Task tab Monthly Progress card.
-    const monthTaskStats = statsSnapshot.monthly
-    const monthTaskWeight = monthTaskStats.plannedWeight
-    const monthTaskEarned = monthTaskStats.earnedWeight
-
-    // Use current calendar month (month-to-date), not a rolling 30-day window.
-    const range = {
-      start: startOfMonth(today),
-      end: endOfDay(today),
-    }
-    const habitMetrics = calculateHabitRangeMetrics(allHabitsForDashboard, habitCompletions, range)
-
-    const totalPlannedWeight = monthTaskWeight + habitMetrics.expectedPeriods
-    const totalEarnedWeight = monthTaskEarned + habitMetrics.completedPeriods
-    const overall = totalPlannedWeight > 0
-      ? Math.round((totalEarnedWeight / totalPlannedWeight) * 100)
-      : 0
-
-    return {
-      overall,
-      taskComponent: monthTaskStats.weightedProgress,
-      habitComponent: habitMetrics.consistency,
-      breakdown: {},
-      completedTasks: monthTaskStats.completed,
-      completedHabits: habitMetrics.completedPeriods,
-      totalTasks: monthTaskStats.total,
-      totalHabitPeriods: habitMetrics.expectedPeriods,
-      totalPlannedWeight,
-      totalEarnedWeight,
-    }
-  }, [statsSnapshot, allHabitsForDashboard, habitCompletions, today])
+  // OVERALL PROGRESS (Month): removed from KPI cards
 
   // MONTH HEALTH: Use Task Tab monthly stats + habit consistency
   const monthHealthStats = useMemo(() => {
@@ -676,52 +562,7 @@ export default function Dashboard() {
     }
   }, [statsSnapshot, habitConsistencyStats.monthConsistency, today])
 
-  const goalActivityStats = useMemo(() => {
-    const monthRange = { start: startOfMonth(today), end: endOfDay(today) }
-    const activeGoals = goals.filter((goal) => !goal.deleted_at && goal.status === 'active')
-    const completedGoals = completedGoalsFromDashboard.filter((goal) => !goal.deleted_at && goal.status === 'completed')
-
-    const goalsWithActivity = activeGoals.filter((goal) => {
-      const taskActivity = tasks.some((task) => {
-        if (task.deleted_at || task.goal_id !== goal.id || isTaskPausedOnDate(task, monthRange.end)) return false
-        if (task.completed_at && isDateInRange(safeParseISO(task.completed_at), monthRange.start, monthRange.end)) {
-          return true
-        }
-        if (task.daily_progress) {
-          return Object.keys(task.daily_progress).some((dateKey) => {
-            const day = safeParseISO(dateKey)
-            const state = task.daily_progress?.[dateKey]
-            return !!state && state.progress > 0 && isDateInRange(day, monthRange.start, monthRange.end)
-          })
-        }
-        return false
-      })
-
-      const habitActivity = allHabitsForDashboard
-        .filter((habit) => !habit.deleted_at && habit.goal_id === goal.id)
-        .some((habit) => {
-          const completionsForHabit = habitCompletions.filter((completion) => completion.completed && completion.habit_id === habit.id)
-          return completionsForHabit.some((completion) => isDateInRange(safeParseISO(completion.date), monthRange.start, monthRange.end))
-        })
-
-      return taskActivity || habitActivity
-    }).length
-
-    const completedGoalsThisMonth = completedGoals.filter((goal) => {
-      if (!goal.completed_at) return false
-      const completedDate = safeParseISO(goal.completed_at)
-      if (!completedDate) return false
-      const completedKey = getLocalDateString(completedDate)
-      return completedKey >= getLocalDateString(monthRange.start) && completedKey <= getLocalDateString(monthRange.end)
-    }).length
-
-    return {
-      activeGoals: activeGoals.length,
-      completedGoals: completedGoals.length,
-      completedGoalsThisMonth,
-      goalsWithActivity,
-    }
-  }, [goals, tasks, allHabitsForDashboard, habitCompletions, today, completedGoalsFromDashboard])
+  // GOAL ACTIVITY: removed from KPI cards
 
   const atRiskStats = useMemo(() => {
     const todayStart = startOfDay(today)
@@ -803,75 +644,43 @@ export default function Dashboard() {
       })
   }, [goals, tasks, habits])
 
-  const quickInsightMetrics = useMemo(() => {
-    const yesterdayStart = startOfDay(subDays(today, 1))
-    const todayKey = getLocalDateString(today)
-    const yesterdayKey = getLocalDateString(yesterdayStart)
-    
-    const yesterdayOverdueTasks = tasks.filter((task) => {
-      if (task.deleted_at || isTaskPausedOnDate(task, yesterdayStart) || !task.due_date) return false
-      const dueKey = toDayKey(task.due_date)
-      if (dueKey !== yesterdayKey) return false
-      return isTaskSkippedOrOverdueForDay(task, dueKey, todayKey)
-    }).length
 
-    const metrics = [
-      {
-        key: 'task-progress',
-        title: 'Today Task Progress',
-        value: `${taskProgressStats.weightedProgress}%`,
-        subtitle: `${taskProgressStats.completed}/${taskProgressStats.total} completed`,
-      },
-      {
-        key: 'habit-checkins',
-        title: 'Habits Check-ins',
-        value: `${dailyOverallProgress.habits.completed}/${dailyOverallProgress.habits.total}`,
-        subtitle: `${habitConsistencyStats.todayConsistency}% daily consistency`,
-      },
-      {
-        key: 'daily-indicator',
-        title: 'Daily Indicator',
-        value: `${dailyOverallProgress.progress}%`,
-        subtitle: `${dailyOverallProgress.tasks.completed + dailyOverallProgress.habits.completed} checks completed today`,
-      },
-    ]
-
-    // Only show overdue-tasks if there are actually overdue tasks
-    if (yesterdayOverdueTasks > 0) {
-      metrics.splice(1, 0, {
-        key: 'overdue-tasks',
-        title: 'Yesterday Overdue',
-        value: `${yesterdayOverdueTasks}`,
-        subtitle: 'Tasks missed yesterday',
-      })
-    }
-
-    return metrics
-  }, [
-    taskProgressStats,
-    tasks,
-    today,
-    dailyOverallProgress,
-    habitConsistencyStats.todayConsistency,
-  ])
 
   // Always use current calendar week (Mon-Sun ending today) to match Analytics tab
   const selectedAnalyticsRange = useMemo(() => getDateRange('week'), [])
 
-  // Set greeting based on time of day
+  const estimatedTimeRemaining = useMemo(() => {
+    const uncompletedTasks = allTodaysTasks.filter(t => (t.progress || 0) < 100)
+    const minutes = uncompletedTasks.reduce((sum, t) => sum + (t.estimated_time || 0), 0)
+    if (minutes === 0) return '0h'
+    const hrs = Math.floor(minutes / 60)
+    const mins = minutes % 60
+    return hrs > 0 ? `${hrs}h ${mins > 0 ? `${mins}m` : ''}` : `${mins}m`
+  }, [allTodaysTasks])
+
+  // Set greeting based on time of day and workload
   useEffect(() => {
     const hour = new Date().getHours()
+    let timeGreeting = ''
     if (hour < 12) {
-      setGreeting('Good morning')
-      setTimeOfDay('morning')
+      timeGreeting = 'Good morning'
     } else if (hour < 18) {
-      setGreeting('Good afternoon')
-      setTimeOfDay('afternoon')
+      timeGreeting = 'Good afternoon'
     } else {
-      setGreeting('Good evening')
-      setTimeOfDay('evening')
+      timeGreeting = 'Good evening'
     }
-  }, [])
+
+    const importantTasksLeft = allTodaysTasks.filter(t => (t.progress || 0) < 100 && t.priority === 'high').length
+    const habitsLeft = pendingHabitsForDashboardCard.length
+
+    if (importantTasksLeft > 0) {
+      setGreeting(`${timeGreeting}. You have ${importantTasksLeft} important ${importantTasksLeft === 1 ? 'task' : 'tasks'} today.`)
+    } else if (habitsLeft > 0 && habitsLeft <= 2) {
+      setGreeting(`${timeGreeting}. Only ${habitsLeft} ${habitsLeft === 1 ? 'habit' : 'habits'} left. You're almost done!`)
+    } else {
+      setGreeting(`${timeGreeting}. Welcome to your workspace.`)
+    }
+  }, [allTodaysTasks, pendingHabitsForDashboardCard.length])
 
   // Task progress mutation - updates Dashboard stats, Analytics, and Sidebar
   // CRITICAL: BINARY COMPLETION RULE - Only 100% progress = completed
@@ -881,6 +690,13 @@ export default function Dashboard() {
   }, [queryClient])
 
   const updateTaskProgressMutation = useMutation({
+    onMutate: async ({ taskId, progress }) => {
+      const previousTask = tasks.find((t: any) => t.id === taskId)
+      if (previousTask) {
+        updateTask({ ...previousTask, progress } as any)
+      }
+      return { previousTask }
+    },
     mutationFn: async ({ taskId, progress }: { taskId: string; progress: number }) => {
       const existingTask = await database.getTaskById(taskId)
       if (!existingTask) throw new Error('Task not found')
@@ -905,7 +721,10 @@ export default function Dashboard() {
         toastSuccess('Task completed!')
       }
     },
-    onError: (error) => {
+    onError: (error, _variables, context) => {
+      if (context?.previousTask) {
+        updateTask(context.previousTask as any)
+      }
       if (error instanceof Error && error.message.includes('paused')) {
         toastError('Task is paused. Resume it to continue progress tracking.')
         return
@@ -959,19 +778,30 @@ export default function Dashboard() {
   })
 
   const deleteTaskMutation = useMutation({
+    onMutate: async (id: string) => {
+      const previousTask = tasks.find((t: any) => t.id === id)
+      if (previousTask) {
+        archiveTask(id)
+      }
+      return { previousTask }
+    },
     mutationFn: async (id: string) => {
       await database.archiveTask(id)
       return id
     },
-    onSuccess: (id) => {
-      archiveTask(id)
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['review-insights'] })
       queryClient.invalidateQueries({ queryKey: ['archive'] })
       invalidateTaskDerivedQueries()
       toastSuccess('Task archived')
       setTaskToArchive(null)
     },
-    onError: () => toastError('Failed to archive task'),
+    onError: (_error, _variables, context) => {
+      if (context?.previousTask) {
+        updateTask(context.previousTask as any)
+      }
+      toastError('Failed to archive task')
+    },
   })
 
   // Permanent delete mutation - completely removes task and all its data
@@ -1062,31 +892,8 @@ export default function Dashboard() {
     }))
   }, [tasks, allHabitsForDashboard, dashboardData, selectedAnalyticsRange])
 
-  const habitChartData = useMemo(
-    () => chartData.map((point) => ({
-      date: point.date,
-      fullDate: point.fullDate,
-      habits: point.habits,
-      completedHabits: point.habitsCompleted,
-    })),
-    [chartData]
-  )
 
-  // Calculate productivity score using Analytics tab's Weekly period logic and snapshot data
-  const periodProductivityScore = useMemo(() => {
-    const weekRange = getDateRange('week')
-    
-    // Use snapshot data for tasks (same as Analytics tab)
-    const taskAnalyticsFromSnapshot = {
-      weightedCompletionRate: weeklyTaskSnapshot?.summary.weightedProgress ?? 0,
-      totalWeight: weeklyTaskSnapshot?.summary.plannedWeight ?? 0,
-    }
-    
-    // Calculate habit analytics from live data
-    const hAnalytics = calculateHabitAnalytics(allHabitsForDashboard, weekRange, habitCompletions)
-    
-    return calculateProductivityScore(taskAnalyticsFromSnapshot, hAnalytics)
-  }, [weeklyTaskSnapshot, allHabitsForDashboard, habitCompletions])
+
 
   if (error) {
     return (
@@ -1106,17 +913,39 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6 p-6 relative">
       {/* Header with Greeting */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">{greeting}!</h1>
-          <p className="text-muted-foreground">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 sticky top-0 z-20 bg-background/80 backdrop-blur-md p-4 -mx-6 -mt-6 mb-2 border-b border-border/40 shadow-sm rounded-b-xl transition-all">
+        <div className="pl-2">
+          <h1 className="text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-foreground to-foreground/70">{greeting}</h1>
+          <p className="text-muted-foreground mt-1">
             {format(today, 'EEEE, MMMM d, yyyy')}
           </p>
         </div>
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-2 pr-2">
           <QuickActions />
+        </div>
+      </div>
+
+      {/* Today's Summary */}
+      <div className="bg-card/50 backdrop-blur-sm border border-border/60 rounded-xl p-5 shadow-sm hover:shadow-md transition-all duration-300">
+        <div className="flex flex-wrap gap-x-8 gap-y-4">
+          <div className="flex flex-col">
+            <span className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Tasks Left</span>
+            <span className="text-2xl font-bold text-foreground mt-1">{allTodaysTasks.filter(t => (t.progress || 0) < 100).length}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Habits Left</span>
+            <span className="text-2xl font-bold text-foreground mt-1">{pendingHabitsForDashboardCard.length}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Est. Time</span>
+            <span className="text-2xl font-bold text-foreground mt-1">{estimatedTimeRemaining}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Reviews Due</span>
+            <span className="text-2xl font-bold text-foreground mt-1">{reviewDayAlerts.length}</span>
+          </div>
         </div>
       </div>
 
@@ -1129,18 +958,18 @@ export default function Dashboard() {
           {reviewDayAlerts.map((alert) => (
             <div
               key={alert.type}
-              className="flex items-center justify-between p-4 rounded-lg bg-gradient-to-r from-primary/10 to-violet-500/10 border border-primary/20"
+              className="flex items-center justify-between p-4 rounded-lg bg-gradient-to-r from-primary/10 to-violet-500/10 border border-primary/20 shadow-sm"
             >
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-primary/20">
                   <BookOpen className="h-5 w-5 text-primary" />
                 </div>
                 <div>
-                  <p className="font-medium">{alert.title}</p>
-                  <p className="text-sm text-muted-foreground">{alert.message}</p>
+                  <p className="font-medium text-primary">{alert.title}</p>
+                  <p className="text-sm text-primary/80">{alert.message}</p>
                 </div>
               </div>
-              <Button size="sm" onClick={() => navigate(`/reviews?type=${alert.type}`)}>
+              <Button size="sm" onClick={() => navigate(`/reviews?type=${alert.type}`)} className="shadow-sm">
                 Open Review
               </Button>
             </div>
@@ -1148,169 +977,97 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Dashboard Stats */}
-      <div className="space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Card className="bg-gradient-to-br from-sky-500/5 to-transparent">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <TrendingUp className="h-4 w-4 text-sky-600" />
-                Overall Progress (This Month)
-              </CardTitle>
-              <CardDescription>Task Monthly Progress + month-to-date habits</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-sky-600">{overallProgressScore.overall}%</div>
-              <div className="mt-2 text-xs text-muted-foreground">
-                Tasks: {overallProgressScore.completedTasks}/{overallProgressScore.totalTasks} • Habit periods: {overallProgressScore.completedHabits}/{overallProgressScore.totalHabitPeriods}
-              </div>
-            </CardContent>
-          </Card>
+      {/* Key Metrics (Capped at 4) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card className="bg-card/80 backdrop-blur-sm bg-gradient-to-br from-emerald-500/5 to-transparent border-border/60 hover:shadow-lg hover:-translate-y-1 transition-all duration-300">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <Flame className="h-4 w-4 text-emerald-600" />
+              Today's Progress
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold text-emerald-600">{dailyOverallProgress.progress}%</div>
+            <div className="mt-2 text-xs text-muted-foreground font-medium">
+              Tasks {dailyOverallProgress.tasks.completed}/{dailyOverallProgress.tasks.total} • Habits {dailyOverallProgress.habits.completed}/{dailyOverallProgress.habits.total}
+            </div>
+          </CardContent>
+        </Card>
 
-          <Card className="bg-gradient-to-br from-violet-500/5 to-transparent">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <CheckSquare className="h-4 w-4 text-violet-600" />
-                Task Progress
-              </CardTitle>
-              <CardDescription>Today from Task Tab</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Completion Rate</span>
-                <span className="font-semibold text-violet-600">{taskProgressStats.completionRate}%</span>
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Weighted Progress</span>
-                <span className="font-semibold text-violet-600">{taskProgressStats.weightedProgress}%</span>
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Completed {taskProgressStats.completed}/{taskProgressStats.total} tasks
-              </div>
-            </CardContent>
-          </Card>
+        <Card className="bg-card/80 backdrop-blur-sm bg-gradient-to-br from-sky-500/5 to-transparent border-border/60 hover:shadow-lg hover:-translate-y-1 transition-all duration-300">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-sky-600" />
+              Month Progress
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold text-sky-600">{monthHealthStats.progress}%</div>
+            <div className="mt-2 text-xs text-muted-foreground font-medium">
+              {monthHealthStats.daysRemaining} days remaining in month
+            </div>
+          </CardContent>
+        </Card>
 
-          <Card className="bg-gradient-to-br from-emerald-500/5 to-transparent">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Flame className="h-4 w-4 text-emerald-600" />
-                Daily Overall Progress
-              </CardTitle>
-              <CardDescription>Daily habits completed</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-bold text-emerald-600">{dailyOverallProgress.progress}%</div>
-              <div className="mt-2 text-xs text-muted-foreground">
-                Tasks {dailyOverallProgress.tasks.completed}/{dailyOverallProgress.tasks.total} • Habits {dailyOverallProgress.habits.completed}/{dailyOverallProgress.habits.total}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        <Card className="bg-card/80 backdrop-blur-sm bg-gradient-to-br from-blue-500/5 to-transparent border-border/60 hover:shadow-lg hover:-translate-y-1 transition-all duration-300">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <Award className="h-4 w-4 text-blue-600" />
+              Consistency
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold text-blue-600">{habitConsistencyStats.weekConsistency}%</div>
+            <div className="mt-2 text-xs text-muted-foreground font-medium">
+              Weekly habit completion rate
+            </div>
+          </CardContent>
+        </Card>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-          <Card className="bg-gradient-to-br from-amber-500/5 to-transparent">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Calendar className="h-4 w-4 text-amber-600" />
-                Month Health
-              </CardTitle>
-              <CardDescription>Tasks and habits for current month</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-amber-600">{monthHealthStats.progress}%</div>
-              <div className="text-xs text-muted-foreground mt-2">
-                Weight {Math.round(monthHealthStats.earnedWeight)}/{Math.round(monthHealthStats.plannedWeight)} • Habit consistency {monthHealthStats.habitConsistency}%
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-gradient-to-br from-blue-500/5 to-transparent">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Award className="h-4 w-4 text-blue-600" />
-                Habit Consistency
-              </CardTitle>
-              <CardDescription>Completed due habits only</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-blue-600">{habitConsistencyStats.todayConsistency}%</div>
-              <div className="text-xs text-muted-foreground mt-2">
-                Today {habitConsistencyStats.completedToday}/{habitConsistencyStats.expectedToday} due • Week {habitConsistencyStats.weekConsistency}% • Month {habitConsistencyStats.monthConsistency}%
-              </div>
-              {habitConsistencyStats.earlyCompletedToday > 0 && (
-                <div className="mt-2 text-xs text-muted-foreground">Completed Early ✓ {habitConsistencyStats.earlyCompletedToday}</div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="bg-gradient-to-br from-purple-500/5 to-transparent">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Target className="h-4 w-4 text-purple-600" />
-                Goal Activity
-              </CardTitle>
-              <CardDescription>Active, activity, and completed goals</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-purple-600">{goalActivityStats.goalsWithActivity}</div>
-              <div className="text-xs text-muted-foreground mt-2">
-                Active {goalActivityStats.activeGoals} • Completed {goalActivityStats.completedGoals} ({goalActivityStats.completedGoalsThisMonth} this month)
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border-red-500/40 bg-gradient-to-br from-red-500/5 to-transparent">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4 text-red-600" />
-                At-Risk Items
-              </CardTitle>
-              <CardDescription>Overdue tasks, habits, and goals</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-red-600">{atRiskStats.total}</div>
-              <div className="text-xs text-muted-foreground mt-2">
-                Tasks {atRiskStats.overdueTasks} • Habits {atRiskStats.overdueHabits} • Goals {atRiskStats.overdueGoals}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        <Card className="bg-card/80 backdrop-blur-sm border-red-500/30 bg-gradient-to-br from-red-500/5 to-transparent hover:shadow-lg hover:-translate-y-1 transition-all duration-300">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-red-600" />
+              Needs Attention
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold text-red-600">{atRiskStats.total}</div>
+            <div className="mt-2 text-xs text-red-600/80 font-medium">
+              Tasks {atRiskStats.overdueTasks} • Habits {atRiskStats.overdueHabits} • Goals {atRiskStats.overdueGoals}
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Main Content */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column - 2/3 width */}
         <div className="lg:col-span-2 space-y-6">
-          {/* All Tasks - Shows ALL tasks including completed ones */}
-          <Card>
-            <CardHeader>
+          
+          {/* Today's Focus - Only important/today tasks */}
+          <Card className="bg-card/80 backdrop-blur-sm border-border/60 shadow-sm hover:shadow-md transition-all duration-300">
+            <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
-                <CardTitle className="flex items-center space-x-2">
-                  <ListTodo className="h-5 w-5" />
-                  <span>Today's Tasks</span>
+                <CardTitle className="flex items-center space-x-2 text-sm font-semibold">
+                  <Target className="h-4 w-4 text-primary" />
+                  <span>Today's Focus</span>
                 </CardTitle>
                 <div className="flex items-center gap-2">
-                  <Badge variant="secondary" className="dark:bg-zinc-800 dark:text-zinc-100">
-                    {allTodaysTasks.filter(t => (t.progress || 0) === 100).length}/{allTodaysTasks.length} done
-                  </Badge>
-                  <Button 
-                    size="sm" 
-                    onClick={() => setIsTaskDialogOpen(true)}
-                    className="h-8"
-                  >
+                  <Button size="sm" onClick={() => setIsTaskDialogOpen(true)} className="h-8 shadow-sm hover:shadow-md transition-all">
                     <Plus className="mr-1 h-4 w-4" />
-                    Add Task
+                    New Focus
                   </Button>
                 </div>
               </div>
               <CardDescription>
-                Today's tasks from Tasks tab • Completed tasks stay visible
+                High priority tasks and today's commitments
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {allTodaysTasks.length > 0 ? (
+              {allTodaysTasks.filter(t => t.priority === 'high' || (t.duration_type === 'today' && t.status !== 'completed')).length > 0 ? (
                 <TaskList 
-                  tasks={allTodaysTasks} 
+                  tasks={allTodaysTasks.filter(t => t.priority === 'high' || t.duration_type === 'today')} 
                   showPriority={true}
                   showActions={true}
                   compact={false}
@@ -1319,418 +1076,244 @@ export default function Dashboard() {
                   onArchive={setTaskToArchive}
                 />
               ) : (
-                <div className="text-center py-8 text-muted-foreground">
-                  <CheckCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No tasks scheduled for today.</p>
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    className="mt-4"
-                    onClick={() => setIsTaskDialogOpen(true)}
-                  >
-                    <Plus className="mr-2 h-4 w-4" />
-                    Add Task
-                  </Button>
+                <div className="text-center py-10 px-4 text-muted-foreground bg-gradient-to-b from-muted/30 to-muted/10 rounded-xl border border-dashed border-border/60">
+                  <div className="bg-background/50 h-16 w-16 rounded-full flex items-center justify-center mx-auto mb-4 shadow-sm">
+                    <CheckCircle className="h-8 w-8 opacity-60 text-primary" />
+                  </div>
+                  <p className="text-sm font-semibold text-foreground">You're all caught up!</p>
+                  <p className="text-xs mt-1.5 opacity-80">No high priority tasks remaining for today. Enjoy your time or add a new focus.</p>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Progress Analytics - Real Data */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <CardTitle className="flex items-center space-x-2">
-                    <BarChart3 className="h-5 w-5" />
-                    <span>Progress Analytics</span>
-                  </CardTitle>
-                  <CardDescription>
-                    Current week (matches Analytics tab)
-                  </CardDescription>
-                  {/* Current week date range */}
-                  <div className="text-sm text-muted-foreground mt-2">
-                    {(() => {
-                      const weekRange = getDateRange('week')
-                      return `${format(weekRange.start, 'MMM d')} - ${format(weekRange.end, 'MMM d, yyyy')}`
-                    })()}
-                  </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Weekly Progress Sparkline */}
+            <Card className="bg-card/80 backdrop-blur-sm border-border/60 shadow-sm hover:shadow-md transition-all duration-300">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-semibold flex items-center space-x-2">
+                  <BarChart3 className="h-4 w-4 text-sky-500" />
+                  <span>Weekly Progress</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-end justify-between h-24 mt-2 gap-1">
+                  {chartData.map((d: any, i: number) => (
+                    <div key={i} className="flex flex-col items-center flex-1 group relative">
+                      <div className="w-full relative flex items-end justify-center h-20 rounded-t-sm bg-muted/30 overflow-hidden">
+                        <div 
+                          className="w-full bg-primary/60 group-hover:bg-primary transition-all duration-300 rounded-t-sm" 
+                          style={{ height: `${d.productivity || 5}%` }}
+                        />
+                      </div>
+                      <div className="absolute opacity-0 group-hover:opacity-100 -top-10 bg-popover border border-border text-xs px-2 py-1 rounded shadow-md pointer-events-none transition-opacity whitespace-nowrap z-10">
+                        {d.productivity}%
+                      </div>
+                      <span className="text-[10px] text-muted-foreground mt-2 uppercase tracking-wider">{d.date.substring(0, 3)}</span>
+                    </div>
+                  ))}
                 </div>
-                {/* Chart type selector - stays in top right */}
-                <Tabs value={chartTab} onValueChange={(v) => setChartTab(v as any)} className="w-auto">
-                  <TabsList className="h-8 bg-secondary/30 dark:bg-secondary/20 p-1 border-transparent">
-                    <TabsTrigger value="productivity" className="px-3 text-xs">Productivity</TabsTrigger>
-                    <TabsTrigger value="tasks" className="px-3 text-xs">Tasks</TabsTrigger>
-                    <TabsTrigger value="habits" className="px-3 text-xs">Habits</TabsTrigger>
-                    <TabsTrigger value="goals" className="px-3 text-xs">Goals</TabsTrigger>
-                  </TabsList>
-                </Tabs>
-              </div>
+              </CardContent>
+            </Card>
+
+            {/* Recent Achievements */}
+            <Card className="bg-card/80 backdrop-blur-sm border-border/60 shadow-sm hover:shadow-md transition-all duration-300">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-semibold flex items-center space-x-2">
+                  <Award className="h-4 w-4 text-amber-500" />
+                  <span>Recent Achievements</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3 mt-2">
+                  {(dashboardData as DashboardData | undefined)?.achievements.length ? (
+                    (dashboardData as DashboardData | undefined)?.achievements.slice(0, 3).map((achievement: any, i: number) => (
+                      <div key={i} className="flex items-center gap-3 text-sm">
+                        <div className="h-8 w-8 rounded-full bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+                          {achievement.type === 'streak_achieved' ? <Flame className="h-4 w-4 text-amber-500" /> : <Target className="h-4 w-4 text-amber-500" />}
+                        </div>
+                        <div>
+                          <p className="font-medium leading-tight">{achievement.title}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{format(parseISO(achievement.timestamp), 'MMM d, h:mm a')}</p>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-center py-6 px-4 text-muted-foreground bg-muted/20 rounded-lg border border-dashed border-border/50">
+                      <Award className="h-6 w-6 mx-auto mb-2 opacity-30 text-amber-500" />
+                      <p className="text-xs font-medium">No recent achievements.</p>
+                      <p className="text-[10px] mt-0.5 opacity-80">Keep pushing to unlock milestones!</p>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Recent Activity Timeline */}
+          <Card className="bg-card/80 backdrop-blur-sm border-border/60 shadow-sm hover:shadow-md transition-all duration-300">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-semibold flex items-center space-x-2">
+                <CalendarDays className="h-4 w-4 text-violet-500" />
+                <span>Recent Activity</span>
+              </CardTitle>
             </CardHeader>
             <CardContent>
-              {/* Stats Summary */}
-              <div className="mb-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-3">
-                  <div className="text-xs font-medium text-muted-foreground">Productivity Score</div>
-                  <div className="text-lg font-bold mt-1">
-                    {periodProductivityScore.overall}%
-                  </div>
-                </div>
-                
-                <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
-                  <div className="text-xs font-medium text-muted-foreground">Tasks</div>
-                  <div className="text-lg font-bold mt-1">
-                    {chartData.reduce((sum, d) => sum + d.tasks, 0)}
-                  </div>
-                </div>
-                
-                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
-                  <div className="text-xs font-medium text-muted-foreground">Completed Due Habits</div>
-                  <div className="text-lg font-bold mt-1">
-                    {habitChartData.reduce((sum, d) => sum + d.completedHabits, 0)}
-                  </div>
-                 
-                </div>
+              <div className="space-y-4 mt-2">
+                {/* Find recently completed tasks from today */}
+                {(() => {
+                   const recentTasks = tasks.filter(t => t.progress === 100 && t.completed_at && isDateInRange(parseISO(t.completed_at), startOfDay(today), endOfDay(today))).slice(0, 3);
+                   const recentHabits = habitCompletions.filter(h => h.completed && isDateInRange(parseISO(h.created_at), startOfDay(today), endOfDay(today))).slice(0, 3);
+                   
+                   const combined = [...recentTasks.map(t => ({ title: `Completed task: ${t.title}`, time: parseISO(t.completed_at!), type: 'task' })),
+                                     ...recentHabits.map(h => {
+                                        const habitName = allHabitsForDashboard.find(ah => ah.id === h.habit_id)?.title || 'Habit';
+                                        return { title: `Checked in: ${habitName}`, time: parseISO(h.created_at), type: 'habit' }
+                                     })].sort((a, b) => b.time.getTime() - a.time.getTime()).slice(0, 4);
 
-                <div className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-3">
-                  <div className="text-xs font-medium text-muted-foreground">Goals</div>
-                  <div className="text-lg font-bold mt-1">
-                    {chartData.reduce((sum, d) => sum + d.goalsCompleted, 0)}
-                  </div>
-                </div>
-              </div>
+                   if (combined.length === 0) {
+                     return (
+                       <div className="text-center py-6 px-4 text-muted-foreground bg-gradient-to-b from-muted/30 to-muted/10 rounded-xl border border-dashed border-border/60">
+                         <CalendarDays className="h-6 w-6 mx-auto mb-2 opacity-30 text-violet-500" />
+                         <p className="text-xs font-medium">No activity today yet.</p>
+                         <p className="text-[10px] mt-0.5 opacity-80">Check off a task or habit to get started!</p>
+                       </div>
+                     )
+                   }
 
-              {/* Charts */}
-              <div className="h-64">
-                {chartData.length === 0 && (
-                  <div className="h-full flex items-center justify-center text-muted-foreground">
-                    <div className="text-center">
-                      <BarChart3 className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                      <p>No activity data yet</p>
-                      <p className="text-xs">Complete tasks and habits to see your progress</p>
-                    </div>
-                  </div>
-                )}
-                {chartData.length > 0 && chartTab === 'tasks' && (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={chartData}>
-                      <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                      <Tooltip content={<CustomTooltip />} />
-                      <Legend />
-                      <Bar dataKey="tasks" name="Total Tasks" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="completed" name="Completed" fill="hsl(var(--status-completed))" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                )}
-                {chartData.length > 0 && chartTab === 'habits' && (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={habitChartData}>
-                      <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} domain={[0, 'dataMax + 1']} />
-                      <Tooltip content={<CustomTooltip />} />
-                      <Legend />
-                      <Line
-                        type="monotone"
-                        dataKey="habits"
-                        name="Due Habits"
-                        stroke="#8b5cf6"
-                        strokeWidth={3}
-                        dot={{ r: 2 }}
-                        connectNulls
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="completedHabits"
-                        name="Completed Due"
-                        stroke="#22c55e"
-                        strokeWidth={3}
-                        dot={{ r: 2 }}
-                        connectNulls
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                )}
-                {chartData.length > 0 && chartTab === 'productivity' && (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={chartData}>
-                      <defs>
-                        <linearGradient id="productivityGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.8}/>
-                          <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
-                        </linearGradient>
-                      </defs>
-                      <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} domain={[0, 100]} />
-                      <YAxis yAxisId="goals" orientation="right" stroke="hsl(var(--muted-foreground))" fontSize={12} allowDecimals={false} />
-                      <Tooltip content={<CustomTooltip />} />
-                      <Legend />
-                      <Area
-                        type="monotone"
-                        dataKey="productivity"
-                        name="Productivity Score"
-                        stroke="hsl(var(--primary))"
-                        fill="url(#productivityGradient)"
-                        strokeWidth={2}
-                      />
-                      <Line
-                        yAxisId="goals"
-                        type="monotone"
-                        dataKey="goalsCompleted"
-                        name="Goal Completions"
-                        stroke="hsl(var(--destructive))"
-                        strokeWidth={2}
-                        dot={{ r: 2 }}
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                )}
-                {chartData.length > 0 && chartTab === 'goals' && (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={chartData}>
-                      <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                      <Tooltip content={<CustomTooltip />} />
-                      <Legend />
-                      <Bar dataKey="goalsCompleted" name="Goal Completions" fill="hsl(var(--destructive))" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                )}
+                   return combined.map((item, i) => (
+                     <div key={i} className="flex items-start gap-3 relative">
+                       {i !== combined.length - 1 && <div className="absolute top-6 left-2 w-px h-full bg-border -z-10" />}
+                       <div className={`mt-0.5 h-4 w-4 rounded-full flex-shrink-0 flex items-center justify-center ${item.type === 'task' ? 'bg-violet-500/20 text-violet-500' : 'bg-emerald-500/20 text-emerald-500'}`}>
+                         <CheckCircle className="h-3 w-3" />
+                       </div>
+                       <div>
+                         <p className="text-sm font-medium leading-none">{item.title}</p>
+                         <p className="text-xs text-muted-foreground mt-1">{format(item.time, 'h:mm a')}</p>
+                       </div>
+                     </div>
+                   ))
+                })()}
               </div>
             </CardContent>
           </Card>
-
         </div>
 
         {/* Right Column - 1/3 width */}
         <div className="space-y-6">
-          {/* Habits - Shows ONLY INCOMPLETE daily, weekly, and monthly habits */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center space-x-2">
-                <Flame className="h-5 w-5" />
-                <span>Habits</span>
+          {/* Pending Habits - Streamlined */}
+          <Card className="bg-card/80 backdrop-blur-sm border-border/60 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group">
+            <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/5 to-transparent pointer-events-none" />
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center space-x-2 text-sm font-semibold">
+                <Flame className="h-4 w-4 text-indigo-500" />
+                <span>Pending Habits</span>
               </CardTitle>
-              <CardDescription>
-                {pendingHabitsForDashboardCard.length > 0
-                  ? `${pendingHabitsForDashboardCard.length} pending habit${pendingHabitsForDashboardCard.length !== 1 ? 's' : ''}`
-                  : 'All habits completed'}
-              </CardDescription>
             </CardHeader>
             <CardContent>
               {pendingHabitsForDashboardCard.length > 0 ? (
-                <HabitTracker 
-                  habits={pendingHabitsForDashboardCard}
-                  habitCompletions={habitCompletions}
-                  compact={true}
-                />
+                <div className="space-y-1 relative z-10">
+                  <HabitTracker 
+                    habits={pendingHabitsForDashboardCard}
+                    habitCompletions={habitCompletions}
+                    compact={true}
+                  />
+                </div>
               ) : (
-                <div className="text-center py-8 text-muted-foreground">
-                  <CalendarDays className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No pending habits remaining. Keep up the great work!</p>
+                <div className="text-center py-8 px-4 text-muted-foreground bg-gradient-to-b from-emerald-500/10 to-emerald-500/5 rounded-xl border border-dashed border-emerald-500/20">
+                  <div className="bg-emerald-500/10 h-14 w-14 rounded-full flex items-center justify-center mx-auto mb-3 shadow-sm">
+                    <CheckCircle className="h-7 w-7 text-emerald-500 opacity-80" />
+                  </div>
+                  <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">All habits completed!</p>
+                  <p className="text-xs mt-1 text-emerald-600/70 dark:text-emerald-400/70">You're crushing it today.</p>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Active Goals - Enhanced representation */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center space-x-2">
-                <Target className="h-5 w-5" />
-                <span>Active Goals</span>
+          {/* Goal Momentum */}
+          <Card className="bg-card/80 backdrop-blur-sm border-border/60 shadow-sm hover:shadow-md transition-all duration-300">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center justify-between text-sm font-semibold">
+                <div className="flex items-center space-x-2">
+                  <Target className="h-4 w-4 text-purple-500" />
+                  <span>Goal Momentum</span>
+                </div>
+                <Badge variant="outline" className="text-[10px] uppercase tracking-wider font-semibold">Active</Badge>
               </CardTitle>
-              <CardDescription>
-                Focus areas and momentum
-              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               {goalsWithProgress.length > 0 ? (
                 goalsWithProgress.slice(0, 3).map((goal) => {
-                  // Calculate momentum and status
-                  const daysRemaining = goal.target_date 
-                    ? Math.ceil((new Date(goal.target_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-                    : null
-                  const isOnTrack = goal.calculatedProgress >= 50 || (daysRemaining !== null && daysRemaining > 14)
-                  const isUrgent = daysRemaining !== null && daysRemaining <= 7 && goal.calculatedProgress < 80
-                  const momentum = goal.linkedTasksCount > 0 
-                    ? goal.completedTasksCount > 0 ? 'Active' : 'Stalled'
-                    : 'No tasks linked'
-                  
                   return (
                     <div 
                       key={goal.id} 
-                      onClick={() => navigate('/goals')}
-                      className={cn(
-                      "p-3 rounded-lg border transition-colors cursor-pointer",
-                      isUrgent && "border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10",
-                      !isUrgent && isOnTrack && "border-green-500/20 bg-green-500/5 hover:bg-green-500/10",
-                      !isUrgent && !isOnTrack && "border-rose-500/25 bg-rose-500/5 hover:bg-rose-500/10"
-                    )}>
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        <div className="flex-1 min-w-0">
-                          <h4 className="font-medium text-sm truncate">{goal.title}</h4>
-                          <div className="flex items-center gap-2 mt-1">
-                            <Badge variant={goal.category as any} size="sm" className="text-[10px]">
-                              {goal.category}
-                            </Badge>
-                            <Badge 
-                              variant="outline" 
-                              size="sm"
-                              className={cn(
-                                "text-[10px]",
-                                momentum === 'Active' && "bg-green-500/10 text-green-600 border-green-500/30 dark:bg-green-500/15 dark:text-green-300 dark:border-green-500/40",
-                                momentum === 'Stalled' && "bg-amber-500/10 text-amber-600 border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/40",
-                                momentum === 'No tasks linked' && "bg-slate-500/10 text-slate-600 border-slate-500/30 dark:bg-slate-500/15 dark:text-slate-300 dark:border-slate-500/40"
-                              )}
-                            >
-                              {momentum}
-                            </Badge>
-                          </div>
-                          {goal.tags && goal.tags.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {goal.tags.slice(0, 3).map((tag) => (
-                                <Badge
-                                  key={tag}
-                                  variant="outline"
-                                  className="text-[10px] bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40"
-                                >
-                                  {tag}
-                                </Badge>
-                              ))}
-                              {goal.tags.length > 3 && (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[10px] bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40"
-                                >
-                                  +{goal.tags.length - 3} more
-                                </Badge>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div className="text-right flex-shrink-0">
-                          {daysRemaining !== null && (
-                            <p className={cn(
-                              "text-[10px]",
-                              daysRemaining <= 0 && "text-destructive",
-                              daysRemaining > 0 && daysRemaining <= 7 && "text-amber-600",
-                              daysRemaining > 7 && "text-muted-foreground"
-                            )}>
-                              {daysRemaining <= 0 ? 'Overdue!' : `${daysRemaining}d left`}
-                            </p>
-                          )}
-                        </div>
+                      className="group relative overflow-hidden rounded-lg border border-border/50 bg-muted/10 p-3 hover:bg-muted/30 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" 
+                      onClick={() => navigate(`/goals/${goal.id}`)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          navigate(`/goals/${goal.id}`)
+                        }
+                      }}
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <h4 className="font-medium text-sm leading-none">{goal.title}</h4>
+                        <span className="text-xs font-semibold text-purple-600 dark:text-purple-400">{goal.calculatedProgress}%</span>
                       </div>
-                      
-                      {/* Stats row */}
-                      <div className="flex items-center gap-3 mt-2 text-[10px] text-muted-foreground">
-                        <span>{goal.completedTasksCount}/{goal.linkedTasksCount} tasks</span>
-                        {goal.linkedHabitsCount > 0 && (
-                          <span>{goal.avgHabitConsistency}% habit consistency</span>
-                        )}
+                      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                        <div 
+                          className="h-full bg-purple-500 transition-all duration-500" 
+                          style={{ width: `${goal.calculatedProgress}%` }}
+                        />
                       </div>
                     </div>
                   )
                 })
               ) : (
-                <div className="text-center py-8 text-muted-foreground">
-                  <Target className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No active goals. Set some goals to get started!</p>
+                <div className="text-center py-8 px-4 text-muted-foreground bg-gradient-to-b from-purple-500/5 to-transparent rounded-xl border border-dashed border-purple-500/20">
+                  <Target className="h-8 w-8 mx-auto mb-2 opacity-30 text-purple-500" />
+                  <p className="text-sm font-medium text-foreground">No active goals</p>
+                  <p className="text-xs mt-1 opacity-80">Start tracking a goal to see momentum.</p>
                 </div>
-              )}
-              {goalsWithProgress.length > 3 && (
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
-                  className="w-full bg-primary/5 text-primary border border-primary/10 hover:bg-primary/10"
-                  onClick={() => navigate('/goals')}
-                >
-                  View all goals ({goalsWithProgress.length})
-                </Button>
               )}
             </CardContent>
           </Card>
 
-          {/* Review Reminder Widget */}
-          <ReviewReminder showAll={false} />
-
-          {/* Quick Insights */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center space-x-2">
-                <Lightbulb className="h-5 w-5" />
-                <span>Quick Insights</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {quickInsightMetrics.map((metric) => (
-                <div key={metric.key} className="p-3 rounded-lg border bg-primary/5 border-primary/15">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">{metric.title}</span>
-                    <span className="text-sm font-semibold text-primary">{metric.value}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">{metric.subtitle}</p>
-                </div>
-              ))}
+          {/* Analytics Shortcut */}
+          <Card 
+            className="bg-gradient-to-br from-blue-600 to-indigo-700 text-primary-foreground border-transparent shadow-md hover:shadow-lg transition-all cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500" 
+            onClick={() => navigate('/analytics')}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                navigate('/analytics')
+              }
+            }}
+          >
+            <CardContent className="p-6 flex items-center justify-between">
+              <div>
+                <h3 className="font-bold text-lg mb-1 flex items-center gap-2">
+                  <BarChart3 className="h-5 w-5 text-white/80" />
+                  Deep Dive
+                </h3>
+                <p className="text-white/70 text-sm">Explore your full analytics and historical trends.</p>
+              </div>
+              <div className="h-10 w-10 rounded-full bg-white/10 flex items-center justify-center group-hover:bg-white/20 transition-colors">
+                <ArrowUpRight className="h-5 w-5" />
+              </div>
             </CardContent>
           </Card>
-
-          {/* Recent Achievements */}
-          {((dashboardData as DashboardData | undefined)?.achievements?.length || 0) > 0 && (
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center space-x-2 text-base">
-                  <Award className="h-4 w-4" />
-                  <span>Recent Achievements</span>
-                </CardTitle>
-                <CardDescription>
-                  Celebrate your recent successes
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2.5">
-                {(dashboardData as DashboardData).achievements.map((achievement: Achievement, index: number) => (
-                  <div
-                    key={index}
-                    className={cn(
-                      "flex items-center justify-between p-3 rounded-lg border transition-colors",
-                      achievement.type === 'goal_completed'
-                        ? "bg-emerald-500/5 border-emerald-500/20 hover:bg-emerald-500/10"
-                        : "bg-orange-500/5 border-orange-500/20 hover:bg-orange-500/10"
-                    )}
-                  >
-                    <div className="flex items-center space-x-3">
-                      <div className={cn(
-                        "h-9 w-9 rounded-full flex items-center justify-center shadow-sm",
-                        achievement.type === 'goal_completed'
-                          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                          : "bg-orange-500/10 text-orange-600 dark:text-orange-400"
-                      )}>
-                        {achievement.type === 'goal_completed' ? (
-                          <Target className="h-4 w-4" />
-                        ) : (
-                          <Flame className="h-4 w-4" />
-                        )}
-                      </div>
-                      <div>
-                        <p className="font-medium text-sm text-foreground">{achievement.title}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          {format(new Date(achievement.timestamp), 'MMM d, h:mm a')}
-                        </p>
-                      </div>
-                    </div>
-                    <ArrowUpRight className="h-4 w-4 text-muted-foreground/50" />
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          )}
         </div>
       </div>
 
       {/* Footer Message */}
       <div className="text-center text-sm text-muted-foreground">
-        Have a productive {timeOfDay}! Remember to take breaks and stay hydrated.
+        Have a productive day! Remember to take breaks and stay hydrated.
       </div>
 
       {/* Add Task Dialog - Same form as Tasks page */}
@@ -1892,7 +1475,7 @@ export default function Dashboard() {
                     {taskFormData.tags.map(tag => (
                       <Badge key={tag} variant="secondary" className="gap-1">
                         {tag}
-                        <button type="button" onClick={() => removeTag(tag)} className="ml-1 hover:text-destructive">
+                        <button type="button" onClick={() => removeTag(tag)} className="ml-1 hover:text-destructive" aria-label={`Remove tag ${tag}`}>
                           <X className="h-3 w-3" />
                         </button>
                       </Badge>

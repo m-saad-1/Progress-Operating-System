@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { shallow } from 'zustand/shallow'
 import {
   format,
   startOfDay,
@@ -82,7 +83,8 @@ import {
 import { cn } from '@/lib/utils'
 import { database, Review, ReviewInsights, CreateReviewDTO, TaskTabStatsSnapshot } from '@/lib/database'
 import { useToaster } from '@/hooks/use-toaster'
-import { useStore, ReviewQuestion } from '@/store'
+import { useStore } from '@/store'
+import { ReviewQuestion } from '@/store/types'
 import { useTauri } from '@/hooks/use-tauri'
 import type { HabitCompletion } from '@/types'
 import { calculateHabitAnalytics, calculateGoalAnalytics, calculateTimeAnalytics, getDateRange } from '@/lib/progress'
@@ -1520,7 +1522,20 @@ export default function Reviews() {
     tasks,
     habits,
     goals,
-  } = useStore()
+  } = useStore(
+    (state) => ({
+      customReviewQuestions: state.customReviewQuestions,
+      updateReviewQuestions: state.updateReviewQuestions,
+      addReviewQuestion: state.addReviewQuestion,
+      removeReviewQuestion: state.removeReviewQuestion,
+      toggleReviewQuestion: state.toggleReviewQuestion,
+      resetReviewQuestions: state.resetReviewQuestions,
+      tasks: state.tasks,
+      habits: state.habits,
+      goals: state.goals,
+    }),
+    shallow
+  )
 
   // Update period when tab changes
   useEffect(() => {

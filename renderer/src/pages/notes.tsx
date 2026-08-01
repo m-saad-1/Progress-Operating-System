@@ -461,6 +461,8 @@ function NoteCardListBase({ note, onEdit, onArchive, onView, onTogglePin }: Note
   )
 }
 
+const NoteCardList = memo(NoteCardListBase, (prev, next) => prev.note === next.note)
+
 export default function Notes() {
   const { success, error: toastError } = useToaster()
   const queryClient = useQueryClient()
@@ -683,12 +685,22 @@ export default function Notes() {
       await database.archiveNote(id)
       return id
     },
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ['notes'] })
+      const previousNotes = queryClient.getQueryData(['notes'])
+      if (previousNotes) {
+        queryClient.setQueryData(['notes'], (old: any) => old.filter((n: any) => n.id !== id))
+      }
+      return { previousNotes }
+    },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notes'] })
       queryClient.invalidateQueries({ queryKey: ['archive'] })
       success('Note archived')
     },
-    onError: (error) => {
+    onError: (error, _id, context) => {
+      if (context?.previousNotes) {
+        queryClient.setQueryData(['notes'], context.previousNotes)
+      }
       console.error('Failed to archive note:', error)
       toastError('Failed to archive note')
     },
@@ -711,11 +723,23 @@ export default function Notes() {
         pinned: !pinned,
       })
     },
+    onMutate: async ({ id, pinned }) => {
+      await queryClient.cancelQueries({ queryKey: ['notes'] })
+      const previousNotes = queryClient.getQueryData(['notes'])
+      if (previousNotes) {
+        queryClient.setQueryData(['notes'], (old: any) => 
+          old.map((n: any) => n.id === id ? { ...n, pinned: !pinned } : n)
+        )
+      }
+      return { previousNotes }
+    },
     onSuccess: (_, { pinned }) => {
-      queryClient.invalidateQueries({ queryKey: ['notes'] })
       success(pinned ? 'Note unpinned' : 'Note pinned')
     },
-    onError: (error) => {
+    onError: (error, _variables, context) => {
+      if (context?.previousNotes) {
+        queryClient.setQueryData(['notes'], context.previousNotes)
+      }
       console.error('Failed to toggle pin:', error)
       toastError('Failed to update note')
     },
@@ -879,7 +903,7 @@ export default function Notes() {
           >
             <DialogTrigger asChild>
               <Button
-                className="transition-all duration-300 hover:scale-105 active:scale-95 shadow-md hover:shadow-lg hover:bg-green-700"
+                className="transition-transform duration-150 hover:scale-[1.02] active:scale-95 shadow-sm gpu-accelerated"
                 onClick={() => {
                   setIsEditing(null)
                   resetForm()
@@ -1016,20 +1040,25 @@ export default function Notes() {
                     </div>
                   </div>
                   
-                  {/* Content editor with fixed toolbar + internal content scroll */}
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Content</label>
                     <RichTextEditor
                       value={formData.content}
-                      onChange={(content) => {
-                        setFormData({ ...formData, content })
+                      onDebouncedChange={(content) => {
+                        setFormData((prev) => ({ ...prev, content }))
                         if (formErrors.content) {
                           setFormErrors((prev) => ({ ...prev, content: undefined }))
                         }
                       }}
+                      onAutoSave={(content) => {
+                        if (isEditing && formData.title.trim()) {
+                          // Autosave quietly via IPC queue
+                          updateNoteMutation.mutate({ id: isEditing, updates: { ...formData, content } })
+                        }
+                      }}
                       placeholder="Write your note here..."
                       className="h-[360px] bg-gray-50 dark:bg-zinc-800 border-gray-200 dark:border-zinc-700"
-                      autoSaveDelay={800}
+                      autoSaveDelay={500} // Fast debounce for typing responsiveness
                     />
                     {formErrors.content && (
                       <p className="text-xs text-red-500">{formErrors.content}</p>
@@ -1517,6 +1546,4 @@ export default function Notes() {
       </div>
     )
   }
-}
-
-const NoteCardList = memo(NoteCardListBase, (prev, next) => prev.note === next.note)
+}

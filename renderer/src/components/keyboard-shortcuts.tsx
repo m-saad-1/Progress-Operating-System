@@ -1,13 +1,10 @@
-import React from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { useNavigate } from 'react-router-dom'
-import { useStore } from '@/store'
 import { useToaster } from '@/hooks/use-toaster'
 import { useTheme } from '@/components/theme-provider'
 
 export function KeyboardShortcuts() {
   const navigate = useNavigate()
-  const { addNotification } = useStore()
   const { theme, setTheme } = useTheme()
   const { toast } = useToaster()
 

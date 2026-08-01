@@ -55,6 +55,7 @@ import {
     Loader2
 } from 'lucide-react'
 import { useStore } from '@/store'
+import { shallow } from 'zustand/shallow'
 import { useToaster } from '@/hooks/use-toaster'
 import { useTauri } from '@/hooks/use-tauri'
 import { useTheme } from '@/components/theme-provider'
@@ -197,7 +198,40 @@ const ShortcutEditor = ({ shortcut, onUpdate, onToggle }: ShortcutEditorProps) =
 export default function Settings() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const store = useStore()
+  const store = useStore(
+    (state) => ({
+      updateUserProfile: state.updateUserProfile,
+      resetAllSettings: state.resetAllSettings,
+      resetAllData: state.resetAllData,
+      clearNotifications: state.clearNotifications,
+      keyboardShortcutsEnabled: state.keyboardShortcutsEnabled,
+      setKeyboardShortcutsEnabled: state.setKeyboardShortcutsEnabled,
+      keyboardShortcuts: state.keyboardShortcuts,
+      updateKeyboardShortcut: state.updateKeyboardShortcut,
+      toggleKeyboardShortcut: state.toggleKeyboardShortcut,
+      resetKeyboardShortcuts: state.resetKeyboardShortcuts,
+      privacySettings: state.privacySettings,
+      updatePrivacySettings: state.updatePrivacySettings,
+      allowHistoryDeletion: state.allowHistoryDeletion,
+      setAllowHistoryDeletion: state.setAllowHistoryDeletion,
+      lastSync: state.lastSync,
+      syncStatus: state.syncStatus,
+      enableSync: state.enableSync,
+      notificationSettings: state.notificationSettings,
+      updateNotificationSettings: state.updateNotificationSettings,
+      updateSyncStatus: state.updateSyncStatus,
+      updateLastSync: state.updateLastSync,
+      weekStart: state.weekStart,
+      setWeekStart: state.setWeekStart,
+      language: state.language,
+      setLanguage: state.setLanguage,
+      highContrastMode: state.highContrastMode,
+      setHighContrastMode: state.setHighContrastMode,
+      timezone: state.timezone,
+      setTimezone: state.setTimezone,
+    }),
+    shallow
+  )
   const { success, info, error } = useToaster()
   const tauri = useTauri()
   const { theme, setTheme } = useTheme()

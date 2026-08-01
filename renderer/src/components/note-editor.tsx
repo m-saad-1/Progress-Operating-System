@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -18,13 +18,10 @@ import {
   ListOrdered,
   Quote,
   Code,
-  Link,
-  Image,
   Save,
   X,
   Tag,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
 
 interface NoteEditorProps {
   initialData?: {

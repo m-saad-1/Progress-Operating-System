@@ -29,7 +29,7 @@ interface TaskListProps {
   onArchive?: (taskId: string) => void;
 }
 
-export const TaskList: React.FC<TaskListProps> = ({
+export const TaskList = React.memo(({
   tasks,
   showPriority = false,
   showActions = false,
@@ -38,7 +38,7 @@ export const TaskList: React.FC<TaskListProps> = ({
   onProgressChange,
   onEdit,
   onArchive,
-}) => {
+}: TaskListProps) => {
   const tasksToShow = maxItems ? tasks.slice(0, maxItems) : tasks;
 
   if (tasksToShow.length === 0) {
@@ -148,4 +148,4 @@ export const TaskList: React.FC<TaskListProps> = ({
       })}
     </div>
   );
-};
+});

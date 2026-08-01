@@ -8,8 +8,6 @@
 import { 
   startOfMonth, 
   endOfMonth, 
-  startOfDay,
-  format,
   parseISO,
   subMonths,
   addMonths
@@ -24,7 +22,7 @@ export const safeDateParse = (dateStr: string | null | undefined, fallback: Date
   
   try {
     // Handle already parsed dates
-    if (dateStr instanceof Date) return dateStr
+    if ((dateStr as any) instanceof Date) return (dateStr as any) as Date
     
     // Ensure it's a string
     if (typeof dateStr !== 'string') return fallback

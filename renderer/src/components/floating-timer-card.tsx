@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react'
+import { useMemo } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
@@ -9,7 +9,7 @@ import {
   timerPositions,
   useSharedTimer,
 } from '@/hooks/use-shared-timer'
-import { FloatingTimerPosition, TimerMode } from '@/store'
+import { FloatingTimerPosition, TimerMode } from '@/store/types'
 
 const positionClasses: Record<FloatingTimerPosition, string> = {
   'bottom-right': 'bottom-4 right-4',

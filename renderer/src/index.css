@@ -160,6 +160,8 @@
   .bg-card {
     background-color: hsl(var(--card)) !important;
     border: none !important;
+    content-visibility: auto;
+    contain-intrinsic-size: 1px 200px;
   }
   .bg-popover {
     background-color: hsl(var(--popover)) !important;
@@ -167,9 +169,18 @@
 }
 
 @layer components {
-  /* Card hover effect with shadow */
+  /* Card hover effect optimized for GPU (Phase 5) */
   .card-hover {
-    @apply shadow-md transition-shadow duration-200 hover:shadow-lg dark:hover:shadow-black/50;
+    @apply transition-transform duration-150 will-change-transform;
+  }
+  .card-hover:hover {
+    transform: translateY(-2px) translateZ(0);
+  }
+
+  /* Universal GPU acceleration utility */
+  .gpu-accelerated {
+    transform: translateZ(0);
+    will-change: transform, opacity;
   }
   
   /* Progress ring stroke color */

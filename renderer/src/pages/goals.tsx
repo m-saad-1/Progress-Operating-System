@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { shallow } from 'zustand/shallow'
 import { 
   Card, 
   CardContent, 
@@ -145,7 +146,17 @@ export default function Goals() {
   const queryClient = useQueryClient()
   const { success, error: toastError } = useToaster()
   const tauri = useTauri()
-  const { goals, tasks, habits, addGoal, updateGoal, archiveGoal } = useStore()
+  const { goals, tasks, habits, addGoal, updateGoal, archiveGoal } = useStore(
+    (state) => ({
+      goals: state.goals,
+      tasks: state.tasks,
+      habits: state.habits,
+      addGoal: state.addGoal,
+      updateGoal: state.updateGoal,
+      archiveGoal: state.archiveGoal,
+    }),
+    shallow
+  )
   
   const [searchQuery] = useState('')
   const [selectedCategory] = useState<Goal['category'] | 'all'>('all')
@@ -429,6 +440,10 @@ export default function Goals() {
   // Update goal mutation
   const updateGoalMutation = useMutation({
     mutationFn: async ({ id, updates, showToast = true }: { id: string; updates: UpdateGoalDTO; showToast?: boolean }) => {
+      const existingGoal = goals.find(g => g.id === id)
+      if (existingGoal) {
+        updateGoal({ ...existingGoal, ...updates } as any)
+      }
       await database.updateGoal(id, updates)
       const updatedGoal = await database.getGoalById(id)
       return { updatedGoal, showToast }
@@ -456,6 +471,10 @@ export default function Goals() {
   const updateGoalStatusMutation = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: Goal['status'] }) => {
       const completed_at = status === 'completed' ? new Date().toISOString() : null
+      const existingGoal = goals.find(g => g.id === id)
+      if (existingGoal) {
+        updateGoal({ ...existingGoal, status, completed_at } as any)
+      }
       await database.updateGoal(id, { status, completed_at })
       const updatedGoal = await database.getGoalById(id)
       return { updatedGoal, status }
@@ -483,11 +502,11 @@ export default function Goals() {
   // Archive goal mutation - preserves progress history
   const deleteGoalMutation = useMutation({
     mutationFn: async (id: string) => {
+      archiveGoal(id)
       await database.archiveGoal(id)
       return id
     },
-    onSuccess: (id) => {
-      archiveGoal(id)
+    onSuccess: () => {
       // Invalidate archive queries
       queryClient.invalidateQueries({ queryKey: ['archive'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
@@ -608,7 +627,7 @@ export default function Goals() {
             }
         }}>
           <DialogTrigger asChild>
-            <Button className="transition-all duration-300 hover:scale-105 active:scale-95 shadow-md hover:shadow-lg hover:bg-green-700">
+            <Button className="transition-transform duration-150 hover:scale-[1.02] active:scale-95 shadow-sm gpu-accelerated">
               <Plus className="mr-2 h-4 w-4" />
               New Goal
             </Button>

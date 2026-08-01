@@ -15,7 +15,7 @@
  * - Does NOT affect core app functionality
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useOnlineStatus } from './use-online-status'
 import { useToaster } from './use-toaster'
 
@@ -40,8 +40,7 @@ export const useOfflineQueue = () => {
   const [queue, setQueue] = useState<OfflineOperation[]>([])
   const [isSyncing, setIsSyncing] = useState(false)
   const isOnline = useOnlineStatus()
-  const { warning, success, error: showError } = useToaster()
-  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const { success } = useToaster()
 
   // Load queue from localStorage on mount
   useEffect(() => {
@@ -167,7 +166,7 @@ export const useOfflineQueue = () => {
  * Process a single operation from the queue
  * Implementation depends on operation type
  */
-async function processQueuedOperation(operation: OfflineOperation): Promise<void> {
+async function processQueuedOperation(_operation: OfflineOperation): Promise<void> {
   // This would be implemented per operation type
   // For now, return success to simulate processing
   return Promise.resolve()

@@ -1,6 +1,7 @@
 
 import { useEffect, useState, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { shallow } from 'zustand/shallow'
 import {
   Card,
   CardContent,
@@ -156,7 +157,16 @@ export default function Habits() {
   const tauri = useTauri()
   const queryClient = useQueryClient()
   const { success, error: toastError } = useToaster()
-  const { habits, goals, addHabit, updateHabit, archiveHabit } = useStore()
+  const { habits, goals, addHabit, updateHabit, archiveHabit } = useStore(
+    (state) => ({
+      habits: state.habits,
+      goals: state.goals,
+      addHabit: state.addHabit,
+      updateHabit: state.updateHabit,
+      archiveHabit: state.archiveHabit,
+    }),
+    shallow
+  )
 
   const [searchQuery] = useState('')
   const [selectedFrequency] = useState<Habit['frequency'] | 'all'>('all')
@@ -1287,7 +1297,7 @@ export default function Habits() {
         </div>
         <Dialog open={isCreating} onOpenChange={setIsCreating}>
           <DialogTrigger asChild>
-            <Button className="transition-all duration-300 hover:scale-105 active:scale-95 shadow-md hover:shadow-lg hover:bg-green-700">
+            <Button className="transition-transform duration-150 hover:scale-[1.02] active:scale-95 shadow-sm gpu-accelerated">
               <Plus className="mr-2 h-4 w-4" />
               New Habit
             </Button>

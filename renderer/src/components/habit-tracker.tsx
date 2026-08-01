@@ -1,9 +1,11 @@
+import React from 'react'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Star, Flame, CheckCircle2 } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTauri } from '@/hooks/use-tauri'
 import { database, getLocalDateString } from '@/lib/database'
 import { useStore } from '@/store'
+import { shallow } from 'zustand/shallow'
 import { cn } from '@/lib/utils'
 import { 
   isWeeklyHabitCompletedThisWeekPersistent,
@@ -16,10 +18,13 @@ interface HabitTrackerProps {
   compact?: boolean
 }
 
-export function HabitTracker({ habits, habitCompletions = [], compact = false }: HabitTrackerProps) {
+export const HabitTracker = React.memo(function HabitTracker({ habits, habitCompletions = [], compact = false }: HabitTrackerProps) {
   const tauri = useTauri()
   const queryClient = useQueryClient()
-  const { updateHabit } = useStore()
+  const { updateHabit } = useStore(
+    (state) => ({ updateHabit: state.updateHabit }),
+    shallow
+  )
   
   // Use local date string consistently across the app
   const todayStr = getLocalDateString(new Date())
@@ -211,4 +216,4 @@ export function HabitTracker({ habits, habitCompletions = [], compact = false }:
       })}
     </div>
   )
-}
+})

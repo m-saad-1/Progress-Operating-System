@@ -23,7 +23,8 @@ import {
 
 interface RichTextEditorProps {
   value: string
-  onChange: (content: string) => void
+  onChange?: (content: string) => void
+  onDebouncedChange?: (content: string) => void
   placeholder?: string
   className?: string
   disabled?: boolean
@@ -34,6 +35,7 @@ interface RichTextEditorProps {
 export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   value,
   onChange,
+  onDebouncedChange,
   placeholder = 'Add details, notes, or context...',
   className,
   disabled = false,
@@ -107,13 +109,16 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
 
     setAutoSaveStatus('saving')
     autoSaveTimeoutRef.current = setTimeout(() => {
+      if (onDebouncedChange) {
+        onDebouncedChange(content)
+      }
       if (onAutoSave) {
         onAutoSave(content)
       }
       setAutoSaveStatus('saved')
       setTimeout(() => setAutoSaveStatus('idle'), 2000)
     }, autoSaveDelay)
-  }, [autoSaveDelay, onAutoSave])
+  }, [autoSaveDelay, onAutoSave, onDebouncedChange])
 
   const pushUndoSnapshot = useCallback((snapshot: string) => {
     const { undoStack } = historyRef.current
@@ -128,7 +133,9 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
 
   const commitContentChange = useCallback((content: string) => {
     lastInputRef.current = content
-    onChange(content)
+    if (onChange) {
+      onChange(content)
+    }
     triggerAutoSave(content)
   }, [onChange, triggerAutoSave])
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { database, type Goal, type Task, type Habit, type Note } from '@/lib/database'
+import { database } from '@/lib/database'
 
 export function useDatabase() {
   const [isInitialized, setIsInitialized] = useState(false)

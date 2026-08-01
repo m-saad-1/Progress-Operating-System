@@ -1,5 +1,5 @@
 import Database from '@tauri-apps/plugin-sql';
-import { invoke } from '@tauri-apps/api/core';
+
 import { endOfMonth, endOfWeek, startOfMonth, startOfWeek } from 'date-fns'
 import { safeToDayKeyParts } from '@/lib/date-safe'
 import { calculateHabitStreaks } from '@/lib/habit-streaks'
@@ -255,9 +255,9 @@ export interface UpdateGoalDTO extends Partial<CreateGoalDTO> {
 export interface CreateTaskDTO {
   title: string;
   description?: string;
-  due_date?: string;
+  due_date?: string | null;
   priority: Task['priority'];
-  estimated_time?: number;
+  estimated_time?: number | null;
   goal_id?: string;
   tags?: string[];
   duration_type?: 'today' | 'continuous'; // Today only vs Multi-day/Continuous
@@ -266,7 +266,7 @@ export interface CreateTaskDTO {
 export interface UpdateTaskDTO extends Partial<CreateTaskDTO> {
   status?: Task['status'];
   progress?: number;
-  actual_time?: number;
+  actual_time?: number | null;
   daily_progress?: Record<string, DailyTaskState>;
   duration_type?: 'today' | 'continuous';
   is_paused?: boolean;
@@ -488,7 +488,7 @@ const normalizeDailyProgressFromDb = (
     } else {
       const progress = typeof entry === 'number' ? entry : -1
       const nextState: DailyTaskState = {
-        progress,
+        progress: progress as import("@/types").TaskProgress,
         status: deriveStatusFromProgress(progress, 'pending'),
         recorded_at: fallbackTimestamp,
         source: 'user',
@@ -523,7 +523,7 @@ const inferTaskStateForDay = (
   if (task.completed_at) {
     const completedDayKey = getLocalDateString(new Date(task.completed_at))
     if (completedDayKey <= dayKey) {
-      return { progress: task.progress ?? 100, status: 'completed' }
+      return { progress: (task.progress ?? 100) as import("@/types").TaskProgress, status: 'completed' }
     }
   }
 
@@ -550,7 +550,6 @@ const TASK_METADATA_DELETED_SENTINEL = '__deleted_task_metadata__'
 // Database service class
 export class DatabaseService {
   private db: Database | null = null;
-  private encryptionKey: string | null = null;
   private isInitialized = false;
 
   async initialize(): Promise<void> {
@@ -559,9 +558,7 @@ export class DatabaseService {
     try {
       const tauriAvailable = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
         if (!tauriAvailable) {
-          console.warn('Tauri API not available. DB is mocked.');
-          this.isInitialized = true;
-          return;
+          throw new Error('Critical Error: Tauri API not available. Cannot initialize database.');
         }
         this.db = await Database.load('sqlite:progress.db');
       
@@ -580,18 +577,100 @@ export class DatabaseService {
     }
   }
 
+  private writeQueue: Array<{query: string, params?: any[]}> = [];
+  private isProcessingQueue = false;
+  private queuePromise: Promise<void> | null = null;
+  private flushTimeout: NodeJS.Timeout | null = null;
+  
+  // Basic query cache for read-heavy operations
+  private queryCache = new Map<string, { data: any, timestamp: number }>();
+  private CACHE_TTL = 5000; // 5 seconds cache
+
+  public clearCache() {
+    this.queryCache.clear();
+  }
+
+  private async flushQueue(): Promise<void> {
+    if (this.writeQueue.length === 0) return;
+    if (this.isProcessingQueue) {
+      return this.queuePromise || Promise.resolve();
+    }
+    
+    this.isProcessingQueue = true;
+    const batch = this.writeQueue.splice(0, this.writeQueue.length);
+    
+    // Clear read cache because data has mutated
+    this.clearCache();
+    
+    if (this.flushTimeout) {
+      clearTimeout(this.flushTimeout);
+      this.flushTimeout = null;
+    }
+
+    this.queuePromise = (async () => {
+      try {
+        if (!this.db) return;
+        await this.db.execute('BEGIN TRANSACTION');
+        for (const op of batch) {
+          await this.db.execute(op.query, op.params || []);
+        }
+        await this.db.execute('COMMIT');
+      } catch (error) {
+        await this.db?.execute('ROLLBACK').catch(e => console.error('Failed to rollback batch:', e));
+        console.error('Database batch failed:', error);
+      } finally {
+        this.isProcessingQueue = false;
+        this.queuePromise = null;
+        if (this.writeQueue.length > 0) {
+          this.queueFlush(10); // minimal delay for next batch
+        }
+      }
+    })();
+
+    return this.queuePromise;
+  }
+
+  private queueFlush(delayMs = 50) {
+    if (this.flushTimeout) return;
+    this.flushTimeout = setTimeout(() => {
+      this.flushTimeout = null;
+      if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+        window.requestIdleCallback(() => {
+          this.flushQueue().catch(e => console.error('Error in idle flush:', e));
+        });
+      } else {
+        this.flushQueue();
+      }
+    }, delayMs);
+  }
+
   public async executeQuery<T = any>(query: string, params: any[] = []): Promise<T[]> {
     if (!this.isInitialized || !this.db) {
       await this.initialize();
     }
     
     try {
-      if (query.trim().toUpperCase().startsWith('SELECT') || query.trim().toUpperCase().startsWith('PRAGMA')) {
+      const isSelect = query.trim().toUpperCase().startsWith('SELECT') || query.trim().toUpperCase().startsWith('PRAGMA');
+      
+      // Flush any pending writes before executing a SELECT to ensure data consistency
+      if (isSelect) {
+        if (this.writeQueue.length > 0 || this.isProcessingQueue) {
+          await this.flushQueue();
+        }
+        
+        const cacheKey = JSON.stringify({ query, params });
+        const cached = this.queryCache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+          return cached.data;
+        }
+
         if (!this.db) return [];
         const result = await this.db.select(query, params) as T[];
+        this.queryCache.set(cacheKey, { data: result, timestamp: Date.now() });
         return result;
       } else {
-        await this.db.execute(query, params);
+        // Queue single updates as a transaction to benefit from batching
+        await this.executeTransaction([{ query, params }]);
         return [];
       }
     } catch (error) {
@@ -605,18 +684,11 @@ export class DatabaseService {
       await this.initialize();
     }
     
-    try {
-      if (!this.db) return;
-      await this.db.execute('BEGIN TRANSACTION');
-      for (const op of operations) {
-        await this.db.execute(op.query, op.params || []);
-      }
-      await this.db.execute('COMMIT');
-    } catch (error) {
-      await this.db.execute('ROLLBACK').catch(e => console.error('Failed to rollback transaction:', e));
-      console.error('Database transaction failed:', error);
-      throw error;
-    }
+    this.writeQueue.push(...operations);
+    this.queueFlush();
+    
+    // Return immediately to unblock the UI thread (optimistic queuing)
+    return Promise.resolve();
   }
 
   // Goals CRUD
@@ -2035,7 +2107,7 @@ export class DatabaseService {
 
       if (dayKey === todayKey) {
         return {
-          progress: task.progress ?? 0,
+          progress: (task.progress ?? 0) as import("@/types").TaskProgress,
           status: task.status ?? 'pending',
         }
       }
@@ -3223,7 +3295,7 @@ export class DatabaseService {
         day: getDayOfMonthLabel(dateKey),
         month: getMonthLabel(date),
         fullMonth: getFullDateLabel(dateKey),
-        progress: avgProgress,
+        progress: avgProgress as import("@/types").TaskProgress,
         completionRate,
         completed: dayStats.earnedWeight,
         total: dayStats.plannedWeight,
@@ -3251,7 +3323,7 @@ export class DatabaseService {
         day: getDayFromDateKey(dateKey),
         completed: dayStats.earnedWeight,
         updates: dayStats.plannedWeight,
-        progress: dayStats.weightedProgress,
+        progress: dayStats.weightedProgress as import("@/types").TaskProgress,
       });
     }
 
