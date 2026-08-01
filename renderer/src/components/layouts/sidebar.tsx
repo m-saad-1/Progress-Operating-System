@@ -18,6 +18,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Progress } from '@/components/ui/progress'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { useStore } from '@/store'
+import { shallow } from 'zustand/shallow'
 import { useTodayAnalyticsProductivity } from '@/hooks/use-today-analytics-productivity'
 import { getSafeAvatarSrc } from '@/lib/avatar'
 
@@ -41,7 +42,13 @@ const navItems = [
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const navigate = useNavigate()
-  const store = useStore()
+  const store = useStore(
+    (state) => ({
+      userProfile: state.userProfile,
+      notifications: state.notifications,
+    }),
+    shallow
+  )
   const todayProductivity = useTodayAnalyticsProductivity()
   const avatarSrc = useMemo(() => getSafeAvatarSrc(store.userProfile.avatar), [store.userProfile.avatar])
   

@@ -4,7 +4,7 @@ import { format, parseISO } from 'date-fns'
 import { useStore } from '@/store'
 import { useTauri } from '@/hooks/use-tauri'
 import { database } from '@/lib/database'
-import { calculateHabitAnalytics, calculateTaskAnalytics, calculateProductivityScore, getDateRange } from '@/lib/progress'
+import { calculateHabitAnalytics, calculateProductivityScore, getDateRange } from '@/lib/progress'
 import type { HabitCompletion } from '@/types'
 
 const clampPercent = (value: number) => Math.max(0, Math.min(100, Math.round(value || 0)))

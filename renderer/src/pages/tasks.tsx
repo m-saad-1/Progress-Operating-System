@@ -1,12 +1,12 @@
-import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { shallow } from 'zustand/shallow'
 import { 
   Card, 
   CardContent, 
   CardHeader, 
   CardTitle, 
-  CardDescription,
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -38,17 +38,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
+
 import { 
   Plus, 
   Eye,
@@ -59,49 +49,33 @@ import {
   Edit,
   X,
   Target,
-  ChevronDown,
-  ChevronRight,
-  ChevronLeft,
   TrendingUp,
   Pause,
   Play,
-  BarChart3,
-  Activity,
   List,
   Grid3X3,
   Archive,
-  HelpCircle,
 } from 'lucide-react'
-import { format, isToday, startOfMonth, endOfMonth, subMonths, addMonths, eachDayOfInterval, getWeek, getDay, isSameDay, startOfDay, subDays } from 'date-fns'
-import { safeParseDate, safeToDayKeyParts } from '@/lib/date-safe'
+import { format, isToday, startOfDay, subDays } from 'date-fns'
+import { safeParseDate } from '@/lib/date-safe'
 import { useToaster } from '@/hooks/use-toaster'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
-import { database, CreateTaskDTO, UpdateTaskDTO, TaskTabStatsSnapshot, TaskAnalyticsChartSnapshot, TaskMonthlyHistoryPoint } from '@/lib/database'
+import { database, CreateTaskDTO, UpdateTaskDTO, TaskTabStatsSnapshot } from '@/lib/database'
 import { Task, TaskProgress, DailyTaskState, TaskStatus } from '@/types'
 import { invalidateTaskRelatedQueries, buildTaskProgressUpdatePayload } from '@/lib/task-sync'
 import { 
-  ProgressSelector, 
-  CircularProgressSelector,
   AnimatedProgressBar,
   getProgressTextColor,
   type ProgressValue 
 } from '@/components/ui/progress-selector'
-import {
-  BarChart,
-  Bar,
-  AreaChart,
-  Area,
-  LabelList,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RechartsTooltip,
-  ResponsiveContainer,
-} from 'recharts'
+
 import { TaskDurationType } from '@/types'
 import { getTodaysTasks, getYesterdaysTasks, getDailyProgress, normalizeDailyProgress, recordDailyProgress } from '@/lib/daily-reset'
 import { ContextTipsDialog } from '@/components/context-tips-dialog'
+import { CheckboxView } from '@/components/tasks/matrix-view'
+import { TaskAnalytics } from '@/components/tasks/task-analytics'
+import { TaskItem } from '@/components/tasks/task-item'
 
 interface TaskFormData {
   title: string
@@ -115,18 +89,9 @@ interface TaskFormData {
   duration_type: TaskDurationType
 }
 
-// Progress level configuration - Skipped does NOT count as completed
-// Allowed completion values: 25%, 50%, 75%, 100%
-const PROGRESS_LEVELS = [
-  { value: 0, label: 'Skipped', color: 'bg-red-500', textColor: 'text-red-500', borderColor: 'border-red-500', description: 'Task was skipped and not completed' },
-  { value: 25, label: '25%', color: 'bg-gray-400', textColor: 'text-gray-400', borderColor: 'border-gray-400', description: 'Minimal progress made' },
-  { value: 50, label: '50%', color: 'bg-yellow-500', textColor: 'text-yellow-500', borderColor: 'border-yellow-500', description: 'Halfway through the task' },
-  { value: 75, label: '75%', color: 'bg-green-400', textColor: 'text-green-400', borderColor: 'border-green-400', description: 'Almost complete, final steps remaining' },
-  { value: 100, label: 'Done', color: 'bg-green-600', textColor: 'text-green-600', borderColor: 'border-green-600', description: 'Task fully completed' },
-] as const
 
-const getProgressLabel = (value: number) =>
-  PROGRESS_LEVELS.find((level) => level.value === value)?.label || ''
+
+
 
 const TASK_TIPS_SECTIONS = [
   {
@@ -192,1331 +157,8 @@ const YESTERDAY_TIPS_SECTIONS = [
   },
 ] as const
 
-// Calendar Matrix View - Daily Progress Ledger
-const CalendarMatrixView: React.FC<{
-  tasks: Task[]
-  onProgressChange: (taskId: string, date: string, progress: ProgressValue) => void
-  onTaskClick: (task: Task) => void
-}> = ({ tasks, onProgressChange, onTaskClick }) => {
-  const [currentMonth, setCurrentMonth] = useState(new Date())
 
-  const { data: checkboxDailyActivity = [] } = useQuery<TaskAnalyticsChartSnapshot['dailyActivity']>({
-    queryKey: ['task-analytics-chart-checkbox-daily-activity', format(currentMonth, 'yyyy-MM')],
-    queryFn: async () => {
-      const snapshot = await database.getTaskAnalyticsChartSnapshot(currentMonth)
-      return snapshot.dailyActivity || []
-    },
-    staleTime: 30 * 1000,
-  })
-  
-  // Transform daily activity data to include weight labels for chart display
-  const checkboxChartData = useMemo(() => {
-    return checkboxDailyActivity.map(point => ({
-      ...point,
-      weightLabel: `${Math.round(point.completed)}/${Math.round(point.updates)}`
-    } as any))
-  }, [checkboxDailyActivity])
-  
-  // Sort tasks: continuous/multi-day first, today-only last
-  // Also exclude deleted tasks and non-paused tasks
-  const sortedTasks = useMemo(() => {
-    return [...tasks]
-      .filter(t => !t.deleted_at) // Exclude deleted tasks
-      .sort((a, b) => {
-        // Continuous tasks come first
-        if (a.duration_type === 'continuous' && b.duration_type !== 'continuous') return -1
-        if (a.duration_type !== 'continuous' && b.duration_type === 'continuous') return 1
-        // Within same type, sort by creation date (newest first)
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      })
-  }, [tasks])
-  
-  const monthStart = startOfMonth(currentMonth)
-  const monthEnd = endOfMonth(currentMonth)
-  const daysInMonth = eachDayOfInterval({ start: monthStart, end: monthEnd })
-  
-  // Group days by week for header
-  const weekGroups = useMemo(() => {
-    const groups: { weekNum: number; days: Date[] }[] = []
-    let currentWeek: Date[] = []
-    let currentWeekNum = getWeek(daysInMonth[0])
-    
-    daysInMonth.forEach((day, index) => {
-      const weekNum = getWeek(day)
-      if (weekNum !== currentWeekNum && currentWeek.length > 0) {
-        groups.push({ weekNum: currentWeekNum, days: currentWeek })
-        currentWeek = []
-        currentWeekNum = weekNum
-      }
-      currentWeek.push(day)
-      if (index === daysInMonth.length - 1) {
-        groups.push({ weekNum: currentWeekNum, days: currentWeek })
-      }
-    })
-    return groups
-  }, [daysInMonth])
-  
-  // Get task progress for a specific date
-  const getTaskDayProgress = useCallback((task: Task, date: Date): number => {
-    const dateStr = format(date, 'yyyy-MM-dd')
-    if (task.daily_progress && task.daily_progress[dateStr]) {
-      const dayEntry = task.daily_progress[dateStr]
-      const dayProgress = dayEntry.progress ?? 0
-      if (dayEntry.status === 'pending' && dayProgress === 0) {
-        return -1
-      }
-      return dayProgress
-    }
-    if (task.due_date && isSameDay(safeParseDate(task.due_date), date)) {
-      const currentProgress = task.progress ?? 0
-      if ((task.status ?? 'pending') === 'pending' && currentProgress === 0) {
-        return -1
-      }
-      return currentProgress
-    }
-    return -1
-  }, [])
-  
-  const dayNames = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
-  
-  // Get cell background based on position for natural separation
-  const getCellBg = (dayIndex: number, taskIndex: number, isCurrentDay: boolean, isWeekend: boolean) => {
-    if (isCurrentDay) return "bg-sky-500/20" // Distinct blue tint for today
-    if (isWeekend) return taskIndex % 2 === 0 ? "bg-violet-500/8" : "bg-violet-500/12"
-    // Alternating soft tints for visual separation
-    const pattern = (dayIndex + taskIndex) % 4
-    if (pattern === 0) return "bg-slate-500/5"
-    if (pattern === 1) return "bg-zinc-500/8"
-    if (pattern === 2) return "bg-neutral-500/5"
-    return "bg-stone-500/8"
-  }
-  
-  return (
-    <Card className="border-0 bg-white dark:bg-zinc-900/95 shadow-lg rounded-xl overflow-hidden">
-      <CardContent className="p-0">
-        {/* Month Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-100 dark:bg-zinc-800/85">
-          <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-white/80 dark:hover:bg-zinc-700/80" onClick={() => setCurrentMonth(subMonths(currentMonth, 1))}>
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <div className="flex flex-col items-center">
-            <h3 className="text-base font-semibold tracking-wide text-foreground">{format(currentMonth, 'MMMM yyyy')}</h3>
-            <span className="text-[10px] text-muted-foreground/70">Today · {format(new Date(), 'MMM d')}</span>
-          </div>
-          <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-white/80 dark:hover:bg-zinc-700/80" onClick={() => setCurrentMonth(addMonths(currentMonth, 1))}>
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-        
-        <div className="flex">
-          {/* Left: Task Names - reduced width */}
-          <div className="flex-shrink-0 bg-slate-50/80 dark:bg-zinc-900/70" style={{ width: '200px' }}>
-            {/* Header spacer */}
-            <div className="h-5 bg-slate-100/50 dark:bg-zinc-800/65" />
-            <div className="h-7 flex items-center px-3 bg-slate-100/50 dark:bg-zinc-800/65">
-              <span className="text-sm text-muted-foreground/80 font-medium uppercase tracking-wider">Tasks</span>
-              <span className="ml-auto text-sm text-muted-foreground/50 font-medium">{sortedTasks.length}</span>
-            </div>
-            
-            {/* Task names */}
-            <div>
-              {sortedTasks.length === 0 ? (
-                <div className="p-6 text-xs text-muted-foreground/60 text-center">
-                  No tasks yet
-                </div>
-              ) : (
-                sortedTasks.map((task, index) => (
-                  <div
-                    key={task.id}
-                    className={cn(
-                      "h-7 px-3 flex items-center gap-1.5 transition-colors group cursor-default",
-                      index % 2 === 0 ? "bg-white/60 dark:bg-zinc-900/45" : "bg-slate-50/80 dark:bg-zinc-900/65",
-                      "hover:bg-slate-100/80 dark:hover:bg-zinc-800/70"
-                    )}
-                  >
-                    {/* Task row without pause button - will be added to modal instead */}
-                    <button
-                      onClick={() => onTaskClick(task)}
-                      className={cn(
-                        "flex-1 text-sm truncate text-foreground/90 font-medium text-left hover:text-primary hover:underline cursor-pointer",
-                        task.is_paused && "line-through"
-                      )}
-                      title={`${task.title} (click to view details)`}
-                    >
-                      {task.title}
-                    </button>
-                    {/* Duration type indicator */}
-                    {task.duration_type === 'continuous' && (
-                      <Badge variant="outline" className="text-[8px] px-1 py-0 h-3 opacity-60 font-medium bg-purple-50 text-purple-600 border-purple-200 dark:bg-purple-500/20 dark:text-purple-300 dark:border-purple-500/35">
-                        M
-                      </Badge>
-                    )}
-                    {task.is_paused && (
-                      <Badge variant="outline" className="text-[8px] px-1 py-0 h-3 font-medium bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/35">
-                        ⏸
-                      </Badge>
-                    )}
-                    <Badge 
-                      variant="outline" 
-                      className={cn(
-                        "text-[9px] px-1 py-0 h-3.5 font-semibold",
-                        task.priority === 'high' && "bg-red-100 text-red-700 border-red-300 dark:bg-red-500/20 dark:text-red-300 dark:border-red-500/35",
-                        task.priority === 'medium' && "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/35",
-                        task.priority === 'low' && "bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-500/20 dark:text-blue-300 dark:border-blue-500/35"
-                      )}
-                    >
-                      {task.priority[0].toUpperCase()}
-                    </Badge>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-          
-          {/* Right: Calendar Grid - reduced cell width */}
-          <div className="flex-1 overflow-x-auto">
-            <div className="matrix-scroll" style={{ minWidth: `${daysInMonth.length * 28}px` }}>
-              {/* Header: Week numbers + Dates */}
-              <div className="bg-slate-50/50 dark:bg-zinc-900/65">
-                {/* Week numbers row */}
-                <div className="flex h-5">
-                  {weekGroups.map((group, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center justify-center text-xs text-muted-foreground/60 font-medium"
-                      style={{ width: `${group.days.length * 28}px` }}
-                    >
-                      W{group.weekNum}
-                    </div>
-                  ))}
-                </div>
-                
-                {/* Day names + dates row */}
-                <div className="flex h-6">
-                  {daysInMonth.map((day) => {
-                    const isCurrentDay = isToday(day)
-                    const isWeekend = getDay(day) === 0 || getDay(day) === 6
-                    return (
-                      <div
-                        key={day.toISOString()}
-                        className={cn(
-                          "w-7 flex flex-col items-center justify-center",
-                          isCurrentDay && "bg-sky-500/30 rounded-t",
-                          isWeekend && !isCurrentDay && "bg-violet-500/15"
-                        )}
-                      >
-                        <span className={cn(
-                          "text-[11px] leading-none",
-                          isCurrentDay ? "text-sky-600 dark:text-sky-400 font-bold" : "text-muted-foreground/50"
-                        )}>{dayNames[getDay(day)]}</span>
-                        <span className={cn(
-                          "text-[11px] leading-none mt-0 font-medium",
-                          isCurrentDay ? "text-sky-600 dark:text-sky-400 font-bold" : "text-muted-foreground/70"
-                        )}>{format(day, 'd')}</span>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-              
-              {/* Task rows with checkboxes - aligned to checkbox column */}
-              <div>
-                {sortedTasks.map((task, taskIndex) => (
-                  <div key={task.id} className="flex h-7">
-                    {daysInMonth.map((day, dayIndex) => {
-                      const dateStr = format(day, 'yyyy-MM-dd')
-                      const progress = getTaskDayProgress(task, day)
-                      const isCurrentDay = isToday(day)
-                      const isWeekend = getDay(day) === 0 || getDay(day) === 6
-                      const taskCreatedDay = startOfDay(safeParseDate(task.created_at))
-                      const dayStart = startOfDay(day)
-                      const todayStart = startOfDay(new Date())
-                      const yesterdayStart = startOfDay(subDays(todayStart, 1))
-                      
-                      const isBeforeCreation = dayStart.getTime() < taskCreatedDay.getTime()
-                      const isYesterday = isSameDay(dayStart, yesterdayStart)
-                      
-                      // For CHECKBOX MODE: 
-                      // 1. Only Today and Yesterday (1 day before today) are clickable/editable
-                      // 2. All other past days must be read-only
-                      // 3. Future dates must not be clickable
-                      // 4. Dates before task creation must not be clickable
-                      // 5. Task being paused disables editing
-                      const isAllowedDay = isCurrentDay || isYesterday
-                      const isDisabled = !isAllowedDay || isBeforeCreation || task.is_paused === true
-                      
-                      return (
-                        <div
-                          key={day.toISOString()}
-                          className={cn(
-                            "w-7 flex items-center justify-center",
-                            getCellBg(dayIndex, taskIndex, isCurrentDay, isWeekend)
-                          )}
-                        >
-                          <MatrixCheckbox
-                            value={progress}
-                            onChange={(newProgress) => onProgressChange(task.id, dateStr, newProgress)}
-                            disabled={isDisabled}
-                          />
-                        </div>
-                      )
-                    })}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
 
-        <div className="px-4 pt-3 pb-1">
-          <div className="overflow-x-auto">
-            <div style={{ display: 'flex', flexDirection: 'column', minWidth: `${checkboxChartData.length * 30}px` }}>
-              {/* Weight labels row - aligned with chart bars */}
-              <div className="flex h-6 text-[10px] font-medium text-foreground/70 mb-2" style={{ marginLeft: '0px' }}>
-                {checkboxChartData.map((point, idx) => (
-                  <div key={idx} style={{ flex: 1, textAlign: 'center', paddingBottom: '4px' }}>
-                    {point.weightLabel}
-                  </div>
-                ))}
-              </div>
-              
-              {/* Chart */}
-              <div className="h-24">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={checkboxChartData} margin={{ top: 0, right: 0, left: 0, bottom: 20 }}>
-                    <XAxis 
-                      dataKey="date" 
-                      tick={{ fontSize: 10 }}
-                      angle={0}
-                      textAnchor="middle"
-                      height={40}
-                    />
-                    <Bar
-                      dataKey="completed"
-                      fill="hsl(142 76% 36%)"
-                      radius={[2, 2, 0, 0]}
-                      isAnimationActive={false}
-                      maxBarSize={20}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </div>
-        </div>
-        
-        {/* Legend - Clean minimal style */}
-        <div className="px-4 py-2 bg-slate-50/80 dark:bg-zinc-900/75 flex items-center justify-center gap-4">
-          {PROGRESS_LEVELS.map((level) => (
-            <div key={level.value} className="flex items-center gap-1.5">
-              <div className={cn(
-                "w-3 h-3 rounded",
-                level.value === 0 ? "bg-rose-500/90" :
-                level.value === 25 ? "bg-slate-400/90" :
-                level.value === 50 ? "bg-amber-500/90" :
-                level.value === 75 ? "bg-emerald-400/90" :
-                "bg-emerald-600"
-              )} />
-              <span className="text-sm text-muted-foreground/70 font-medium">{level.label}</span>
-            </div>
-          ))}
-          <div className="flex items-center gap-1.5">
-            <div className="w-3 h-3 rounded bg-zinc-300/70 dark:bg-zinc-600/50" />
-            <span className="text-sm text-muted-foreground/70 font-medium">Empty</span>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-// Matrix Checkbox Component
-const MatrixCheckbox: React.FC<{
-  value: number
-  onChange: (value: ProgressValue) => void
-  disabled?: boolean
-}> = ({ value, onChange, disabled }) => {
-  const [open, setOpen] = useState(false)
-  const [localValue, setLocalValue] = useState(value)
-  
-  // Sync local value with prop when it changes from parent
-  useEffect(() => {
-    setLocalValue(value)
-  }, [value])
-  
-  const getCheckboxStyle = (val: number) => {
-    // Empty state - distinct grayish color that's clearly visible
-    if (val < 0) return "bg-zinc-300/70 dark:bg-zinc-700/70 hover:bg-zinc-400/70 dark:hover:bg-zinc-600/80"
-    if (val === 0) return "bg-rose-500 hover:bg-rose-600"
-    if (val === 25) return "bg-slate-400 hover:bg-slate-500"
-    if (val === 50) return "bg-amber-500 hover:bg-amber-600"
-    if (val === 75) return "bg-emerald-400 hover:bg-emerald-500"
-    return "bg-emerald-600 hover:bg-emerald-700" // 100% completed
-  }
-  
-  const handleSelect = (newValue: ProgressValue) => {
-    setLocalValue(newValue) // Immediately update local state for instant UI feedback
-    onChange(newValue) // Trigger the actual update
-    setOpen(false)
-  }
-
-  if (disabled) {
-    return (
-      <div
-        className={cn(
-          "w-4 h-4 rounded-sm cursor-not-allowed pointer-events-none ring-1 ring-border/60",
-          getCheckboxStyle(localValue)
-        )}
-      />
-    )
-  }
-  
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          className={cn(
-            "w-4 h-4 rounded-sm transition-all duration-100 hover:scale-110 cursor-pointer shadow-sm",
-            getCheckboxStyle(localValue)
-          )}
-          aria-label="How much work done?"
-        />
-      </PopoverTrigger>
-      <PopoverContent className="w-52 p-2 bg-white dark:bg-zinc-900 shadow-xl rounded-lg border border-border/60" align="center" side="bottom" sideOffset={6}>
-        <div className="space-y-1">
-          <div className="flex items-center justify-between pb-1 mb-1 border-b border-border/50">
-            <span className="text-xs font-medium text-muted-foreground">How much work done?</span>
-            <TooltipProvider delayDuration={0}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <HelpCircle className="h-3.5 w-3.5 text-muted-foreground/70 hover:text-primary cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent side="right" className="max-w-xs p-3">
-                  <div className="space-y-2 text-xs">
-                    <p><strong>0% (Skipped):</strong> No work completed; excluded from completion.</p>
-                    <p><strong>25% complete:</strong> Started with initial progress.</p>
-                    <p><strong>50% complete:</strong> Roughly half of the work is done.</p>
-                    <p><strong>75% complete:</strong> Most work finished; final steps remain.</p>
-                    <p><strong>100% complete:</strong> Task fully completed.</p>
-                  </div>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-          {PROGRESS_LEVELS.map((level) => (
-            <button
-              key={level.value}
-              onClick={() => handleSelect(level.value as ProgressValue)}
-              className={cn(
-                "w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-xs transition-colors",
-                localValue === level.value ? "bg-secondary dark:bg-zinc-800" : "hover:bg-secondary/70 dark:hover:bg-zinc-800/70"
-              )}
-            >
-              <div className={cn(
-                "w-4 h-4 rounded-sm",
-                level.value === 0 ? "bg-rose-500" :
-                level.value === 25 ? "bg-slate-400" :
-                level.value === 50 ? "bg-amber-500" :
-                level.value === 75 ? "bg-emerald-400" :
-                "bg-emerald-600"
-              )} />
-              <span className="text-foreground/90 font-medium">{level.value}%</span>
-              <span className="text-muted-foreground/70 ml-auto text-[10px]">{level.label}</span>
-            </button>
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
-  )
-}
-
-// Checkbox View Component - Now uses Calendar Matrix
-const CheckboxView: React.FC<{
-  tasks: Task[]
-  onProgressChange: (taskId: string, date: string, progress: ProgressValue) => void
-  onTaskClick: (task: Task) => void
-}> = React.memo(({ tasks, onProgressChange, onTaskClick }) => {
-  return (
-    <CalendarMatrixView
-      tasks={tasks}
-      onProgressChange={onProgressChange}
-      onTaskClick={onTaskClick}
-    />
-  )
-})
-
-// Task Analytics Charts - Enhanced
-const TaskAnalytics: React.FC<{ dayKey: string; showDailyActivity?: boolean }> = React.memo(({ dayKey, showDailyActivity = true }) => {
-  // Daily Activity section has independent month navigation
-  const [selectedDailyActivityMonth, setSelectedDailyActivityMonth] = useState(new Date())
-  // Previous Months Progress section has independent year navigation
-  const [selectedMonthHistoryYear, setSelectedMonthHistoryYear] = useState(new Date().getFullYear())
-  const previousDayKeyRef = useRef(dayKey)
-
-  useEffect(() => {
-    const previousDayKey = previousDayKeyRef.current
-    if (previousDayKey === dayKey) return
-
-    const prevParts = safeToDayKeyParts(previousDayKey)
-    const currParts = safeToDayKeyParts(dayKey)
-    if (!prevParts || !currParts) {
-      previousDayKeyRef.current = dayKey
-      return
-    }
-    const [prevYear, prevMonth, prevDay] = prevParts
-    const [currYear, currMonth, currDay] = currParts
-
-    if (!prevYear || !prevMonth || !prevDay || !currYear || !currMonth || !currDay) {
-      previousDayKeyRef.current = dayKey
-      return
-    }
-
-    const previousDate = new Date(prevYear, prevMonth - 1, prevDay, 0, 0, 0, 0)
-    const currentDate = new Date(currYear, currMonth - 1, currDay, 0, 0, 0, 0)
-    const previousMonthStart = startOfMonth(previousDate)
-    const currentMonthStart = startOfMonth(currentDate)
-
-    if (
-      previousMonthStart.getTime() !== currentMonthStart.getTime() &&
-      startOfMonth(selectedDailyActivityMonth).getTime() === previousMonthStart.getTime()
-    ) {
-      setSelectedDailyActivityMonth(currentMonthStart)
-    }
-
-    previousDayKeyRef.current = dayKey
-  }, [dayKey, selectedDailyActivityMonth])
-
-  const { data: rollingTrendSnapshot } = useQuery<TaskAnalyticsChartSnapshot>({
-    queryKey: ['task-analytics-chart-rolling', dayKey],
-    queryFn: () => database.getTaskAnalyticsChartSnapshot(new Date()),
-    staleTime: 30 * 1000,
-  })
-  
-  // Fetch analytics data for Daily Activity section (independent month) - Real historical task data
-  const { data: dailyActivitySnapshot } = useQuery<TaskAnalyticsChartSnapshot>({
-    queryKey: ['task-analytics-chart-daily-activity', format(selectedDailyActivityMonth, 'yyyy-MM'), dayKey],
-    queryFn: () => database.getTaskAnalyticsChartSnapshot(selectedDailyActivityMonth),
-    staleTime: 30 * 1000,
-    enabled: showDailyActivity,
-  })
-  
-  // Fetch analytics data for Consistency section (current year only)
-  const { data: analyticsSnapshot } = useQuery<TaskAnalyticsChartSnapshot>({
-    queryKey: ['task-analytics-chart-consistency', dayKey],
-    queryFn: () => database.getTaskAnalyticsChartSnapshot(new Date()),
-    staleTime: 30 * 1000,
-  })
-
-  const { data: previousMonthsHistory = [] } = useQuery<TaskMonthlyHistoryPoint[]>({
-    queryKey: ['task-monthly-history', dayKey],
-    queryFn: () => database.getTaskMonthlyHistory(),
-    staleTime: 60 * 1000,
-  })
-
-  const monthlyData = rollingTrendSnapshot?.monthlyTrend || []
-  const dailyData = dailyActivitySnapshot?.dailyActivity || []
-  const heatmapData = analyticsSnapshot?.heatmap || []
-
-  const dailyActivityMonthLabel = useMemo(() => {
-    return format(selectedDailyActivityMonth, 'MMMM yyyy')
-  }, [selectedDailyActivityMonth])
-
-  const canNavigateToPreviousDailyActivityMonth = useMemo(() => {
-    // Allow navigation up to 12 months back for Daily Activity
-    const twelveMonthsAgo = subMonths(new Date(), 12)
-    return startOfMonth(selectedDailyActivityMonth) > startOfMonth(twelveMonthsAgo)
-  }, [selectedDailyActivityMonth])
-
-  const canNavigateToNextDailyActivityMonth = useMemo(() => {
-    // Can't navigate beyond current month for Daily Activity
-    return startOfMonth(selectedDailyActivityMonth) < startOfMonth(new Date())
-  }, [selectedDailyActivityMonth])
-
-  // Y-axis dynamically adjusts per month based on highest daily weight in that specific month
-  const dailyMaxWeight = useMemo(() => {
-    if (!dailyData || dailyData.length === 0) {
-      return 4
-    }
-    const maxPlanned = dailyData.reduce((max, point) => Math.max(max, point.updates || 0), 0)
-    // Ensure minimum scale of 4, add 1 to provide visual headroom
-    return Math.max(4, Math.ceil(maxPlanned + 1))
-  }, [dailyData])
-
-  // Filter previous months history to only show selected year
-  const filteredMonthlyHistory = useMemo(() => {
-    return previousMonthsHistory.filter((month) => {
-      const monthYear = parseInt(month.monthKey.split('-')[0], 10)
-      return monthYear === selectedMonthHistoryYear
-    })
-  }, [previousMonthsHistory, selectedMonthHistoryYear])
-
-  const canNavigateToPreviousYear = useMemo(() => {
-    // Get earliest year from all historical data
-    if (previousMonthsHistory.length === 0) return false
-    const earliestYear = Math.min(...previousMonthsHistory.map(m => parseInt(m.monthKey.split('-')[0], 10)))
-    return selectedMonthHistoryYear > earliestYear
-  }, [selectedMonthHistoryYear, previousMonthsHistory])
-
-  const canNavigateToNextYear = useMemo(() => {
-    // Can't navigate beyond current year
-    const currentYear = new Date().getFullYear()
-    return selectedMonthHistoryYear < currentYear
-  }, [selectedMonthHistoryYear])
-
-  const monthlyTotalEarned = useMemo(() => {
-    return monthlyData.reduce((sum, point) => sum + point.completed, 0)
-  }, [monthlyData])
-
-  const monthlyTotalPlanned = useMemo(() => {
-    return monthlyData.reduce((sum, point) => sum + point.total, 0)
-  }, [monthlyData])
-
-  const dailyTotalEarned = useMemo(() => {
-    return dailyData.reduce((sum, point) => sum + point.completed, 0)
-  }, [dailyData])
-
-  const dailyTotalPlanned = useMemo(() => {
-    return dailyData.reduce((sum, point) => sum + point.updates, 0)
-  }, [dailyData])
-
-  const heatmapDateMap = useMemo(() => {
-    const dateMap = new Map<string, string>()
-    if (!analyticsSnapshot?.heatmapStartDate) return dateMap
-    
-    const start = safeParseDate(`${analyticsSnapshot.heatmapStartDate}T00:00:00`)
-    for (let weekIndex = 0; weekIndex < heatmapData.length; weekIndex++) {
-      const week = heatmapData[weekIndex]
-      for (let dayIndex = 0; dayIndex < week.length; dayIndex++) {
-        const date = new Date(start)
-        date.setDate(start.getDate() + (weekIndex * 7) + dayIndex)
-        const dateKey = format(date, 'MMM dd, yyyy')
-        dateMap.set(`${weekIndex}-${dayIndex}`, dateKey)
-      }
-    }
-    return dateMap
-  }, [heatmapData, analyticsSnapshot?.heatmapStartDate])
-
-  const heatmapCellSize = 12
-  const heatmapGap = 4
-
-  const heatmapMonthLabels = useMemo(() => {
-    if (!analyticsSnapshot?.heatmapStartDate || heatmapData.length === 0) return [] as Array<{ index: number; label: string }>
-
-    const labels: Array<{ index: number; label: string }> = []
-    const start = safeParseDate(`${analyticsSnapshot.heatmapStartDate}T00:00:00`)
-    const seenMonths = new Set<string>()
-
-    for (let weekIndex = 0; weekIndex < heatmapData.length; weekIndex++) {
-      const weekDate = new Date(start)
-      weekDate.setDate(start.getDate() + (weekIndex * 7))
-
-      if (weekDate.getFullYear() !== analyticsSnapshot.heatmapYear) continue
-
-      const monthKey = format(weekDate, 'MMM')
-      if (!seenMonths.has(monthKey)) {
-        seenMonths.add(monthKey)
-        labels.push({ index: weekIndex, label: monthKey })
-      }
-    }
-
-    return labels
-  }, [analyticsSnapshot?.heatmapStartDate, analyticsSnapshot?.heatmapYear, heatmapData])
-
-  const heatmapLabelByIndex = useMemo(
-    () => new Map(heatmapMonthLabels.map(label => [label.index, label.label])),
-    [heatmapMonthLabels],
-  )
-
-  const heatmapColumnTemplate = useMemo(() => {
-    return `34px repeat(${Math.max(heatmapData.length, 1)}, ${heatmapCellSize}px)`
-  }, [heatmapData.length])
-
-  const heatmapRowTemplate = `repeat(7, ${heatmapCellSize}px)`
-  
-  return (
-    <div className="space-y-5">
-      {showDailyActivity && (
-      <Card className="overflow-hidden">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center gap-2 text-base font-semibold">
-              <BarChart3 className="h-4 w-4 text-green-500" />
-              Daily Activity
-            </CardTitle>
-            <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setSelectedDailyActivityMonth(prev => subMonths(prev, 1))}
-                disabled={!canNavigateToPreviousDailyActivityMonth}
-                title="View previous month"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-              <div className="min-w-32 text-center">
-                <button
-                  className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-muted"
-                >
-                  {dailyActivityMonthLabel}
-                </button>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setSelectedDailyActivityMonth(prev => addMonths(prev, 1))}
-                disabled={!canNavigateToNextDailyActivityMonth}
-                title="View next month"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setSelectedDailyActivityMonth(startOfMonth(new Date()))}
-                title="Go to current month"
-              >
-                <Calendar className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <CardDescription className="text-sm">{dailyActivityMonthLabel || 'Current month'} • earned/planned weight by day</CardDescription>
-        </CardHeader>
-        <CardContent className="pt-0 pb-6 px-6">
-          <div className="mb-4 flex items-center justify-between">
-            <div className="text-sm font-medium text-muted-foreground">Month Total:</div>
-            <div className="text-sm font-semibold">{Math.round(dailyTotalEarned * 10) / 10} / {Math.round(dailyTotalPlanned * 10) / 10}</div>
-          </div>
-          <div className="h-48 overflow-x-auto" style={{ scrollbarWidth: 'thin' }}>
-            <div style={{ minWidth: `${Math.max(dailyData.length * 28, 900)}px`, height: '100%' }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={dailyData} margin={{ top: 5, right: 12, left: -10, bottom: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted/30" vertical={false} />
-                  <XAxis dataKey="date" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
-                  <YAxis domain={[0, dailyMaxWeight]} tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
-                  <RechartsTooltip 
-                    contentStyle={{ 
-                      backgroundColor: 'hsl(var(--popover))',
-                      border: '1px solid hsl(var(--border))',
-                      borderRadius: '8px',
-                      fontSize: '10px',
-                    }}
-                    formatter={(value: any, name: any) => {
-                      if (name === 'completed') return [`${Math.round(value * 100) / 100}`, 'Earned Weight']
-                      if (name === 'updates') return [`${Math.round(value * 100) / 100}`, 'Planned Weight']
-                      return value
-                    }}
-                    labelFormatter={(_label: any, payload: any) => {
-                      const point = payload?.[0]?.payload
-                      if (!point) return ''
-                      return `${point.dateKey} • ${point.progress}% progress`
-                    }}
-                  />
-                  <Bar 
-                    dataKey="completed" 
-                    fill="hsl(142 76% 36%)" 
-                    radius={[3, 3, 0, 0]}
-                    name="completed"
-                  >
-                    <LabelList
-                      dataKey="completed"
-                      position="top"
-                      content={(props: any) => {
-                        const { x, y, index } = props
-                        const point = typeof index === 'number' ? dailyData[index] : undefined
-                        if (!point) return null
-                        const earned = Math.round(point.completed * 10) / 10
-                        const planned = Math.round(point.updates * 10) / 10
-                        return (
-                          <text
-                            x={(x || 0) + 10}
-                            y={(y || 0) - 10}
-                            textAnchor="middle"
-                            fontSize={8}
-                            fill="hsl(var(--foreground))"
-                            fontWeight="500"
-                          >
-                            {`${earned}/${planned}`}
-                          </text>
-                        )
-                      }}
-                    />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-      )}
-      
-      <Card className="overflow-hidden">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center gap-2 text-lg font-semibold">
-              <TrendingUp className="h-4 w-4 text-amber-500" />
-              Progress Trend
-            </CardTitle>
-            <div className="text-xs font-medium text-muted-foreground">Rolling 30 days</div>
-          </div>
-          <CardDescription className="text-sm">Daily weight completion score • rolling earned/planned trend</CardDescription>
-        </CardHeader>
-        <CardContent className="pt-0 pb-6 px-6">
-          <div className="mb-4 flex items-center justify-between">
-            <div className="text-sm font-medium text-muted-foreground">Earned / Planned Weight:</div>
-            <div className="text-sm font-semibold">{Math.round(monthlyTotalEarned * 10) / 10} / {Math.round(monthlyTotalPlanned * 10) / 10}</div>
-          </div>
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={monthlyData} margin={{ top: 5, right: 12, left: -10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="dateKey" className="text-xs" tickFormatter={(value) => String(value).slice(8, 10)} />
-                <YAxis domain={[0, 100]} className="text-xs" />
-                <RechartsTooltip 
-                  content={({ active, payload }) => {
-                    if (active && payload && payload.length) {
-                      const data = payload[0]?.payload
-                      return (
-                        <div className="rounded-lg border bg-popover p-3 shadow-lg">
-                          <p className="font-semibold text-sm mb-2">{data?.fullMonth}</p>
-                          <div className="flex items-center justify-between gap-4 text-sm">
-                            <span className="text-muted-foreground">Progress:</span>
-                            <span className="font-bold">{data?.completionRate}%</span>
-                          </div>
-                        </div>
-                      )
-                    }
-                    return null
-                  }}
-                />
-                <Area 
-                  type="monotone" 
-                  dataKey="completionRate" 
-                  name="Completion Rate (%)"
-                  stroke="#22c55e" 
-                  fill="#22c55e" 
-                  fillOpacity={0.4}
-                  isAnimationActive={true}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </CardContent>
-      </Card>
-      
-      <Card className="overflow-hidden">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base font-semibold">
-            <Activity className="h-4 w-4 text-orange-500" />
-            Consistency
-          </CardTitle>
-          <CardDescription className="text-sm">{analyticsSnapshot?.heatmapYear || new Date().getFullYear()} • weighted activity intensity (0-5 scale)</CardDescription>
-        </CardHeader>
-        <CardContent className="pt-0 pb-6 px-6">
-          <div className="overflow-x-auto" style={{ scrollbarWidth: 'thin' }}>
-            <div className="min-w-max p-2">
-              <div
-                className="grid mb-3 items-end"
-                style={{ gridTemplateColumns: heatmapColumnTemplate, columnGap: `${heatmapGap}px` }}
-              >
-                <div />
-                {heatmapData.map((_week, weekIndex) => (
-                  <div
-                    key={`month-${weekIndex}`}
-                    className="text-[11px] leading-none text-muted-foreground font-medium text-center"
-                  >
-                    {heatmapLabelByIndex.get(weekIndex) || ''}
-                  </div>
-                ))}
-              </div>
-
-              <div
-                className="grid items-start"
-                style={{ gridTemplateColumns: heatmapColumnTemplate, columnGap: `${heatmapGap}px` }}
-              >
-                <div
-                  className="grid text-[11px] text-muted-foreground font-medium pr-1"
-                  style={{ gridTemplateRows: heatmapRowTemplate, rowGap: `${heatmapGap}px` }}
-                >
-                  <span className="flex items-center justify-end">Sun</span>
-                  <span className="flex items-center justify-end">Mon</span>
-                  <span className="flex items-center justify-end">Tue</span>
-                  <span className="flex items-center justify-end">Wed</span>
-                  <span className="flex items-center justify-end">Thu</span>
-                  <span className="flex items-center justify-end">Fri</span>
-                  <span className="flex items-center justify-end">Sat</span>
-                </div>
-
-                {heatmapData.map((week, weekIndex) => (
-                  <div
-                    key={weekIndex}
-                    className="grid"
-                    style={{ gridTemplateRows: heatmapRowTemplate, rowGap: `${heatmapGap}px` }}
-                  >
-                    {week.map((intensity, dayIndex) => {
-                      const dateKey = `${weekIndex}-${dayIndex}`
-                      const dateLabel = heatmapDateMap.get(dateKey)
-                      const intensityLabel = intensity === 0 ? 'No activity' : `${intensity} intensity`
-                      return (
-                        <TooltipProvider key={dateKey}>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <div
-                                className={cn(
-                                  "rounded-sm transition-all hover:shadow-sm hover:ring-1 hover:ring-offset-1 cursor-help",
-                                  intensity === 0 && "bg-slate-200 dark:bg-slate-700 hover:ring-slate-400",
-                                  intensity === 1 && "bg-green-100 dark:bg-green-900 hover:ring-green-400",
-                                  intensity === 2 && "bg-green-300 dark:bg-green-700 hover:ring-green-400",
-                                  intensity === 3 && "bg-green-400 dark:bg-green-600 hover:ring-green-500",
-                                  intensity === 4 && "bg-green-500 dark:bg-green-500 hover:ring-green-600",
-                                  intensity >= 5 && "bg-green-600 dark:bg-green-400 hover:ring-green-700",
-                                )}
-                                style={{ width: `${heatmapCellSize}px`, height: `${heatmapCellSize}px` }}
-                              />
-                            </TooltipTrigger>
-                            <TooltipContent className="text-xs">
-                              <p>{dateLabel}</p>
-                              <p className="font-semibold">{intensityLabel}</p>
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      )
-                    })}
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-3 flex items-center justify-center gap-2 text-xs text-muted-foreground font-medium">
-                <span>Less</span>
-                <div className="flex items-center gap-1">
-                  {[0, 1, 2, 3, 4, 5].map((intensity) => (
-                    <div
-                      key={`legend-${intensity}`}
-                      className={cn(
-                        "rounded-sm",
-                        intensity === 0 && "bg-slate-200 dark:bg-slate-700",
-                        intensity === 1 && "bg-green-100 dark:bg-green-900",
-                        intensity === 2 && "bg-green-300 dark:bg-green-700",
-                        intensity === 3 && "bg-green-400 dark:bg-green-600",
-                        intensity === 4 && "bg-green-500 dark:bg-green-500",
-                        intensity >= 5 && "bg-green-600 dark:bg-green-400",
-                      )}
-                      style={{ width: `${heatmapCellSize}px`, height: `${heatmapCellSize}px` }}
-                    />
-                  ))}
-                </div>
-                <span>More</span>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className="overflow-hidden">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center gap-2 text-base font-semibold">
-              <Calendar className="h-4 w-4 text-blue-500" />
-              Previous Months Progress
-            </CardTitle>
-            <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setSelectedMonthHistoryYear(prev => prev - 1)}
-                disabled={!canNavigateToPreviousYear}
-                title="View previous year"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-              <div className="min-w-16 text-center">
-                <button
-                  className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-muted"
-                  title={`Viewing ${selectedMonthHistoryYear}`}
-                >
-                  {selectedMonthHistoryYear}
-                </button>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setSelectedMonthHistoryYear(prev => prev + 1)}
-                disabled={!canNavigateToNextYear}
-                title="View next year"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setSelectedMonthHistoryYear(new Date().getFullYear())}
-                title="Go to current year"
-              >
-                <Calendar className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <CardDescription className="text-sm">{selectedMonthHistoryYear} monthly performance with weighted completion metrics</CardDescription>
-        </CardHeader>
-        <CardContent className="pt-0 pb-6 px-6">
-          {filteredMonthlyHistory.length === 0 ? (
-            <div className="text-sm text-muted-foreground text-center py-4">No data available for {selectedMonthHistoryYear}. Data will show after first month completes.</div>
-          ) : (
-            <div className="space-y-2">
-              {filteredMonthlyHistory.map((month) => {
-                const completionRate = month.completionRate || 0
-                const completedCount = month.completionRate >= 100 ? month.total : Math.round((month.completionRate / 100) * month.total)
-                const partiallyCompletedCount = Math.max(0, month.total - completedCount)
-                const skippedCount = month.total > 0 ? Math.max(0, month.total - (month.completed || 0) - partiallyCompletedCount) : 0
-                
-                return (
-                  <div 
-                    key={month.monthKey} 
-                    className="rounded border bg-card hover:bg-muted/50 transition-colors p-3"
-                  >
-                    {/* Month Header with Completion Badge */}
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-sm">{month.monthLabel}</span>
-                        <Badge 
-                          variant="outline" 
-                          className={cn(
-                            "text-xs font-semibold",
-                            completionRate >= 80 && "bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-300",
-                            completionRate >= 60 && completionRate < 80 && "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300",
-                            completionRate < 60 && "bg-red-100 text-red-700 border-red-300 dark:bg-red-900/40 dark:text-red-300"
-                          )}
-                        >
-                          {completionRate}%
-                        </Badge>
-                      </div>
-                      <div className="text-right text-xs text-muted-foreground">
-                        Weight: <span className="font-medium text-foreground">{Math.round(month.earnedWeight * 10) / 10}/{Math.round(month.plannedWeight * 10) / 10}</span>
-                      </div>
-                    </div>
-
-                    {/* Data Grid */}
-                    <div className="grid grid-cols-3 gap-2 text-xs mb-2">
-                      <div className="flex flex-col">
-                        <span className="text-muted-foreground font-medium mb-0.5">Total</span>
-                        <span className="font-semibold text-sm">{month.total}</span>
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="text-muted-foreground font-medium mb-0.5">Completed</span>
-                        <span className="font-semibold text-sm text-emerald-600 dark:text-emerald-400">{month.completed}</span>
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="text-muted-foreground font-medium mb-0.5">Skipped</span>
-                        <span className="font-semibold text-sm text-red-600 dark:text-red-400">{skippedCount}</span>
-                      </div>
-                    </div>
-
-                    {/* Progress Bar */}
-                    <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                      <div 
-                        className={cn(
-                          "h-full rounded-full transition-all",
-                          completionRate >= 80 ? "bg-emerald-500" :
-                          completionRate >= 60 ? "bg-amber-500" :
-                          "bg-red-500"
-                        )}
-                        style={{ width: `${completionRate}%` }}
-                      />
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  )
-})
-
-type TaskItemProps = {
-  task: Task
-  goals: any[]
-  expanded: boolean
-  onToggleExpand: () => void
-  onProgressChange: (progress: ProgressValue) => void
-  onEdit: () => void
-  onDelete: () => void
-  onOpenDetails: () => void
-  onPauseToggle?: (isPaused: boolean) => void
-  readonly?: boolean
-  hideActions?: boolean
-  allowProgressEditWhenPaused?: boolean
-}
-
-// Task row rendering is expensive; memoize so unrelated state changes (dialogs/forms)
-// don't force every task card to re-render.
-const TaskItemBase: React.FC<TaskItemProps> = ({ task, goals, expanded, onToggleExpand, onProgressChange, onEdit, onDelete, onOpenDetails, onPauseToggle, readonly = false, hideActions = false, allowProgressEditWhenPaused = false }) => {
-  const progress = task.progress ?? 0
-  const displayProgress = (task.status ?? 'pending') === 'pending' && progress === 0 ? -1 : progress
-  const isCompleted = task.status === 'completed' || progress === 100
-  const isInteractionLocked = readonly || (task.is_paused && !allowProgressEditWhenPaused)
-
-  return (
-    <div className="animate-in fade-in slide-in-from-bottom-2 duration-200">
-      <Card interactive className={cn(
-        "transition-all duration-300",
-        isCompleted && "bg-muted/30 dark:bg-muted/20"
-      )}>
-        <CardContent className="pt-4">
-          <div className="flex items-start gap-3">
-            {/* Progress Selector */}
-            <div className="mt-1">
-              <CircularProgressSelector
-                value={(task.progress || 0) as ProgressValue}
-                onChange={isInteractionLocked ? () => {} : onProgressChange}
-                size="md"
-                showPercentage={(task.progress || 0) > 0}
-                disabled={isInteractionLocked}
-              />
-            </div>
-            
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={onToggleExpand}
-                    className="text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    {expanded ? (
-                      <ChevronDown className="h-4 w-4" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4" />
-                    )}
-                  </button>
-                  <h3 className={cn(
-                    "font-medium transition-all duration-300",
-                    isCompleted && "line-through text-muted-foreground",
-                    task.is_paused && "line-through text-muted-foreground"
-                  )}>
-                    {task.title}
-                  </h3>
-                  {task.is_paused && (
-                    <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 text-xs h-5">
-                      ⏸ Paused
-                    </Badge>
-                  )}
-                </div>
-                
-                <div className="flex items-center gap-2">
-                  <Badge 
-                    variant="outline"
-                    className={cn(
-                      "capitalize",
-                      task.priority === 'high' && "bg-red-500/10 text-red-600 border-red-500/20 hover:bg-red-500/20",
-                      task.priority === 'medium' && "bg-amber-500/10 text-amber-600 border-amber-500/20 hover:bg-amber-500/20",
-                      task.priority === 'low' && "bg-blue-500/10 text-blue-600 border-blue-500/20 hover:bg-blue-500/20"
-                    )}
-                  >
-                    {task.priority}
-                  </Badge>
-
-                  <Badge 
-                    variant="outline" 
-                    className={cn(
-                      "text-xs",
-                      task.duration_type === 'today' && "bg-amber-500/10 text-amber-600 border-amber-500/20 hover:bg-amber-500/20",
-                      task.duration_type === 'continuous' && "bg-purple-500/10 text-purple-600 border-purple-500/20 hover:bg-purple-500/20"
-                    )}
-                  >
-                    {task.duration_type === 'today' ? 'Today-only' : 'Continuous'}
-                  </Badge>
-                  
-                  {/* Progress Badge */}
-                  <Badge 
-                    variant="outline" 
-                    className={cn(
-                      "transition-colors duration-300",
-                      getProgressTextColor(task.progress || 0),
-                      isCompleted && "bg-green-500/10"
-                    )}
-                  >
-                    {task.progress || 0}%
-                  </Badge>
-
-                  <div className="flex items-center gap-1">
-                    {!readonly && !hideActions && (
-                      <>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 hover:bg-primary/10"
-                          onClick={onEdit}
-                          aria-label="Edit task"
-                        >
-                          <Edit className="h-4 w-4" />
-                        </Button>
-                        {/* Pause/Resume Button - Icon only, for Continuous Tasks */}
-                        {task.duration_type === 'continuous' && (
-                          <TooltipProvider>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 hover:bg-slate-200/50 dark:hover:bg-slate-700/50"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    onPauseToggle?.(!task.is_paused)
-                                  }}
-                                >
-                                  {task.is_paused ? (
-                                    <Play className="h-4 w-4 text-green-600" />
-                                  ) : (
-                                    <Pause className="h-4 w-4 text-amber-600" />
-                                  )}
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent side="bottom" className="w-56 p-3">
-                                <div className="space-y-2">
-                                  {task.is_paused ? (
-                                    <>
-                                      <p className="font-semibold text-green-600 flex items-center gap-1">
-                                        <Play className="h-4 w-4" />
-                                        Resume Task
-                                      </p>
-                                      <p className="text-xs text-muted-foreground">
-                                        Click to resume tracking progress. Task will start counting toward daily progress.
-                                      </p>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <p className="font-semibold text-amber-600 flex items-center gap-1">
-                                        <Pause className="h-4 w-4" />
-                                        Pause Task
-                                      </p>
-                                      <p className="text-xs text-muted-foreground">
-                                        Progress will be frozen ❄️ and won't count toward daily goals, analytics, or statistics.
-                                      </p>
-                                      <p className="text-xs text-muted-foreground border-t border-border pt-2 mt-2">
-                                        Resume later to continue tracking.
-                                      </p>
-                                    </>
-                                  )}
-                                </div>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-orange-600 hover:bg-orange-500/10 hover:text-orange-600"
-                          onClick={onDelete}
-                          aria-label="Archive task"
-                        >
-                          <Archive className="h-4 w-4" />
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-              
-              {/* Inline Progress Bar */}
-              <div className="mb-2">
-                <AnimatedProgressBar value={task.progress || 0} height="sm" />
-              </div>
-              
-              {/* Expanded Details */}
-              {expanded && (
-                <div className="animate-in fade-in slide-in-from-top-2 duration-200">
-                    <div className="ml-6 mt-3 space-y-3">
-                      {task.description && (
-                        <p className="text-sm text-muted-foreground">
-                          {task.description}
-                        </p>
-                      )}
-                      
-                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                        {task.due_date && task.duration_type !== 'continuous' && (
-                          <div className="flex items-center">
-                            <Calendar className="mr-1 h-3 w-3" />
-                            Due: {format(safeParseDate(task.due_date), 'MMM d, yyyy')}
-                          </div>
-                        )}
-                        
-                        {task.estimated_time && (
-                          <div className="flex items-center">
-                            <Clock className="mr-1 h-3 w-3" />
-                            Est: {task.estimated_time}min
-                          </div>
-                        )}
-                        
-                        {task.goal_id && (
-                          <div className="flex items-center">
-                            <Target className="mr-1 h-3 w-3" />
-                            {goals.find(g => g.id === task.goal_id)?.title}
-                          </div>
-                        )}
-                      </div>
-                      
-                      {/* Quick Progress Selector in expanded view - starts empty if no progress */}
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm text-muted-foreground">Quick progress:</span>
-                          <ProgressSelector
-                            value={displayProgress as ProgressValue}
-                            onChange={isInteractionLocked ? () => {} : onProgressChange}
-                            size="md"
-                            showLabel={false}
-                            disabled={isInteractionLocked}
-                          />
-                          <span className={cn("text-sm font-medium", displayProgress === -1 ? "text-muted-foreground" : getProgressTextColor(progress))}>
-                            {displayProgress === -1 ? 'Not set' : getProgressLabel(progress)}
-                          </span>
-                        </div>
-                        {!hideActions && (
-                          <button
-                            type="button"
-                            onClick={onOpenDetails}
-                            className="text-sm font-medium text-muted-foreground hover:text-foreground hover:underline transition-colors"
-                          >
-                            Details
-                          </button>
-                        )}
-                      </div>
-                      
-                      {task.tags && task.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1">
-                          {task.tags.map((tag: string) => (
-                            <Badge key={tag} variant="outline" className="text-xs bg-purple-500/10 text-purple-700 border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/40">
-                              {tag}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  )
-}
-
-const TaskItem = React.memo(TaskItemBase, (prev, next) => {
-  return (
-    prev.task === next.task &&
-    prev.goals === next.goals &&
-    prev.expanded === next.expanded &&
-    prev.readonly === next.readonly &&
-    prev.hideActions === next.hideActions &&
-    prev.allowProgressEditWhenPaused === next.allowProgressEditWhenPaused
-  )
-})
 
 export default function Tasks() {
   const queryClient = useQueryClient()
@@ -1563,6 +205,14 @@ export default function Tasks() {
 
     return () => clearInterval(interval)
   }, [])
+
+  const parentRef = useRef<HTMLElement | null>(null)
+  
+  useEffect(() => {
+    parentRef.current = document.querySelector('main')
+  }, [])
+  
+
 
   // Filter and sort tasks
   const filteredTasks = useMemo(() => {
@@ -1643,6 +293,63 @@ export default function Tasks() {
     
     return groups
   }, [tasks, viewMode, dayKey])
+
+  const flatItems = useMemo(() => {
+    const items: any[] = []
+    
+    if (viewMode !== 'list' || filteredTasks?.length === 0) return items
+    
+    const sortedGroups = Object.entries(tasksByDate || {}).sort((a, b) => {
+      if (a[0] === b[0]) return 0
+      return a[0] === "Today's Tasks" ? -1 : 1
+    })
+
+    for (const [group, groupTasks] of sortedGroups) {
+      items.push({ type: 'header', group, count: (groupTasks as Task[]).length })
+      
+      const isYesterdaySection = group === "Yesterday's Tasks"
+      if (isYesterdaySection && !showYesterdayTasks) {
+        continue
+      }
+      
+      const displayDateStr = isYesterdaySection ? format(subDays(new Date(), 1), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd')
+      const displayDate = isYesterdaySection ? subDays(new Date(), 1) : new Date()
+
+      for (const task of groupTasks as Task[]) {
+        let displayTask = task
+        if (isYesterdaySection) {
+          const history = normalizeDailyProgress(task)
+          const yesterdayEntry = history[displayDateStr]
+          displayTask = {
+            ...task,
+            progress: getDailyProgress(task, displayDate) as ProgressValue,
+            status: yesterdayEntry?.status ?? task.status,
+            is_paused: yesterdayEntry?.source === 'paused',
+          }
+        }
+        items.push({ 
+          type: 'task', 
+          task: displayTask, 
+          group, 
+          displayDateStr,
+          isYesterdaySection
+        })
+      }
+    }
+    
+    return items
+  }, [filteredTasks, tasksByDate, showYesterdayTasks])
+
+  const listVirtualizer = useVirtualizer({
+    count: flatItems.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: (index) => {
+      const item = flatItems[index]
+      if (item.type === 'header') return 60
+      return 120 // Estimated height of TaskItem
+    },
+    overscan: 5,
+  })
 
   const { data: statsSnapshot } = useQuery<TaskTabStatsSnapshot>({
     queryKey: ['task-stats', dayKey],
@@ -1737,6 +444,10 @@ export default function Tasks() {
 
   const updateTaskMutation = useMutation({
     mutationFn: async ({ id, updates }: { id: string; updates: Partial<Task> }) => {
+      const existingTask = tasks.find(t => t.id === id)
+      if (existingTask) {
+        updateTask({ ...existingTask, ...updates } as any)
+      }
       await database.updateTask(id, updates)
       const updatedTask = await database.getTaskById(id)
       return updatedTask
@@ -1819,6 +530,11 @@ export default function Tasks() {
       } else {
         updates.paused_at = undefined
       }
+
+      if (existingTask) {
+        updateTask({ ...existingTask, ...updates } as any)
+      }
+
       await database.updateTask(id, updates)
       const updatedTask = await database.getTaskById(id)
       return { updatedTask, isPaused }
@@ -1843,13 +559,20 @@ export default function Tasks() {
   // Today-only tasks don't need resetting — they simply age out of getTodaysTasks().
 
   const updateProgressMutation = useMutation({
+    onMutate: async ({ id, progress }) => {
+      const existingTask = tasks.find((t: any) => t.id === id)
+      if (existingTask) {
+        updateTask({ ...existingTask, progress } as any)
+      }
+      return { previousTask: existingTask }
+    },
     mutationFn: async ({ id, progress }: { id: string; progress: number }) => {
-      // Get existing task to update daily_progress history
-      const existingTask = await database.getTaskById(id)
+      const existingTask = tasks.find(t => t.id === id)
       if (!existingTask) throw new Error('Task not found')
 
       const { updates } = buildTaskProgressUpdatePayload(existingTask as Task, progress)
-
+      
+      // Background persistence
       await database.updateTask(id, updates)
       const updatedTask = await database.getTaskById(id)
       return { updatedTask, progress }
@@ -1866,11 +589,21 @@ export default function Tasks() {
         invalidateTaskDerivedQueries()
       }
     },
-    onError: () => toastError('Failed to update progress'),
+    onError: (_error, _variables, context) => {
+      if (context?.previousTask) {
+        updateTask(context.previousTask as any)
+      }
+      toastError('Failed to update progress')
+    },
   })
 
   const updateDailyProgressMutation = useMutation({
     mutationFn: async ({ id, dailyProgress }: { id: string; dailyProgress: Record<string, DailyTaskState> }) => {
+      const existingTask = tasks.find(t => t.id === id)
+      if (existingTask) {
+        updateTask({ ...existingTask, daily_progress: dailyProgress } as any)
+      }
+      
       await database.updateTask(id, { daily_progress: dailyProgress })
       const updatedTask = await database.getTaskById(id)
       return updatedTask
@@ -1886,13 +619,19 @@ export default function Tasks() {
   })
 
   const deleteTaskMutation = useMutation({
+    onMutate: async (id: string) => {
+      const previousTask = tasks.find((t: any) => t.id === id)
+      if (previousTask) {
+        archiveTask(id)
+      }
+      return { previousTask }
+    },
     mutationFn: async (id: string) => {
       // Archive task instead of permanent delete - preserves progress history
       await database.archiveTask(id)
       return id
     },
-    onSuccess: (id) => {
-      archiveTask(id)
+    onSuccess: () => {
       // Invalidate archive queries so it shows up in archive
       queryClient.invalidateQueries({ queryKey: ['archive'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
@@ -1901,18 +640,29 @@ export default function Tasks() {
       invalidateTaskDerivedQueries()
       success('Task archived. Progress history preserved.')
     },
-    onError: () => toastError('Failed to archive task'),
+    onError: (_error, _variables, context) => {
+      if (context?.previousTask) {
+        updateTask(context.previousTask as any)
+      }
+      toastError('Failed to archive task')
+    },
   })
 
   // Permanent delete mutation - completely removes task and all its data
   const permanentDeleteTaskMutation = useMutation({
+    onMutate: async (id: string) => {
+      const previousTask = tasks.find((t: any) => t.id === id)
+      if (previousTask) {
+        deleteTask(id)
+      }
+      return { previousTask }
+    },
     mutationFn: async (id: string) => {
       // Completely remove task and all associated data (checklist items, time blocks, notes, etc.)
       await database.permanentlyDeleteTask(id, { deleteHistory: true })
       return id
     },
-    onSuccess: (id) => {
-      deleteTask(id)
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       queryClient.invalidateQueries({ queryKey: ['analytics'] })
@@ -1920,7 +670,12 @@ export default function Tasks() {
       invalidateTaskDerivedQueries()
       success('Task permanently deleted. All data removed.')
     },
-    onError: () => toastError('Failed to permanently delete task'),
+    onError: (_error, _variables, context) => {
+      if (context?.previousTask) {
+        updateTask(context.previousTask as any)
+      }
+      toastError('Failed to permanently delete task')
+    },
   })
 
   const resetForm = () => {
@@ -2086,7 +841,7 @@ export default function Tasks() {
           }}>
             <DialogTrigger asChild>
               <Button
-                className="transition-all duration-300 hover:scale-105 active:scale-95 shadow-md hover:shadow-lg"
+                className="transition-transform duration-150 hover:scale-[1.02] active:scale-95 shadow-sm gpu-accelerated"
                 size="sm"
                 onClick={() => {
                   setIsEditing(null)
@@ -2441,111 +1196,75 @@ export default function Tasks() {
             </CardContent>
           </Card>
         ) : (
-          Object.entries(tasksByDate || {}).sort((a, b) => {
-            if (a[0] === b[0]) return 0
-            return a[0] === "Today's Tasks" ? -1 : 1
-          }).map(([group, groupTasks]) => {
-            const tasks = groupTasks as Task[]
-            
-            /**
-             * MIDNIGHT STATUS PRESERVATION
-             * ============================
-             * After 12:00 AM (local time):
-             * 
-             * 1. YESTERDAY SECTION:
-             *    - Displays tasks with their PRESERVED status from yesterday
-             *    - Reads progress from daily_progress[yesterday-date]
-             *    - Shows final status (Skipped/25%/50%/75%/100%)
-             *    - Fully editable (updates yesterday's daily_progress)
-             * 
-             * 2. TODAY SECTION:
-             *    - Continuous/multi-day tasks REAPPEAR with progress reset to 0
-             *    - Today-only tasks do NOT appear if created yesterday
-             *    - Progress updates go to daily_progress[today-date] AND task.progress
-             * 
-             * This ensures:
-             *    - No loss of completion data
-             *    - Daily task history is date-scoped
-             *    - Analytics read from preserved daily status
-             */
-            const isYesterdaySection = group === "Yesterday's Tasks"
-            const displayDate = isYesterdaySection ? (() => {
-              const yesterday = new Date()
-              yesterday.setDate(yesterday.getDate() - 1)
-              return yesterday
-            })() : new Date()
-            const displayDateStr = format(displayDate, 'yyyy-MM-dd')
-            
-            return (
-            <div key={group} className="space-y-3">
-              <div>
-                <h2 className="text-lg font-semibold flex items-center gap-2">
-                  {group} 
-                  <Badge variant="outline" className="text-xs">
-                    {tasks.length}
-                  </Badge>
-                  {isYesterdaySection && (
-                    <ContextTipsDialog
-                      title="Yesterday Section Guidance"
-                      description="Use this section only for yesterday corrections so your timeline remains accurate."
-                      sections={YESTERDAY_TIPS_SECTIONS}
-                      triggerLabel="Open yesterday section guidance"
-                    />
-                  )}
-                  {isYesterdaySection && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={() => setShowYesterdayTasks(!showYesterdayTasks)}
-                      aria-label={showYesterdayTasks ? "Hide yesterday tasks" : "Show yesterday tasks"}
-                    >
-                      {showYesterdayTasks ? (
-                        <Eye className="h-4 w-4" />
-                      ) : (
-                        <EyeOff className="h-4 w-4" />
-                      )}
-                    </Button>
-                  )}
-                </h2>
-              </div>
-              
-              {isYesterdaySection && !showYesterdayTasks ? null : (
-              <div className="space-y-2">
-                {tasks.map((task: Task) => {
-                  // For YESTERDAY section, create a display task with preserved progress
-                  const displayTask = isYesterdaySection ? (() => {
-                    const history = normalizeDailyProgress(task)
-                    const yesterdayEntry = history[displayDateStr]
-                    return {
-                      ...task,
-                      progress: getDailyProgress(task, displayDate) as ProgressValue,
-                      status: yesterdayEntry?.status ?? task.status,
-                      is_paused: yesterdayEntry?.source === 'paused',
-                    }
-                  })() : task
-                  
-                  return (
-                    <TaskItem
-                      key={task.id}
-                      task={displayTask}
-                      goals={goals}
-                      expanded={expandedTasks.has(task.id)}
-                      onToggleExpand={() => toggleTaskExpanded(task.id)}
-                      onProgressChange={(progress) => handleMatrixProgressChange(task.id, displayDateStr, progress)}
-                      onEdit={() => handleEdit(task)}
-                      onDelete={() => setTaskToArchive(task)}
-                      onOpenDetails={() => setTaskDetailModal(task)}
-                      onPauseToggle={(isPaused) => pauseToggleMutation.mutate({ id: task.id, isPaused })}
-                      hideActions={isYesterdaySection}
-                      allowProgressEditWhenPaused={false}
-                    />
-                  )
-                })}
-              </div>
-              )}
-            </div>
-          )})
+          <div style={{ height: `${listVirtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
+             {listVirtualizer.getVirtualItems().map(virtualRow => {
+                const item = flatItems[virtualRow.index]
+                
+                return (
+                   <div 
+                      key={virtualRow.key}
+                      data-index={virtualRow.index}
+                      ref={listVirtualizer.measureElement}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        transform: `translateY(${virtualRow.start}px)`
+                      }}
+                      className={item.type === 'task' ? "pb-3" : "pb-4 pt-2"}
+                   >
+                     {item.type === 'header' ? (
+                        <div>
+                          <h2 className="text-lg font-semibold flex items-center gap-2">
+                            {item.group} 
+                            <Badge variant="outline" className="text-xs">
+                              {item.count}
+                            </Badge>
+                            {item.group === "Yesterday's Tasks" && (
+                              <>
+                                <ContextTipsDialog
+                                  title="Yesterday Section Guidance"
+                                  description="Use this section only for yesterday corrections so your timeline remains accurate."
+                                  sections={YESTERDAY_TIPS_SECTIONS}
+                                  triggerLabel="Open yesterday section guidance"
+                                />
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onClick={() => setShowYesterdayTasks(!showYesterdayTasks)}
+                                  aria-label={showYesterdayTasks ? "Hide yesterday tasks" : "Show yesterday tasks"}
+                                >
+                                  {showYesterdayTasks ? (
+                                    <Eye className="h-4 w-4" />
+                                  ) : (
+                                    <EyeOff className="h-4 w-4" />
+                                  )}
+                                </Button>
+                              </>
+                            )}
+                          </h2>
+                        </div>
+                     ) : (
+                        <TaskItem
+                          task={item.task}
+                          goals={goals}
+                          expanded={expandedTasks.has(item.task.id)}
+                          onToggleExpand={() => toggleTaskExpanded(item.task.id)}
+                          onProgressChange={(progress) => handleMatrixProgressChange(item.task.id, item.displayDateStr, progress)}
+                          onEdit={() => handleEdit(item.task)}
+                          onDelete={() => setTaskToArchive(item.task)}
+                          onOpenDetails={() => setTaskDetailModal(item.task)}
+                          onPauseToggle={(isPaused) => pauseToggleMutation.mutate({ id: item.task.id, isPaused })}
+                          hideActions={item.isYesterdaySection}
+                          allowProgressEditWhenPaused={false}
+                        />
+                     )}
+                   </div>
+                )
+             })}
+          </div>
         )}
         </div>
       )}

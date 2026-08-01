@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react'
+import { useEffect } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { useTauri } from './use-tauri'
 import { useToaster } from './use-toaster'
@@ -14,7 +14,7 @@ interface KeyboardShortcut {
 
 export const useKeyboardShortcuts = () => {
   const tauri = useTauri()
-  const { toast, success, info, error } = useToaster()
+  const { success, info, error } = useToaster()
   const store = useStore()
 
   // Navigation shortcuts
@@ -228,10 +228,10 @@ export const useKeyboardShortcuts = () => {
 
   return {
     shortcuts,
-    registerShortcut: (shortcut: KeyboardShortcut) => {
+    registerShortcut: (_shortcut: KeyboardShortcut) => {
       // Add custom shortcut registration logic here
     },
-    unregisterShortcut: (keys: string) => {
+    unregisterShortcut: (_keys: string) => {
       // Add custom shortcut unregistration logic here
     },
   }

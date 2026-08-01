@@ -1,4 +1,3 @@
-import React from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -39,7 +38,6 @@ interface GoalCardProps {
   onEdit?: (goalId: string) => void
   onArchive?: (goalId: string) => void
   onDelete?: (goalId: string) => void
-  onUpdateProgress?: (goalId: string, progress: number) => void
   compact?: boolean
 }
 
@@ -48,7 +46,6 @@ export function GoalCard({
   onEdit,
   onArchive,
   onDelete,
-  onUpdateProgress,
   compact = false,
 }: GoalCardProps) {
   const getCategoryColor = (category: string) => {

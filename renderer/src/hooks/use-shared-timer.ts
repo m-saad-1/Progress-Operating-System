@@ -3,14 +3,16 @@ import { useQueryClient } from '@tanstack/react-query'
 import { database } from '@/lib/database'
 import {
   useStore,
-  TimerMode,
-  TimerAlarmSound,
-  FloatingTimerPosition,
   DEFAULT_CUSTOM_DURATION_MS,
   DEFAULT_LONG_BREAK_DURATION_MS,
   DEFAULT_POMODORO_DURATION_MS,
   DEFAULT_SHORT_BREAK_DURATION_MS,
 } from '@/store'
+import {
+  TimerMode,
+  TimerAlarmSound,
+  FloatingTimerPosition,
+} from '@/store/types'
 
 const MS_IN_SECOND = 1000
 const COMPLETION_ALARM_GAIN = 0.75
@@ -85,7 +87,7 @@ const playAlarm = (sound: TimerAlarmSound, enabled: boolean) => {
   const pattern = ALARM_PATTERNS[sound] || ALARM_PATTERNS.classic
   const patternDurationMs = (pattern.length * 0.2 + 0.25) * 1000
 
-  let elapsedMs = 0
+
   const startTime = Date.now()
 
   const playPatternOnce = () => {

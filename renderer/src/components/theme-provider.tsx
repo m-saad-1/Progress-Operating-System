@@ -62,19 +62,7 @@ export function ThemeProvider({
     () => readThemeFallback(storageKey, defaultTheme)
   )
 
-  useEffect(() => {
-    let cancelled = false
 
-    const restoreThemeFromDesktopSnapshot = async () => {
-      // Tauri handles settings sync via the database, so we just use the localStorage fallback.
-    }
-
-    void restoreThemeFromDesktopSnapshot()
-
-    return () => {
-      cancelled = true
-    }
-  }, [storageKey])
 
   useEffect(() => {
     const root = window.document.documentElement

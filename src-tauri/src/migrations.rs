@@ -75,6 +75,9 @@ pub fn get_migrations() -> Vec<Migration> {
           CREATE INDEX IF NOT EXISTS idx_goals_category ON goals(category);
           CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
           CREATE INDEX IF NOT EXISTS idx_tasks_goal_id ON tasks(goal_id);
+          CREATE INDEX IF NOT EXISTS idx_tasks_deleted_at ON tasks(deleted_at);
+          CREATE INDEX IF NOT EXISTS idx_goals_deleted_at ON goals(deleted_at);
+          CREATE INDEX IF NOT EXISTS idx_projects_deleted_at ON projects(deleted_at);
             "
         },
         Migration {
@@ -160,6 +163,8 @@ pub fn get_migrations() -> Vec<Migration> {
           CREATE INDEX IF NOT EXISTS idx_habit_completions_date ON habit_completions(date);
           CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(type);
           CREATE INDEX IF NOT EXISTS idx_time_blocks_start_time ON time_blocks(start_time);
+          CREATE INDEX IF NOT EXISTS idx_habits_deleted_at ON habits(deleted_at);
+          CREATE INDEX IF NOT EXISTS idx_notes_deleted_at ON notes(deleted_at);
             "
         },
         Migration {

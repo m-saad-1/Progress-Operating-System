@@ -8,9 +8,8 @@ import {
   DEFAULT_LONG_BREAK_DURATION_MS,
   DEFAULT_POMODORO_DURATION_MS,
   DEFAULT_SHORT_BREAK_DURATION_MS,
-  TimerMode,
-  TimerAlarmSound,
 } from '@/store'
+import { TimerMode, TimerAlarmSound } from '@/store/types'
 import { formatTimeFromMs, useSharedTimer } from '@/hooks/use-shared-timer'
 
 const CircularProgress = ({ progress, timeLeft, mode }: { progress: number; timeLeft: string; mode: TimerMode }) => {

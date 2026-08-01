@@ -1,5 +1,5 @@
 // API client for REST API calls (for optional cloud sync)
-import { database, type Goal, type Task, type Habit, type Note } from './database'
+import { database } from './database'
 
 export interface SyncConfig {
   enabled: boolean
@@ -243,7 +243,7 @@ export class ApiClient {
     }
 
     const data = await database.exportData('json')
-    const backupId = generateId()
+    const backupId = this.generateId()
 
     const response = await fetch(`${this.config.endpoint}/backups`, {
       method: 'POST',

@@ -7,11 +7,17 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Loader2, MessageSquare, Paperclip } from 'lucide-react'
 import { useStore } from '@/store'
+import { shallow } from 'zustand/shallow'
 import { useToaster } from '@/hooks/use-toaster'
 import { getFeedbackRuntimeMetadata, queueFeedbackForRetry, retryQueuedFeedback, submitFeedback } from '@/lib/feedback-service'
 
 export default function HelpSupportPage() {
-  const store = useStore()
+  const store = useStore(
+    (state) => ({
+      userProfile: state.userProfile,
+    }),
+    shallow
+  )
   const { success, info, error } = useToaster()
 
   const [feedbackType, setFeedbackType] = useState<'bug-report' | 'suggestion' | 'feature-request' | 'general-feedback'>('general-feedback')

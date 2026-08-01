@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Search, Bell, HelpCircle, Sun, Moon, Menu, X, Filter, Computer } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
 import { useStore } from '@/store'
+import { shallow } from 'zustand/shallow'
 import { useTheme } from '@/components/theme-provider'
 import { cn } from '@/lib/utils'
 
@@ -27,8 +28,11 @@ interface HeaderProps {
 }
 
 export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
-  const { theme, setTheme } = useTheme()
-  const { notifications } = useStore()
+  const { setTheme } = useTheme()
+  const { notifications } = useStore(
+    (state) => ({ notifications: state.notifications }),
+    shallow
+  )
   const [searchOpen, setSearchOpen] = useState(false)
 
   const unreadNotifications = notifications.filter(n => !n.read).length

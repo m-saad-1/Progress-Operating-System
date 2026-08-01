@@ -6,11 +6,11 @@
  */
 
 import { useState, useMemo, useCallback } from 'react'
-import { addMonths, subMonths, startOfMonth, endOfMonth } from 'date-fns'
+import { addMonths, subMonths, startOfMonth } from 'date-fns'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTauri } from './use-tauri'
 import { database } from '@/lib/database'
-import { toLocalDateString, getMonthBoundaries } from '@/lib/analytics-utils'
+import { getMonthBoundaries } from '@/lib/analytics-utils'
 
 export interface MonthNavigationState {
   currentMonthDate: Date

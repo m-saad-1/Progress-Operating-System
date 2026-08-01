@@ -34,12 +34,10 @@ export const useTauri = () => {
       }
       return await fn()
     } catch (error) {
-      console.warn('Tauri API call failed (mocking response):', error)
-      
+      console.error('Tauri Native API call failed:', error)
       if (fallback !== undefined) {
         return fallback
       }
-      
       throw error
     }
   }
@@ -72,31 +70,51 @@ export const useTauri = () => {
       })
     },
     createBackup: async () => {
-      return safeCall(async () => invoke('create_backup'), { success: false })
+      return safeCall<any>(async () => invoke('create_backup'), { success: false })
     },
     restoreBackup: async (backupId: string) => {
-      return safeCall(async () => invoke('restore_backup', { backupId }), false)
+      return safeCall<any>(async () => invoke('restore_backup', { backupId }), false)
     },
     listBackups: async () => {
-      return safeCall(async () => invoke('list_backups'), [])
+      return safeCall<any[]>(async () => invoke('list_backups'), [])
     },
     deleteBackup: async (backupId: string) => {
-      return safeCall(async () => invoke('delete_backup', { backupId }), false)
+      return safeCall<any>(async () => invoke('delete_backup', { backupId }), false)
     },
     verifyBackup: async (backupId: string) => {
-      return safeCall(async () => invoke('verify_backup', { backupId }), { valid: false })
+      return safeCall<any>(async () => invoke('verify_backup', { backupId }), { valid: false })
     },
     getBackupStats: async () => {
-      return safeCall(async () => invoke('get_backup_stats'), null)
+      return safeCall<any>(async () => invoke('get_backup_stats'), null)
     },
     exportBackup: async (backupId: string) => {
-      return safeCall(async () => invoke('export_backup', { backupId }), { success: false })
+      try {
+        if (!isReady) throw new Error('Tauri API not available');
+        const savePath = await save({
+          defaultPath: backupId,
+          filters: [{ name: 'Database Backup', extensions: ['db', 'json', 'gz', '*'] }]
+        })
+        if (!savePath) return { error: 'Export cancelled' }
+        return await invoke('export_backup_to_path', { backup_id: backupId, save_path: savePath })
+      } catch (e: any) {
+        return { success: false, error: e?.message || String(e) }
+      }
     },
     importBackup: async () => {
-      return safeCall(async () => invoke('import_backup'), { success: false })
+      try {
+        if (!isReady) throw new Error('Tauri API not available');
+        const selected = await open({
+          filters: [{ name: 'Database Backup', extensions: ['db', 'json', 'gz', '*'] }]
+        })
+        if (!selected) return { error: 'Import cancelled' }
+        const filePath = Array.isArray(selected) ? selected[0] : selected
+        return await invoke('import_backup_from_path', { file_path: filePath })
+      } catch (e: any) {
+        return { success: false, error: e?.message || String(e) }
+      }
     },
     selectFile: async (options: any) => {
-      return safeCall(async () => {
+      return safeCall<any>(async () => {
         return open({
           multiple: options?.properties?.includes('multiSelections'),
           directory: options?.properties?.includes('openDirectory'),
@@ -105,7 +123,7 @@ export const useTauri = () => {
       }, null)
     },
     saveFile: async (options: any) => {
-      return safeCall(async () => {
+      return safeCall<any>(async () => {
         return save({
           defaultPath: options?.defaultPath,
           filters: options?.filters?.map((f: any) => ({ name: f.name, extensions: f.extensions }))
@@ -113,7 +131,7 @@ export const useTauri = () => {
       }, null)
     },
     getAppPath: async (name: string) => {
-      return safeCall(async () => {
+      return safeCall<any>(async () => {
         return invoke('get_app_path', { name })
       }, '')
     },
@@ -130,28 +148,28 @@ export const useTauri = () => {
       }
     },
     resetAllData: async () => {
-      return safeCall(async () => invoke('reset_all_data'), false)
+      return safeCall<any>(async () => invoke('reset_all_data'), false)
     },
     syncStart: async () => {
-      return safeCall(async () => invoke('sync_start'))
+      return safeCall<any>(async () => invoke('sync_start'))
     },
     syncStop: async () => {
-      return safeCall(async () => invoke('sync_stop'))
+      return safeCall<any>(async () => invoke('sync_stop'))
     },
     setSyncConfig: async (config: any) => {
-      return safeCall(async () => invoke('set_sync_config', { config }))
+      return safeCall<any>(async () => invoke('set_sync_config', { config }))
     },
     getSyncStatus: async () => {
-      return safeCall(async () => invoke('get_sync_status'), { status: 'idle' })
+      return safeCall<any>(async () => invoke('get_sync_status'), { status: 'idle' })
     },
     undo: async () => {
-      return safeCall(async () => invoke('undo'), false)
+      return safeCall<any>(async () => invoke('undo'), false)
     },
     redo: async () => {
-      return safeCall(async () => invoke('redo'), false)
+      return safeCall<any>(async () => invoke('redo'), false)
     },
     getUndoStack: async () => {
-      return safeCall(async () => invoke('get_undo_stack'), { canUndo: false, canRedo: false, undoStack: [], redoStack: [] })
+      return safeCall<any>(async () => invoke('get_undo_stack'), { canUndo: false, canRedo: false, undoStack: [], redoStack: [] })
     },
     onSyncUpdate: (callback: (status: any) => void) => {
       if (!isReady) return () => {}

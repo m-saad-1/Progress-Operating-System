@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { shallow } from 'zustand/shallow'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -48,7 +49,7 @@ interface ArchivedItem {
   id: string
   title: string
   description?: string
-  deleted_at: string | null
+  deleted_at?: string | null
   type: ArchivedItemType
   // Type-specific fields
   progress?: number
@@ -97,7 +98,15 @@ const ARCHIVE_TIPS_SECTIONS = [
 export default function Archive() {
   const queryClient = useQueryClient()
   const { success, error: toastError } = useToaster()
-  const { restoreTask, restoreHabit, restoreGoal, allowHistoryDeletion } = useStore()
+  const { restoreTask, restoreHabit, restoreGoal, allowHistoryDeletion } = useStore(
+    (state) => ({
+      restoreTask: state.restoreTask,
+      restoreHabit: state.restoreHabit,
+      restoreGoal: state.restoreGoal,
+      allowHistoryDeletion: state.allowHistoryDeletion,
+    }),
+    shallow
+  )
   
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedType, setSelectedType] = useState<string>('all')
@@ -826,7 +835,7 @@ export default function Archive() {
 }
 
 // Archived Item Card Component
-function ArchivedItemCard({
+const ArchivedItemCard = React.memo(function ArchivedItemCard({
   item,
   onRestore,
   onDelete,
@@ -1093,6 +1102,6 @@ function ArchivedItemCard({
       </CardContent>
     </Card>
   )
-}
+})
 
 

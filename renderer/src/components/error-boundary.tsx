@@ -1,11 +1,11 @@
-import React, { Component, ErrorInfo, ReactNode } from 'react'
+import { Component, ErrorInfo, ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { AlertTriangle, RefreshCw, Home } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { database } from '@/lib/database'
 
 interface Props {
   fallback?: ReactNode
+  children?: ReactNode
 }
 
 interface State {

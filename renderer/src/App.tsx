@@ -1,4 +1,3 @@
-import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
 import { HashRouter as Router, Routes, Route } from 'react-router-dom';
 import { Toaster } from '@/components/ui/toaster'
@@ -79,8 +78,8 @@ function AppContent() {
         console.log('[APP] Initializing app content');
         const runtimeApi = (window as any).__TAURI_INTERNALS__;
         
-                if (!runtimeApi) {
-          console.warn('Tauri API not available. Application running in mock data mode.');
+        if (!runtimeApi) {
+          throw new Error('Critical Error: Tauri Native API is not available. The application cannot run without the backend environment.');
         }
 
         const [tasks, habits, goals] = await Promise.all([

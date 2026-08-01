@@ -1,623 +1,58 @@
 import { invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { Task, Habit, Goal } from '@/types'
 
-const USER_PROFILE_BACKUP_KEY = 'progress-os-user-profile-v1'
-const SETTINGS_BACKUP_KEY = 'progress-os-settings-backup-v1'
-const THEME_PREFERENCE_KEY = 'progress-os-theme-v1'
+import { ThemePreference, UserProfile } from './types'
+import {
+  SettingsBackup,
+  normalizeUserProfile,
+  readUserProfileBackup,
+  writeUserProfileBackup,
+  readStoredThemePreference,
+  writeStoredThemePreference,
+  normalizeSettingsBackup,
+  getDefaultSettingsBackup,
+  readSettingsBackup,
+  writeSettingsBackup,
+  selectSettingsBackup,
+} from './storage'
+import { defaultUserProfile, defaultNotificationSettings, defaultPrivacySettings, defaultCustomReviewQuestions, defaultKeyboardShortcuts } from './defaults'
 
-type ThemePreference = 'light' | 'dark' | 'system'
+import { DataSlice, createDataSlice } from './slices/dataSlice'
+import { UISlice, createUISlice } from './slices/uiSlice'
+import { TimerSlice, createTimerSlice } from './slices/timerSlice'
+import { NotificationSlice, createNotificationSlice } from './slices/notificationSlice'
+import { SettingsSlice, createSettingsSlice } from './slices/settingsSlice'
+import { SyncSlice, createSyncSlice } from './slices/syncSlice'
+export { 
+  DEFAULT_POMODORO_DURATION_MS, 
+  DEFAULT_SHORT_BREAK_DURATION_MS, 
+  DEFAULT_LONG_BREAK_DURATION_MS, 
+  DEFAULT_CUSTOM_DURATION_MS 
+} from './slices/timerSlice'
 
-interface Notification {
-  id: string
-  title: string
-  message: string
-  type: 'info' | 'success' | 'warning' | 'error'
-  time: string
-  read: boolean
-  isOverdue?: boolean
-}
+import { DEFAULT_POMODORO_DURATION_MS, DEFAULT_CUSTOM_DURATION_MS } from './slices/timerSlice'
 
-// User Profile Interface
-interface UserProfile {
-  name: string
-  email: string
-  avatar?: string
-  createdAt: string
-}
-
-// Notification Settings Interface
-interface NotificationSettings {
-  enabled: boolean
-  sound: boolean
-  desktop: boolean
-  email: boolean
-  taskReminders: boolean
-  taskReminderTime: string
-  habitReminders: boolean
-  habitReminderTime: string
-  goalDeadlines: boolean
-  goalDeadlineDaysAhead: number
-  goalReminderTime: string
-  reviewReminders: boolean
-  reviewReminderTime: string
-  dailySummary: boolean
-  dailySummaryTime: string
-  weeklyReport: boolean
-  weeklyReportDay: 'sunday' | 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday'
-  weeklyReportTime: string
-}
-
-// Privacy Settings Interface
-interface PrivacySettings {
-  dataCollection: boolean
-  analytics: boolean
-  crashReports: boolean
-  shareUsageData: boolean
-  localOnly: boolean
-}
-
-// Review Question Interface
-export interface ReviewQuestion {
-  id: string
-  key: string
-  question: string
-  placeholder: string
-  enabled: boolean
-  isCustom: boolean
-  order: number
-}
-
-// Custom Review Questions by Type
-export interface CustomReviewQuestions {
-  daily: ReviewQuestion[]
-  weekly: ReviewQuestion[]
-  monthly: ReviewQuestion[]
-}
-
-// Keyboard Shortcut Interface
-interface KeyboardShortcut {
-  id: string
-  action: string
-  keys: string
-  enabled: boolean
-  category: 'navigation' | 'actions' | 'system' | 'productivity'
-}
-
-export type TimerMode = 'pomodoro' | 'shortBreak' | 'longBreak' | 'custom'
-export type FloatingTimerPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
-export type TimerAlarmSound =
-  | 'classic'
-  | 'digital'
-  | 'bell'
-  | 'chime'
-  | 'soft'
-  | 'focus'
-  | 'crystal'
-  | 'pulse'
-  | 'gong'
-  | 'beep'
-
-interface Store {
-  // Theme
-  theme: 'light' | 'dark'
-  toggleTheme: () => void
-  
-  // User Profile
-  userProfile: UserProfile
-  updateUserProfile: (profile: Partial<UserProfile>) => void
-  
-  // User preferences
-  timezone: string
-  weekStart: 'sunday' | 'monday'
-  language: string
-  compactMode: boolean
-  animationsEnabled: boolean
-  soundEnabled: boolean
-  highContrastMode: boolean
-  reduceMotion: boolean
-  
-  // Preference setters
-  setTimezone: (timezone: string) => void
-  setWeekStart: (weekStart: 'sunday' | 'monday') => void
-  setLanguage: (language: string) => void
-  setCompactMode: (compactMode: boolean) => void
-  setAnimationsEnabled: (enabled: boolean) => void
-  setSoundEnabled: (enabled: boolean) => void
-  setHighContrastMode: (enabled: boolean) => void
-  setReduceMotion: (enabled: boolean) => void
-  
-  // Notification Settings
-  notificationSettings: NotificationSettings
-  updateNotificationSettings: (settings: Partial<NotificationSettings>) => void
-  
-  // Privacy Settings
-  privacySettings: PrivacySettings
-  updatePrivacySettings: (settings: Partial<PrivacySettings>) => void
-
-  // Data deletion safety
-  allowHistoryDeletion: boolean
-  setAllowHistoryDeletion: (enabled: boolean) => void
-  
-  // Custom Review Questions
-  customReviewQuestions: CustomReviewQuestions
-  updateReviewQuestions: (type: 'daily' | 'weekly' | 'monthly', questions: ReviewQuestion[]) => void
-  addReviewQuestion: (type: 'daily' | 'weekly' | 'monthly', question: Omit<ReviewQuestion, 'id' | 'order'>) => void
-  removeReviewQuestion: (type: 'daily' | 'weekly' | 'monthly', questionId: string) => void
-  toggleReviewQuestion: (type: 'daily' | 'weekly' | 'monthly', questionId: string) => void
-  reorderReviewQuestions: (type: 'daily' | 'weekly' | 'monthly', startIndex: number, endIndex: number) => void
-  resetReviewQuestions: (type: 'daily' | 'weekly' | 'monthly') => void
-  
-  // Keyboard Shortcuts
-  keyboardShortcuts: KeyboardShortcut[]
-  keyboardShortcutsEnabled: boolean
-  setKeyboardShortcutsEnabled: (enabled: boolean) => void
-  updateKeyboardShortcut: (id: string, keys: string) => void
-  toggleKeyboardShortcut: (id: string) => void
-  resetKeyboardShortcuts: () => void
-
-  // Timer (shared across app)
-  timerMode: TimerMode | null
-  timerDurationMs: number
-  timerElapsedMs: number
-  timerStartedAt: number | null
-  timerRunning: boolean
-  customDurationMs: number
-  floatingTimerPosition: FloatingTimerPosition
-  timerAlarmSound: TimerAlarmSound
-
-  startTimer: (mode: TimerMode, durationMs: number) => void
-  stopTimer: () => void
-  resetTimer: (durationMs?: number) => void
-  setCustomDurationMs: (durationMs: number) => void
-  setFloatingTimerPosition: (position: FloatingTimerPosition) => void
-  setTimerAlarmSound: (sound: TimerAlarmSound) => void
-  
-  // Data
-  tasks: Task[]
-  habits: Habit[]
-  goals: Goal[]
-
-  setInitialData: (data: { tasks: Task[]; habits: Habit[]; goals: Goal[] }) => void
-
-  // Task Actions
-  addTask: (task: Task) => void
-  updateTask: (task: Task) => void
-  deleteTask: (taskId: string) => void
-  archiveTask: (taskId: string) => void
-  restoreTask: (task: Task) => void
-
-  // Habit Actions
-  addHabit: (habit: Habit) => void
-  updateHabit: (habit: Habit) => void
-  deleteHabit: (habitId: string) => void
-  archiveHabit: (habitId: string) => void
-  restoreHabit: (habit: Habit) => void
-
-  // Goal Actions
-  addGoal: (goal: Goal) => void
-  updateGoal: (goal: Goal) => void
-  deleteGoal: (goalId: string) => void
-  archiveGoal: (goalId: string) => void
-  restoreGoal: (goal: Goal) => void
-
-  // Notifications
-  notifications: Notification[]
-  addNotification: (notification: Omit<Notification, 'id' | 'read'>) => void
-  markAsRead: (id: string) => void
-  markAllAsRead: () => void
-  clearNotifications: () => void
-  
-  // Sync state
-  syncEnabled: boolean
-  syncProvider: 'local' | 'supabase' | 'custom'
-  syncInterval: number // in minutes
-  autoSync: boolean
-  lastSync: Date | null
-  syncStatus: 'idle' | 'syncing' | 'error'
-  
-  // UI state
-  sidebarOpen: boolean
-  commandPaletteOpen: boolean
-  focusMode: boolean
-  
-  // Actions
-  toggleSidebar: () => void
-  toggleCommandPalette: () => void
-  toggleFocusMode: () => void
-  enableSync: (enabled: boolean) => void
-  setSyncProvider: (provider: 'local' | 'supabase' | 'custom') => void
-  setSyncInterval: (interval: number) => void
-  setAutoSync: (autoSync: boolean) => void
-  updateLastSync: () => void
-  updateSyncStatus: (status: 'idle' | 'syncing' | 'error') => void
-  
-  // Settings reset
+export interface Store extends DataSlice, UISlice, TimerSlice, NotificationSlice, SyncSlice, SettingsSlice {
   resetAllSettings: () => void
-  
-  // Complete data reset
   resetAllData: () => void
-}
-
-// Default keyboard shortcuts
-const defaultKeyboardShortcuts: KeyboardShortcut[] = [
-  { id: 'nav-dashboard', action: 'Go to Dashboard', keys: 'Ctrl+1', enabled: true, category: 'navigation' },
-  { id: 'nav-goals', action: 'Go to Goals', keys: 'Ctrl+2', enabled: true, category: 'navigation' },
-  { id: 'nav-tasks', action: 'Go to Tasks', keys: 'Ctrl+3', enabled: true, category: 'navigation' },
-  { id: 'nav-habits', action: 'Go to Habits', keys: 'Ctrl+4', enabled: true, category: 'navigation' },
-  { id: 'nav-notes', action: 'Go to Notes', keys: 'Ctrl+5', enabled: true, category: 'navigation' },
-  { id: 'nav-reviews', action: 'Go to Reviews', keys: 'Ctrl+6', enabled: true, category: 'navigation' },
-  { id: 'nav-analytics', action: 'Go to Analytics', keys: 'Ctrl+7', enabled: true, category: 'navigation' },
-  { id: 'nav-time', action: 'Go to Time', keys: 'Ctrl+8', enabled: true, category: 'navigation' },
-  { id: 'nav-settings', action: 'Go to Settings', keys: 'Ctrl+9', enabled: true, category: 'navigation' },
-  { id: 'action-new', action: 'Create new item', keys: 'Ctrl+N', enabled: true, category: 'actions' },
-  { id: 'action-save', action: 'Save changes', keys: 'Ctrl+S', enabled: true, category: 'actions' },
-  { id: 'action-undo', action: 'Undo', keys: 'Ctrl+Z', enabled: true, category: 'actions' },
-  { id: 'action-redo', action: 'Redo', keys: 'Ctrl+Shift+Z', enabled: true, category: 'actions' },
-  { id: 'action-search', action: 'Focus search', keys: 'Ctrl+F', enabled: true, category: 'actions' },
-  { id: 'action-palette', action: 'Open command palette', keys: 'Ctrl+K', enabled: true, category: 'actions' },
-  { id: 'sys-sidebar', action: 'Toggle sidebar', keys: 'Ctrl+B', enabled: true, category: 'system' },
-  { id: 'sys-theme', action: 'Toggle theme', keys: 'Ctrl+D', enabled: true, category: 'system' },
-  { id: 'sys-focus', action: 'Toggle focus mode', keys: 'Ctrl+Shift+F', enabled: true, category: 'system' },
-  { id: 'sys-backup', action: 'Create backup', keys: 'Ctrl+Shift+S', enabled: true, category: 'system' },
-  { id: 'prod-pomodoro', action: 'Toggle Pomodoro timer', keys: 'Ctrl+Shift+P', enabled: true, category: 'productivity' },
-  { id: 'prod-quick-task', action: 'Quick task entry', keys: 'Ctrl+Shift+T', enabled: true, category: 'productivity' },
-  { id: 'prod-journal', action: 'Quick journal entry', keys: 'Ctrl+Shift+J', enabled: true, category: 'productivity' },
-  { id: 'prod-review', action: 'Start daily review', keys: 'Ctrl+Shift+I', enabled: true, category: 'productivity' },
-]
-
-const defaultUserProfile: UserProfile = {
-  name: '',
-  email: '',
-  avatar: '',
-  createdAt: new Date().toISOString(),
-}
-
-const normalizeUserProfile = (incoming?: Partial<UserProfile>): UserProfile => ({
-  name: typeof incoming?.name === 'string' ? incoming.name : defaultUserProfile.name,
-  email: typeof incoming?.email === 'string' ? incoming.email : defaultUserProfile.email,
-  avatar: typeof incoming?.avatar === 'string' ? incoming.avatar : undefined,
-  createdAt:
-    typeof incoming?.createdAt === 'string' ? incoming.createdAt : defaultUserProfile.createdAt,
-})
-
-const readUserProfileBackup = (): UserProfile => {
-  if (typeof window === 'undefined') {
-    return defaultUserProfile
-  }
-
-  try {
-    const raw = window.localStorage.getItem(USER_PROFILE_BACKUP_KEY)
-    if (!raw) return defaultUserProfile
-
-    const parsed = JSON.parse(raw) as Partial<UserProfile>
-    return normalizeUserProfile(parsed)
-  } catch {
-    return defaultUserProfile
-  }
-}
-
-const writeUserProfileBackup = (profile: UserProfile) => {
-  if (typeof window === 'undefined') return
-
-  try {
-    window.localStorage.setItem(USER_PROFILE_BACKUP_KEY, JSON.stringify(profile))
-  } catch {
-    // Ignore backup write failures (quota/private mode).
-  }
-}
-
-const readStoredThemePreference = (): ThemePreference => {
-  if (typeof window === 'undefined') {
-    return 'light'
-  }
-
-  try {
-    const stored = window.localStorage.getItem(THEME_PREFERENCE_KEY)
-    if (stored === 'dark' || stored === 'light' || stored === 'system') {
-      return stored
-    }
-
-    const rawBackup = window.localStorage.getItem(SETTINGS_BACKUP_KEY)
-    if (!rawBackup) return 'light'
-
-    const parsed = JSON.parse(rawBackup) as { theme?: 'light' | 'dark' }
-    return parsed.theme === 'dark' ? 'dark' : 'light'
-  } catch {
-    return 'light'
-  }
-}
-
-const writeStoredThemePreference = (themePreference: ThemePreference) => {
-  if (typeof window === 'undefined') return
-
-  try {
-    window.localStorage.setItem(THEME_PREFERENCE_KEY, themePreference)
-  } catch {
-    // Ignore write failures.
-  }
-}
-
-const defaultNotificationSettings: NotificationSettings = {
-  enabled: true,
-  sound: true,
-  desktop: true,
-  email: false,
-  taskReminders: true,
-  taskReminderTime: '09:00',
-  habitReminders: true,
-  habitReminderTime: '20:00',
-  goalDeadlines: true,
-  goalDeadlineDaysAhead: 3,
-  goalReminderTime: '09:00',
-  reviewReminders: true,
-  reviewReminderTime: '19:00',
-  dailySummary: false,
-  dailySummaryTime: '21:00',
-  weeklyReport: true,
-  weeklyReportDay: 'sunday',
-  weeklyReportTime: '20:00',
-}
-
-const defaultPrivacySettings: PrivacySettings = {
-  dataCollection: false,
-  analytics: false,
-  crashReports: true,
-  shareUsageData: false,
-  localOnly: false,
-}
-
-interface SettingsBackup {
-  theme: 'light' | 'dark'
-  timezone: string
-  weekStart: 'sunday' | 'monday'
-  language: string
-  compactMode: boolean
-  animationsEnabled: boolean
-  soundEnabled: boolean
-  highContrastMode: boolean
-  reduceMotion: boolean
-  notificationSettings: NotificationSettings
-  privacySettings: PrivacySettings
-  allowHistoryDeletion: boolean
-  customReviewQuestions: CustomReviewQuestions
-  keyboardShortcuts: KeyboardShortcut[]
-  keyboardShortcutsEnabled: boolean
-  syncEnabled: boolean
-  syncProvider: 'local' | 'supabase' | 'custom'
-  syncInterval: number
-  autoSync: boolean
-}
-
-interface PersistentSettingsSnapshot {
-  version: number
-  settingsBackup: SettingsBackup
-  userProfile: UserProfile
-  themePreference: ThemePreference
-}
-
-interface SettingsSnapshotApi {
-  getSettingsSnapshot: () => Promise<{ success: boolean; data?: unknown; error?: string }>
-  saveSettingsSnapshot: (snapshot: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>
-}
-
-const getDefaultSettingsBackup = (): SettingsBackup => ({
-  theme: 'light',
-  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-  weekStart: 'monday',
-  language: 'en',
-  compactMode: false,
-  animationsEnabled: true,
-  soundEnabled: true,
-  highContrastMode: false,
-  reduceMotion: false,
-  notificationSettings: { ...defaultNotificationSettings },
-  privacySettings: { ...defaultPrivacySettings },
-  allowHistoryDeletion: false,
-  customReviewQuestions: { ...defaultCustomReviewQuestions },
-  keyboardShortcuts: [...defaultKeyboardShortcuts],
-  keyboardShortcutsEnabled: true,
-  syncEnabled: true,
-  syncProvider: 'local',
-  syncInterval: 5,
-  autoSync: true,
-})
-
-const normalizeSettingsBackup = (incoming?: Partial<SettingsBackup>): SettingsBackup => {
-  const defaults = getDefaultSettingsBackup()
-  return {
-    theme: incoming?.theme === 'dark' ? 'dark' : 'light',
-    timezone: typeof incoming?.timezone === 'string' ? incoming.timezone : defaults.timezone,
-    weekStart: incoming?.weekStart === 'sunday' ? 'sunday' : 'monday',
-    language: typeof incoming?.language === 'string' ? incoming.language : defaults.language,
-    compactMode: typeof incoming?.compactMode === 'boolean' ? incoming.compactMode : defaults.compactMode,
-    animationsEnabled: typeof incoming?.animationsEnabled === 'boolean' ? incoming.animationsEnabled : defaults.animationsEnabled,
-    soundEnabled: typeof incoming?.soundEnabled === 'boolean' ? incoming.soundEnabled : defaults.soundEnabled,
-    highContrastMode: typeof incoming?.highContrastMode === 'boolean' ? incoming.highContrastMode : defaults.highContrastMode,
-    reduceMotion: typeof incoming?.reduceMotion === 'boolean' ? incoming.reduceMotion : defaults.reduceMotion,
-    notificationSettings: {
-      ...defaults.notificationSettings,
-      ...(incoming?.notificationSettings || {}),
-    },
-    privacySettings: {
-      ...defaults.privacySettings,
-      ...(incoming?.privacySettings || {}),
-    },
-    allowHistoryDeletion:
-      typeof incoming?.allowHistoryDeletion === 'boolean'
-        ? incoming.allowHistoryDeletion
-        : defaults.allowHistoryDeletion,
-    customReviewQuestions: {
-      ...defaults.customReviewQuestions,
-      ...(incoming?.customReviewQuestions || {}),
-    },
-    keyboardShortcuts:
-      Array.isArray(incoming?.keyboardShortcuts) && incoming.keyboardShortcuts.length > 0
-        ? incoming.keyboardShortcuts
-        : defaults.keyboardShortcuts,
-    keyboardShortcutsEnabled:
-      typeof incoming?.keyboardShortcutsEnabled === 'boolean'
-        ? incoming.keyboardShortcutsEnabled
-        : defaults.keyboardShortcutsEnabled,
-    syncEnabled: typeof incoming?.syncEnabled === 'boolean' ? incoming.syncEnabled : defaults.syncEnabled,
-    syncProvider:
-      incoming?.syncProvider === 'supabase' || incoming?.syncProvider === 'custom'
-        ? incoming.syncProvider
-        : 'local',
-    syncInterval:
-      typeof incoming?.syncInterval === 'number' && Number.isFinite(incoming.syncInterval)
-        ? incoming.syncInterval
-        : defaults.syncInterval,
-    autoSync: typeof incoming?.autoSync === 'boolean' ? incoming.autoSync : defaults.autoSync,
-  }
-}
-
-const readSettingsBackup = (): SettingsBackup => {
-  if (typeof window === 'undefined') {
-    return getDefaultSettingsBackup()
-  }
-
-  try {
-    const raw = window.localStorage.getItem(SETTINGS_BACKUP_KEY)
-    if (!raw) return getDefaultSettingsBackup()
-    return normalizeSettingsBackup(JSON.parse(raw) as Partial<SettingsBackup>)
-  } catch {
-    return getDefaultSettingsBackup()
-  }
-}
-
-const writeSettingsBackup = (backup: SettingsBackup) => {
-  if (typeof window === 'undefined') return
-
-  try {
-    window.localStorage.setItem(SETTINGS_BACKUP_KEY, JSON.stringify(backup))
-  } catch {
-    // Ignore backup write failures (quota/private mode).
-  }
-}
-
-const selectSettingsBackup = (state: Store): SettingsBackup =>
-  normalizeSettingsBackup({
-    theme: state.theme,
-    timezone: state.timezone,
-    weekStart: state.weekStart,
-    language: state.language,
-    compactMode: state.compactMode,
-    animationsEnabled: state.animationsEnabled,
-    soundEnabled: state.soundEnabled,
-    highContrastMode: state.highContrastMode,
-    reduceMotion: state.reduceMotion,
-    notificationSettings: state.notificationSettings,
-    privacySettings: state.privacySettings,
-    allowHistoryDeletion: state.allowHistoryDeletion,
-    customReviewQuestions: state.customReviewQuestions,
-    keyboardShortcuts: state.keyboardShortcuts,
-    keyboardShortcutsEnabled: state.keyboardShortcutsEnabled,
-    syncEnabled: state.syncEnabled,
-    syncProvider: state.syncProvider,
-    syncInterval: state.syncInterval,
-    autoSync: state.autoSync,
-  })
-
-const getMainProcessSettingsApi = (): SettingsSnapshotApi | null => {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  const api = { invoke } as any;
-  if (
-    typeof api?.getSettingsSnapshot === 'function' &&
-    typeof api?.saveSettingsSnapshot === 'function'
-  ) {
-    return api as SettingsSnapshotApi
-  }
-
-  return null
-}
-
-const hasMainProcessSettingsApi = () => getMainProcessSettingsApi() !== null
-
-const buildPersistentSettingsSnapshot = (
-  state: Store,
-  themePreference: ThemePreference = readStoredThemePreference()
-): PersistentSettingsSnapshot => ({
-  version: 1,
-  settingsBackup: selectSettingsBackup(state),
-  userProfile: normalizeUserProfile(state.userProfile),
-  themePreference,
-})
-
-// Default review questions for each type
-const defaultDailyQuestions: ReviewQuestion[] = [
-  { id: 'daily-1', key: 'completedToday', question: 'What did I complete today?', placeholder: 'List your accomplishments, no matter how small...', enabled: true, isCustom: false, order: 0 },
-  { id: 'daily-2', key: 'blockers', question: 'What blocked me or slowed me down?', placeholder: 'Identify obstacles, distractions, or challenges...', enabled: true, isCustom: false, order: 1 },
-  { id: 'daily-3', key: 'habitsImpact', question: 'Did my habits support or hinder me?', placeholder: 'Reflect on how your daily habits affected your productivity...', enabled: true, isCustom: false, order: 2 },
-  { id: 'daily-4', key: 'tomorrowFocus', question: 'What should I focus on tomorrow?', placeholder: 'Set your top 1-3 priorities for tomorrow...', enabled: true, isCustom: false, order: 3 },
-  { id: 'daily-5', key: 'additionalNotes', question: 'Any additional thoughts?', placeholder: 'Free space for reflections, ideas, or gratitude...', enabled: true, isCustom: false, order: 4 },
-]
-
-const defaultWeeklyQuestions: ReviewQuestion[] = [
-  { id: 'weekly-1', key: 'tasksThatMattered', question: 'Which tasks actually mattered this week?', placeholder: 'Identify high-impact work that moved the needle...', enabled: true, isCustom: false, order: 0 },
-  { id: 'weekly-2', key: 'tasksWasted', question: 'What tasks turned out to be low value?', placeholder: 'Recognize time spent on things that didn\'t matter...', enabled: true, isCustom: false, order: 1 },
-  { id: 'weekly-3', key: 'habitsSlipped', question: 'Which habits slipped or broke consistency?', placeholder: 'Be honest about which habits you struggled with...', enabled: true, isCustom: false, order: 2 },
-  { id: 'weekly-4', key: 'habitsMaintained', question: 'Which habits did you maintain well?', placeholder: 'Celebrate the habits you kept consistent...', enabled: true, isCustom: false, order: 3 },
-  { id: 'weekly-5', key: 'stopDoing', question: 'What should I STOP doing?', placeholder: 'Identify behaviors, tasks, or habits to eliminate...', enabled: true, isCustom: false, order: 4 },
-  { id: 'weekly-6', key: 'continueDoing', question: 'What should I CONTINUE doing?', placeholder: 'What\'s working well that you should keep doing...', enabled: true, isCustom: false, order: 5 },
-  { id: 'weekly-7', key: 'adjustments', question: 'What should I START or ADJUST?', placeholder: 'New approaches or modifications to try...', enabled: true, isCustom: false, order: 6 },
-  { id: 'weekly-8', key: 'weeklyWin', question: 'What was your biggest win this week?', placeholder: 'Celebrate your top achievement...', enabled: true, isCustom: false, order: 7 },
-  { id: 'weekly-9', key: 'biggestChallenge', question: 'What was your biggest challenge?', placeholder: 'Acknowledge difficulties you faced...', enabled: true, isCustom: false, order: 8 },
-  { id: 'weekly-10', key: 'nextWeekPriorities', question: 'What are the priorities for next week?', placeholder: 'Set your top 3-5 priorities...', enabled: true, isCustom: false, order: 9 },
-]
-
-const defaultMonthlyQuestions: ReviewQuestion[] = [
-  { id: 'monthly-1', key: 'progressAssessment', question: 'How do you assess your overall progress this month?', placeholder: 'Provide an honest evaluation of your month...', enabled: true, isCustom: false, order: 0 },
-  { id: 'monthly-2', key: 'highProgressReasons', question: 'If progress was high, why?', placeholder: 'Identify what contributed to your success...', enabled: true, isCustom: false, order: 1 },
-  { id: 'monthly-3', key: 'lowProgressReasons', question: 'If progress was low, why?', placeholder: 'Understand what held you back...', enabled: true, isCustom: false, order: 2 },
-  { id: 'monthly-4', key: 'goalsAlignment', question: 'Am I working on the right goals?', placeholder: 'Evaluate if your goals still align with your vision...', enabled: true, isCustom: false, order: 3 },
-  { id: 'monthly-5', key: 'goalsToAdjust', question: 'Which goals need adjustment?', placeholder: 'Identify goals that need changes to timeline, scope, or approach...', enabled: true, isCustom: false, order: 4 },
-  { id: 'monthly-6', key: 'goalsToAdd', question: 'What new goals should I consider?', placeholder: 'Think about areas you want to develop...', enabled: true, isCustom: false, order: 5 },
-  { id: 'monthly-7', key: 'goalsToRemove', question: 'What goals should I drop or defer?', placeholder: 'Be honest about what\'s not serving you...', enabled: true, isCustom: false, order: 6 },
-  { id: 'monthly-8', key: 'habitsIdentityAlignment', question: 'Are my habits aligned with who I want to become?', placeholder: 'Reflect on identity-level behavior change...', enabled: true, isCustom: false, order: 7 },
-  { id: 'monthly-9', key: 'keyLearnings', question: 'What are the key learnings from this month?', placeholder: 'Capture insights that will help you grow...', enabled: true, isCustom: false, order: 8 },
-  { id: 'monthly-10', key: 'nextMonthChanges', question: 'What must change next month?', placeholder: 'Identify critical changes to make...', enabled: true, isCustom: false, order: 9 },
-  { id: 'monthly-11', key: 'nextMonthGoals', question: 'What are your top goals for next month?', placeholder: 'Set clear intentions for the coming month...', enabled: true, isCustom: false, order: 10 },
-  { id: 'monthly-12', key: 'monthlyHighlight', question: 'What was the highlight of this month?', placeholder: 'Capture your best moment or achievement...', enabled: true, isCustom: false, order: 11 },
-]
-
-const defaultCustomReviewQuestions: CustomReviewQuestions = {
-  daily: defaultDailyQuestions,
-  weekly: defaultWeeklyQuestions,
-  monthly: defaultMonthlyQuestions,
 }
 
 const initialSettingsBackup = readSettingsBackup()
 
-export const DEFAULT_POMODORO_DURATION_MS = 25 * 60 * 1000
-export const DEFAULT_SHORT_BREAK_DURATION_MS = 5 * 60 * 1000
-export const DEFAULT_LONG_BREAK_DURATION_MS = 15 * 60 * 1000
-export const DEFAULT_CUSTOM_DURATION_MS = DEFAULT_POMODORO_DURATION_MS
-
 export const useStore = create<Store>()(
   persist(
-    (set) => ({
-      // Theme
+    (set, get, api) => ({
+      ...createDataSlice(set, get, api),
+      ...createUISlice(set, get, api),
+      ...createTimerSlice(set, get, api),
+      ...createNotificationSlice(set, get, api),
+      ...createSyncSlice(set, get, api),
+      ...createSettingsSlice(set, get, api),
+
+      // Set initial values from backup
       theme: initialSettingsBackup.theme,
-      toggleTheme: () => 
-        set((state) => ({ theme: state.theme === 'light' ? 'dark' : 'light' })),
-      
-      // User Profile
       userProfile: readUserProfileBackup(),
-      updateUserProfile: (profile) =>
-        set((state) => {
-          const nextProfile = { ...state.userProfile, ...profile }
-          writeUserProfileBackup(nextProfile)
-          return {
-            userProfile: nextProfile,
-          }
-        }),
-      
-      // User preferences
       timezone: initialSettingsBackup.timezone,
       weekStart: initialSettingsBackup.weekStart,
       language: initialSettingsBackup.language,
@@ -626,297 +61,17 @@ export const useStore = create<Store>()(
       soundEnabled: initialSettingsBackup.soundEnabled,
       highContrastMode: initialSettingsBackup.highContrastMode,
       reduceMotion: initialSettingsBackup.reduceMotion,
-      
-      // Preference setters
-      setTimezone: (timezone) => set({ timezone }),
-      setWeekStart: (weekStart) => set({ weekStart }),
-      setLanguage: (language) => set({ language }),
-      setCompactMode: (compactMode) => set({ compactMode }),
-      setAnimationsEnabled: (animationsEnabled) => set({ animationsEnabled }),
-      setSoundEnabled: (soundEnabled) => set({ soundEnabled }),
-      setHighContrastMode: (highContrastMode) => set({ highContrastMode }),
-      setReduceMotion: (reduceMotion) => set({ reduceMotion }),
-      
-      // Notification Settings
       notificationSettings: initialSettingsBackup.notificationSettings,
-      updateNotificationSettings: (settings) =>
-        set((state) => ({
-          notificationSettings: { ...state.notificationSettings, ...settings }
-        })),
-      
-      // Privacy Settings
       privacySettings: initialSettingsBackup.privacySettings,
-      updatePrivacySettings: (settings) =>
-        set((state) => ({
-          privacySettings: { ...state.privacySettings, ...settings }
-        })),
-
-      // Data deletion safety
       allowHistoryDeletion: initialSettingsBackup.allowHistoryDeletion,
-      setAllowHistoryDeletion: (allowHistoryDeletion) => set({ allowHistoryDeletion }),
-      
-      // Custom Review Questions
       customReviewQuestions: initialSettingsBackup.customReviewQuestions,
-      updateReviewQuestions: (type, questions) =>
-        set((state) => ({
-          customReviewQuestions: {
-            ...state.customReviewQuestions,
-            [type]: questions.map((q, i) => ({ ...q, order: i }))
-          }
-        })),
-      addReviewQuestion: (type, question) =>
-        set((state) => {
-          const existingQuestions = state.customReviewQuestions[type]
-          const newQuestion: ReviewQuestion = {
-            ...question,
-            id: `${type}-custom-${Date.now()}`,
-            order: existingQuestions.length,
-          }
-          return {
-            customReviewQuestions: {
-              ...state.customReviewQuestions,
-              [type]: [...existingQuestions, newQuestion]
-            }
-          }
-        }),
-      removeReviewQuestion: (type, questionId) =>
-        set((state) => ({
-          customReviewQuestions: {
-            ...state.customReviewQuestions,
-            [type]: state.customReviewQuestions[type]
-              .filter(q => q.id !== questionId)
-              .map((q, i) => ({ ...q, order: i }))
-          }
-        })),
-      toggleReviewQuestion: (type, questionId) =>
-        set((state) => ({
-          customReviewQuestions: {
-            ...state.customReviewQuestions,
-            [type]: state.customReviewQuestions[type].map(q =>
-              q.id === questionId ? { ...q, enabled: !q.enabled } : q
-            )
-          }
-        })),
-      reorderReviewQuestions: (type, startIndex, endIndex) =>
-        set((state) => {
-          const questions = [...state.customReviewQuestions[type]]
-          const [removed] = questions.splice(startIndex, 1)
-          questions.splice(endIndex, 0, removed)
-          return {
-            customReviewQuestions: {
-              ...state.customReviewQuestions,
-              [type]: questions.map((q, i) => ({ ...q, order: i }))
-            }
-          }
-        }),
-      resetReviewQuestions: (type) =>
-        set((state) => ({
-          customReviewQuestions: {
-            ...state.customReviewQuestions,
-            [type]: type === 'daily' ? defaultDailyQuestions 
-                  : type === 'weekly' ? defaultWeeklyQuestions 
-                  : defaultMonthlyQuestions
-          }
-        })),
-      
-      // Keyboard Shortcuts
       keyboardShortcuts: initialSettingsBackup.keyboardShortcuts,
       keyboardShortcutsEnabled: initialSettingsBackup.keyboardShortcutsEnabled,
-      setKeyboardShortcutsEnabled: (enabled) => set({ keyboardShortcutsEnabled: enabled }),
-      updateKeyboardShortcut: (id, keys) =>
-        set((state) => ({
-          keyboardShortcuts: state.keyboardShortcuts.map(s =>
-            s.id === id ? { ...s, keys } : s
-          )
-        })),
-      toggleKeyboardShortcut: (id) =>
-        set((state) => ({
-          keyboardShortcuts: state.keyboardShortcuts.map(s =>
-            s.id === id ? { ...s, enabled: !s.enabled } : s
-          )
-        })),
-      resetKeyboardShortcuts: () => set({ keyboardShortcuts: defaultKeyboardShortcuts }),
-
-      // Timer (shared across app)
-      timerMode: null,
-      timerDurationMs: DEFAULT_POMODORO_DURATION_MS,
-      timerElapsedMs: 0,
-      timerStartedAt: null,
-      timerRunning: false,
-      customDurationMs: DEFAULT_CUSTOM_DURATION_MS,
-      floatingTimerPosition: 'bottom-right',
-      timerAlarmSound: 'classic',
-
-      startTimer: (mode, durationMs) =>
-        set((state) => ({
-          timerMode: mode,
-          timerDurationMs: durationMs,
-          // Preserve elapsed time when resuming a paused timer
-          // Only reset to 0 when starting fresh
-          timerElapsedMs: state.timerMode === mode ? state.timerElapsedMs : 0,
-          timerStartedAt: Date.now(),
-          timerRunning: true,
-        })),
-      stopTimer: () =>
-        set((state) => {
-          if (!state.timerRunning) {
-            return { timerRunning: false, timerStartedAt: null }
-          }
-
-          const elapsedSinceStart = state.timerStartedAt
-            ? Date.now() - state.timerStartedAt
-            : 0
-
-          const updatedElapsed = Math.min(
-            state.timerElapsedMs + elapsedSinceStart,
-            state.timerDurationMs
-          )
-
-          return {
-            timerRunning: false,
-            timerStartedAt: null,
-            timerElapsedMs: updatedElapsed,
-          }
-        }),
-      resetTimer: (durationMs) =>
-        set((state) => ({
-          timerDurationMs: durationMs ?? state.timerDurationMs,
-          timerElapsedMs: 0,
-          timerStartedAt: null,
-          timerRunning: false,
-        })),
-      setCustomDurationMs: (durationMs) =>
-        set((state) => ({
-          customDurationMs: durationMs,
-          // Only update the scheduled duration when the custom timer is inactive
-          ...(state.timerMode === 'custom' && !state.timerRunning
-            ? { timerDurationMs: durationMs, timerElapsedMs: 0 }
-            : {}),
-        })),
-      setFloatingTimerPosition: (position) => set({ floatingTimerPosition: position }),
-      setTimerAlarmSound: (timerAlarmSound) => set({ timerAlarmSound }),
-      
-      // Data
-      tasks: [],
-      habits: [],
-      goals: [],
-
-      setInitialData: (data) => set(data),
-
-      // Task Actions
-      addTask: (task) => set((state) => ({ tasks: [...state.tasks, task] })),
-      updateTask: (task) => set((state) => ({
-        tasks: state.tasks.map((t) => (t.id === task.id ? task : t)),
-      })),
-      deleteTask: (taskId) => set((state) => ({
-        tasks: state.tasks.map((t) =>
-          t.id === taskId
-            ? { ...t, deleted_at: new Date().toISOString() }
-            : t
-        ),
-      })),
-      archiveTask: (taskId) => set((state) => ({
-        tasks: state.tasks.map((t) =>
-          t.id === taskId
-            ? { ...t, deleted_at: new Date().toISOString() }
-            : t
-        ),
-      })),
-      restoreTask: (task) => set((state) => ({
-        tasks: state.tasks.some((t) => t.id === task.id)
-          ? state.tasks.map((t) => (t.id === task.id ? { ...task, deleted_at: undefined } : t))
-          : [...state.tasks, { ...task, deleted_at: undefined }],
-      })),
-
-      // Habit Actions
-      addHabit: (habit) => set((state) => ({ habits: [...state.habits, habit] })),
-      updateHabit: (habit) => set((state) => ({
-        habits: state.habits.map((h) => (h.id === habit.id ? habit : h)),
-      })),
-      deleteHabit: (habitId) => set((state) => ({
-        habits: state.habits.filter((h) => h.id !== habitId),
-      })),
-      archiveHabit: (habitId) => set((state) => ({
-        habits: state.habits.filter((h) => h.id !== habitId),
-      })),
-      restoreHabit: (habit) => set((state) => ({ habits: [...state.habits, habit] })),
-
-      // Goal Actions
-      addGoal: (goal) => set((state) => ({ goals: [...state.goals, goal] })),
-      updateGoal: (goal) => set((state) => ({
-        goals: state.goals.map((g) => (g.id === goal.id ? goal : g)),
-      })),
-      deleteGoal: (goalId) => set((state) => ({
-        goals: state.goals.filter((g) => g.id !== goalId),
-      })),
-      archiveGoal: (goalId) => set((state) => ({
-        goals: state.goals.filter((g) => g.id !== goalId),
-      })),
-      restoreGoal: (goal) => set((state) => ({ goals: [...state.goals, goal] })),
-      
-      // Notifications
-      notifications: [],
-      addNotification: (notification) =>
-        set((state) => {
-          const nextNotification: Notification = {
-            ...notification,
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            read: false,
-          }
-
-          const notifications = [nextNotification, ...state.notifications].sort((a, b) => {
-            const aTs = Date.parse(a.time)
-            const bTs = Date.parse(b.time)
-
-            if (!Number.isNaN(aTs) && !Number.isNaN(bTs)) {
-              return bTs - aTs
-            }
-
-            if (!Number.isNaN(aTs)) return -1
-            if (!Number.isNaN(bTs)) return 1
-            return b.id.localeCompare(a.id)
-          })
-
-          return { notifications }
-        }),
-      markAsRead: (id) =>
-        set((state) => ({
-          notifications: state.notifications.map((n) =>
-            n.id === id ? { ...n, read: true } : n
-          ),
-        })),
-      markAllAsRead: () =>
-        set((state) => ({
-          notifications: state.notifications.map((n) => ({ ...n, read: true })),
-        })),
-      clearNotifications: () => set({ notifications: [] }),
-      
-      // Sync state
       syncEnabled: initialSettingsBackup.syncEnabled,
       syncProvider: initialSettingsBackup.syncProvider,
       syncInterval: initialSettingsBackup.syncInterval,
       autoSync: initialSettingsBackup.autoSync,
-      lastSync: null,
-      syncStatus: 'idle',
-      
-      // UI state
-      sidebarOpen: true,
-      commandPaletteOpen: false,
-      focusMode: false,
-      
-      // Actions
-      toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
-      toggleCommandPalette: () => 
-        set((state) => ({ commandPaletteOpen: !state.commandPaletteOpen })),
-      toggleFocusMode: () => set((state) => ({ focusMode: !state.focusMode })),
-      
-      enableSync: (enabled) => set({ syncEnabled: enabled }),
-      setSyncProvider: (provider) => set({ syncProvider: provider }),
-      setSyncInterval: (interval) => set({ syncInterval: interval }),
-      setAutoSync: (autoSync) => set({ autoSync: autoSync }),
-      updateLastSync: () => set({ lastSync: new Date() }),
-      updateSyncStatus: (status) => set({ syncStatus: status }),
-      
+
       // Settings reset
       resetAllSettings: () => {
         writeUserProfileBackup(defaultUserProfile)
@@ -1067,6 +222,46 @@ export const useStore = create<Store>()(
     }
   )
 )
+
+interface PersistentSettingsSnapshot {
+  version: number
+  settingsBackup: SettingsBackup
+  userProfile: UserProfile
+  themePreference: ThemePreference
+}
+
+interface SettingsSnapshotApi {
+  getSettingsSnapshot: () => Promise<{ success: boolean; data?: unknown; error?: string }>
+  saveSettingsSnapshot: (snapshot: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>
+}
+
+const getMainProcessSettingsApi = (): SettingsSnapshotApi | null => {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  const api = { invoke } as any;
+  if (
+    typeof api?.getSettingsSnapshot === 'function' &&
+    typeof api?.saveSettingsSnapshot === 'function'
+  ) {
+    return api as SettingsSnapshotApi
+  }
+
+  return null
+}
+
+const hasMainProcessSettingsApi = () => getMainProcessSettingsApi() !== null
+
+const buildPersistentSettingsSnapshot = (
+  state: Store,
+  themePreference: ThemePreference = readStoredThemePreference()
+): PersistentSettingsSnapshot => ({
+  version: 1,
+  settingsBackup: selectSettingsBackup(state),
+  userProfile: normalizeUserProfile(state.userProfile),
+  themePreference,
+})
 
 let hasCompletedMainProcessSettingsHydration = !hasMainProcessSettingsApi()
 let lastMainProcessSettingsSnapshotSerialized = ''

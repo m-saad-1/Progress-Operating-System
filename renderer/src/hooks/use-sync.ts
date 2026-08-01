@@ -163,7 +163,7 @@ export const useSync = () => {
     }
 
     try {
-      const status = await tauri.getSyncStatus()
+      const status = await tauri.getSyncStatus() as any
       return {
         status: status.status || 'idle',
         lastSync: status.lastSync ? new Date(status.lastSync) : undefined,
@@ -205,7 +205,7 @@ export const useSync = () => {
 
   const resolveConflict = useCallback(async (
     conflictId: string,
-    resolution: 'local' | 'remote' | 'merge'
+    _resolution: 'local' | 'remote' | 'merge'
   ): Promise<boolean> => {
     if (!tauri.isReady) {
       return false
@@ -232,7 +232,7 @@ export const useSync = () => {
   }, [tauri, success, error])
 
   const resolveAllConflicts = useCallback(async (
-    resolution: 'local' | 'remote'
+    _resolution: 'local' | 'remote'
   ): Promise<boolean> => {
     if (!tauri.isReady) {
       return false

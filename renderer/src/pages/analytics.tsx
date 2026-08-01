@@ -24,6 +24,7 @@ import {
   Timer
 } from 'lucide-react'
 import { format, parseISO, startOfMonth, endOfMonth, addMonths, addDays, startOfYear, endOfYear } from 'date-fns'
+import { shallow } from 'zustand/shallow'
 import { useStore } from '@/store'
 import { useTauri } from '@/hooks/use-tauri'
 import { useSharedTimer } from '@/hooks/use-shared-timer'
@@ -123,7 +124,14 @@ const CustomTooltip = ({ active, payload, label }: any) => {
 }
 
 export default function Analytics() {
-  const { tasks, habits, goals } = useStore()
+  const { tasks, habits, goals } = useStore(
+    (state) => ({
+      tasks: state.tasks,
+      habits: state.habits,
+      goals: state.goals,
+    }),
+    shallow
+  )
   const { timerMode, timerRunning, elapsedMs } = useSharedTimer()
   const tauri = useTauri()
   const [timeRange, setTimeRange] = useState<TimeRange>('month')

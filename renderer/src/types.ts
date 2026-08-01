@@ -26,21 +26,21 @@ export interface Task {
   status: TaskStatus;
   priority: Priority;
   progress: TaskProgress; // Progressive completion (0-100 in 25% increments)
-  duration_type: TaskDurationType; // 'today' = today only, 'continuous' = multi-day
+  duration_type?: TaskDurationType; // 'today' = today only, 'continuous' = multi-day
   // Daily ledger keyed by YYYY-MM-DD capturing status + progress
   daily_progress?: Record<string, DailyTaskState>;
   is_paused?: boolean; // Whether continuous task is paused
   paused_at?: string; // When the task was paused
   last_reset_date?: string; // YYYY-MM-DD when task last reset for continuous flows
-  due_date?: string;
-  estimated_time?: number;
-  actual_time?: number;
+  due_date?: string | null;
+  estimated_time?: number | null;
+  actual_time?: number | null;
   goal_id?: string;
   tags?: string[];
   created_at: string;
   updated_at: string;
-  completed_at?: string;
-  deleted_at?: string;
+  completed_at?: string | null;
+  deleted_at?: string | null;
 }
 
 // Monthly Progress - Separate from task completion

@@ -23,6 +23,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { useStore } from '@/store'
+import { shallow } from 'zustand/shallow'
 import { useTauri } from '@/hooks/use-tauri'
 import { useTheme } from '@/components/theme-provider'
 import { cn } from '@/lib/utils'
@@ -152,7 +153,23 @@ export function Header({ sidebarCollapsed, onToggleSidebar }: HeaderProps) {
     markAllAsRead,
     clearNotifications,
     tasks,
-  } = useStore()
+  } = useStore(
+    (state) => ({
+      notifications: state.notifications,
+      userProfile: state.userProfile,
+      habits: state.habits,
+      goals: state.goals,
+      syncEnabled: state.syncEnabled,
+      syncInterval: state.syncInterval,
+      lastSync: state.lastSync,
+      syncStatus: state.syncStatus,
+      markAsRead: state.markAsRead,
+      markAllAsRead: state.markAllAsRead,
+      clearNotifications: state.clearNotifications,
+      tasks: state.tasks,
+    }),
+    shallow
+  )
   const todayProductivity = useTodayAnalyticsProductivity()
   const avatarSrc = getSafeAvatarSrc(userProfile.avatar)
   
